@@ -1,15 +1,42 @@
-# ChatLLM - 智能文档问答系统
+# DocuMind - 智能文档大脑
 
-ChatLLM 是一个全栈的 RAG (Retrieval-Augmented Generation) 应用程序，允许用户上传文档（如 PDF）并基于文档内容进行智能对话。项目采用现代化的技术栈，前后端分离架构，结合了高性能的向量检索服务。
+DocuMind 是一个全栈的 RAG (Retrieval-Augmented Generation) 应用程序，允许用户上传文档（如 PDF）并基于文档内容进行智能对话。项目采用现代化的技术栈，前后端分离架构，结合了高性能的向量检索服务。
 
-## 🌟 项目亮点
+## 🌟 项目亮点与技术难点
 
-- **智能问答 (RAG)**: 基于 LangChain 和 OpenAI 实现的文档检索增强生成，支持精准的上下文问答。
-- **文档处理**: 支持 PDF 文档上传、解析、分块及向量化存储。
-- **流式响应**: 类似 ChatGPT 的打字机效果，实时流式输出 AI 回复。
-- **现代化前端**: 基于 React 19 + Vite + TailwindCSS v4 构建，响应式设计，支持 PWA。
-- **高性能后端**: Node.js (Express) 处理业务逻辑，Python (FastAPI) 处理 AI/RAG 核心任务。
-- **向量数据库**: 使用 Supabase (PostgreSQL + pgvector) 存储和检索高维向量数据。
+### 1. 🔐 **GitHub OAuth 第三方登录**
+- **实现**: 集成了 GitHub OAuth 2.0 认证流程。
+- **难点**: 处理 OAuth 回调、交换 Access Token、获取用户信息，并将其与本地 JWT 认证体系无缝融合，确保用户体验流畅且安全。
+
+### 2. 📂 **大文件分片上传 (Large File Upload)**
+- **实现**: 支持 GB 级别的大文件上传。
+- **难点**: 
+    - **分片策略**: 前端将大文件切分为 2MB 的小块并发上传，后端负责接收并按序合并。
+    - **断点续传**: 利用文件 Hash 检测已上传的分片，网络中断后只需上传未完成的部分，极大地提升了上传的可靠性。
+
+### 3. 🧵 **WebWorker 前端计算优化**
+- **实现**: 在 WebWorker 中运行耗时的计算任务。
+- **难点**: 
+    - **主线程解耦**: 为了避免大文件计算 Hash 时阻塞 UI 渲染（导致页面卡顿），将计算密集型的 MD5 Hash 任务移至 WebWorker 后台线程运行。
+    - **通信机制**: 设计了高效的主线程与 Worker 之间的消息通信机制，实时反馈计算进度。
+
+### 4. 🎨 **动态主题配色切换**
+- **实现**: 支持实时切换应用的主题色（Primary Color）和深色/浅色模式。
+- **难点**: 
+    - **性能优化**: 为了避免页面加载时的 "闪烁" (FOUC)，通过 `theme.js` 在 HTML 解析早期注入 CSS 变量，结合 `vite-plugin-pwa` 和内联脚本优化首屏渲染性能。
+    - **全局一致性**: 使用 CSS Variables + Zustand 全局状态管理，确保所有组件和 Tailwind 类名能即时响应主题变化。
+
+### 5. 🧠 **Python RAG 微服务解耦**
+- **实现**: 将 RAG 核心逻辑（PDF 解析、Embedding 向量化、检索）剥离为独立的 Python FastAPI 服务。
+- **难点**: 
+    - **异构通信**: Node.js 后端与 Python 服务之间通过 HTTP 进行高效通信。
+    - **性能瓶颈**: 解决了 Python 同步阻塞问题，移除了 `async` 关键字以利用线程池处理 CPU 密集型任务（如 PDF 解析），并优化了数据库的并发写入策略。
+
+### 6. 🌊 **全链路流式输出 (Stream Output)**
+- **实现**: 实现了类似 ChatGPT 的打字机效果。
+- **难点**: 
+    - **SSE (Server-Sent Events)**: 后端通过 SSE 协议实时推送 LLM 生成的 Token。
+    - **前端解析**: 前端自定义 Hook 处理流式数据，实时拼接并渲染 Markdown，同时处理 RAG 检索到的“参考来源”数据，做到了数据与 UI 的平滑更新。
 
 ## 🏗️ 系统架构
 
@@ -44,14 +71,14 @@ graph TD
 - **运行环境**: Node.js
 - **框架**: Express v5
 - **数据库**: Supabase (PostgreSQL)
-- **ORM/Query**: Supabase JS Client, Prisma (可选)
+- **ORM/Query**: Supabase JS Client
 - **认证**: JWT (JSON Web Tokens)
-- **文件处理**: Multer, pdf-parse
+- **文件处理**: Multer
 
 ### AI 服务 (RAG Service)
 - **语言**: Python 3.10+
 - **框架**: FastAPI
-- **AI/LLM**: LangChain, OpenAI API
+- **AI/LLM**: OpenAI API
 - **向量库**: Supabase (pgvector)
 
 ## 🚀 快速开始
