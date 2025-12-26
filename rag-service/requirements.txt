@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+python-dotenv
+supabase
+langchain
+langchain-community
+langchain-openai
+openai
+tiktoken
+pypdf

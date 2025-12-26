@@ -1,0 +1,127 @@
+{
+  "common": {
+    "loading": "加载中...",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "confirm": "确认"
+  },
+  "auth": {
+    "loginTitle": "ChatLLM",
+    "loginSubtitle": "下一代 AI 聊天界面",
+    "signInWithGithub": "使用 GitHub 登录",
+    "switchAccount": "切换 GitHub 账号",
+    "agreement": "登录即表示您同意我们的服务条款和隐私政策。"
+  },
+  "sidebar": {
+    "newChat": "新建对话",
+    "knowledgeBase": "知识库",
+    "profile": "个人资料",
+    "signOut": "退出登录",
+    "noConversations": "暂无对话"
+  },
+  "chat": {
+    "welcome": "欢迎使用 ChatLLM",
+    "welcomeSubtitle": "选择一个对话或开始一个新的对话。",
+    "startChatting": "开始聊天吧！",
+    "typeMessage": "输入消息...",
+    "stopGenerating": "停止生成",
+    "continueGenerating": "继续生成",
+    "uploadContext": "上传上下文文件 (Markdown 或 PDF)",
+    "uploadSuccess": "上传成功。",
+    "uploadFail": "文件上传失败。"
+  },
+  "profile": {
+    "title": "个人资料与设置",
+    "theme": "主题",
+    "language": "语言",
+    "appearance": "外观",
+    "accentColor": "强调色",
+    "backgroundTheme": "背景主题",
+    "customHex": "自定义颜色"
+  },
+  "profile": {
+    "title": "个人资料与设置",
+    "theme": "主题",
+    "language": "语言",
+    "appearance": "外观",
+    "accentColor": "强调色",
+    "backgroundTheme": "背景主题",
+    "customHex": "自定义颜色",
+    "publicProfile": "公开资料",
+    "profilePicture": "头像",
+    "uploadHint": "点击图片上传新照片。",
+    "supportedFormats": "支持格式：JPG, PNG, GIF。",
+    "uploadNewPicture": "上传新照片",
+    "displayName": "显示名称",
+    "username": "用户名 (GitHub)",
+    "saveChanges": "保存更改",
+    "dangerZone": "危险区域",
+    "deleteWarning": "一旦您删除了帐户，就无法恢复。请务必确认。",
+    "deleteAccount": "删除帐户",
+    "deleteTitle": "删除帐户",
+    "deleteAccountWarning": "警告：此操作不可逆。它将永久删除您的帐户、所有聊天记录、上传的文件和个人设置。",
+    "typeToDelete": "输入 DELETE 以确认：",
+    "saveSuccess": "资料已更新！",
+    "saveFail": "资料更新失败。"
+  },
+  "common": {
+    "loading": "加载中...",
+    "save": "保存",
+    "cancel": "取消",
+    "delete": "删除",
+    "edit": "编辑",
+    "confirm": "确认",
+    "uploading": "上传中...",
+    "saving": "保存中...",
+    "deleteConversationBody": "您确定要删除此对话吗？此操作无法撤销。",
+    "copied": "已复制到剪贴板"
+  },
+  "knowledge": {
+    "title": "知识库管理",
+    "uploadedDocuments": "已上传文档",
+    "description": "管理 AI 使用的上下文文件。",
+    "uploadNewFile": "上传新文件",
+    "noDocuments": "知识库中未找到文档。",
+    "uploadFirst": "上传您的第一个文档",
+    "fileName": "文件名",
+    "status": "状态",
+    "uploadedAt": "上传时间",
+    "actions": "操作",
+    "deleteTitle": "删除文档",
+    "deleteConfirm": "您确定要删除",
+    "deleteWarning": "此操作无法撤销。",
+    "deleteSuccess": "文件删除成功",
+    "deleteFail": "文件删除失败。",
+    "uploadComplete": "上传成功！",
+    "uploadFail": "上传失败。请重试。",
+    "copy": "复制",
+    "copied": "已复制",
+    "regenerate": "重新生成",
+    "delete": "删除"
+  },
+  "settings": {
+    "title": "聊天设置",
+    "model": "模型",
+    "selectModel": "选择此对话的 AI 模型。",
+    "temperature": "随机性 (Temperature)",
+    "temperatureHint": {
+      "precise": "精确",
+      "balanced": "平衡",
+      "creative": "创造性"
+    },
+    "systemPrompt": "系统提示词 (System Prompt)",
+    "systemPromptPlaceholder": "你是一个乐于助人的 AI 助手...",
+    "enableRag": "启用知识库",
+    "enableRagHint": "使用已上传的文档作为上下文",
+    "reset": "重置",
+    "saveChanges": "保存更改"
+  },
+  "search": {
+    "placeholder": "搜索消息...",
+    "noResults": "未找到相关结果。",
+    "typeToSearch": "输入关键词进行搜索...",
+    "results": "搜索结果"
+  }
+}

@@ -1,0 +1,119 @@
+{
+  "common": {
+    "loading": "Loading...",
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "confirm": "Confirm",
+    "uploading": "Uploading...",
+    "saving": "Saving...",
+    "deleteConversationBody": "Are you sure you want to delete this conversation? This action cannot be undone.",
+    "copied": "Copied to clipboard"
+  },
+  "auth": {
+    "loginTitle": "ChatLLM",
+    "loginSubtitle": "Next-gen AI Chat Interface",
+    "signInWithGithub": "Sign in with GitHub",
+    "switchAccount": "Switch GitHub Account",
+    "agreement": "By signing in, you agree to our Terms of Service and Privacy Policy."
+  },
+  "sidebar": {
+    "newChat": "New Chat",
+    "knowledgeBase": "Knowledge Base",
+    "profile": "Profile",
+    "signOut": "Sign Out",
+    "noConversations": "No conversations yet"
+  },
+  "chat": {
+    "welcome": "Welcome to ChatLLM",
+    "welcomeSubtitle": "Select a conversation or start a new one to begin.",
+    "startChatting": "Start chatting!",
+    "typeMessage": "Type a message...",
+    "stopGenerating": "Stop generating",
+    "continueGenerating": "Continue generating",
+    "uploadContext": "Upload context file (Markdown or PDF)",
+    "uploadSuccess": "uploaded successfully.",
+    "uploadFail": "Failed to upload file."
+  },
+  "profile": {
+    "title": "Profile & Settings",
+    "theme": "Theme",
+    "language": "Language",
+    "appearance": "Appearance",
+    "accentColor": "Accent Color",
+    "backgroundTheme": "Background Theme",
+    "customHex": "Custom Hex"
+  },
+  "profile": {
+    "title": "Profile & Settings",
+    "theme": "Theme",
+    "language": "Language",
+    "appearance": "Appearance",
+    "accentColor": "Accent Color",
+    "backgroundTheme": "Background Theme",
+    "customHex": "Custom Hex",
+    "publicProfile": "Public Profile",
+    "profilePicture": "Profile Picture",
+    "uploadHint": "Click the image to upload a new photo.",
+    "supportedFormats": "Supported formats: JPG, PNG, GIF.",
+    "uploadNewPicture": "Upload New Picture",
+    "displayName": "Display Name",
+    "username": "Username (GitHub)",
+    "saveChanges": "Save Changes",
+    "dangerZone": "Danger Zone",
+    "deleteWarning": "Once you delete your account, there is no going back. Please be certain.",
+    "deleteAccount": "Delete Account",
+    "deleteTitle": "Delete Account",
+    "deleteAccountWarning": "Warning: This action is irreversible. It will permanently delete your account, all chat history, uploaded files, and personal settings.",
+    "typeToDelete": "Type DELETE to confirm:",
+    "saveSuccess": "Profile updated successfully!",
+    "saveFail": "Failed to update profile."
+  },
+  "knowledge": {
+    "title": "Knowledge Base Management",
+    "uploadedDocuments": "Uploaded Documents",
+    "description": "Manage the context files used by the AI.",
+    "uploadNewFile": "Upload New File",
+    "noDocuments": "No documents found in knowledge base.",
+    "uploadFirst": "Upload your first document",
+    "fileName": "File Name",
+    "status": "Status",
+    "uploadedAt": "Uploaded At",
+    "actions": "Actions",
+    "deleteTitle": "Delete Document",
+    "deleteConfirm": "Are you sure you want to delete",
+    "deleteWarning": "This action cannot be undone.",
+    "deleteSuccess": "File deleted successfully",
+    "deleteFail": "Failed to delete file.",
+    "uploadComplete": "Upload completed successfully!",
+    "uploadFail": "Upload failed. Please try again.",
+    "copy": "Copy",
+    "copied": "Copied",
+    "regenerate": "Regenerate",
+    "delete": "Delete"
+  },
+  "settings": {
+    "title": "Chat Settings",
+    "model": "Model",
+    "selectModel": "Select the AI model for this conversation.",
+    "temperature": "Temperature",
+    "temperatureHint": {
+      "precise": "Precise",
+      "balanced": "Balanced",
+      "creative": "Creative"
+    },
+    "systemPrompt": "System Prompt",
+    "systemPromptPlaceholder": "You are a helpful AI assistant...",
+    "enableRag": "Enable Knowledge Base",
+    "enableRagHint": "Use uploaded documents as context",
+    "reset": "Reset",
+    "saveChanges": "Save Changes"
+  },
+  "search": {
+    "placeholder": "Search messages...",
+    "noResults": "No results found.",
+    "typeToSearch": "Type to search...",
+    "results": "Search Results"
+  }
+}

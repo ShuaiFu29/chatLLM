@@ -1,0 +1,52 @@
+<style>
+/* Critical CSS for Loading Screen */
+:root {
+  --color-primary: #2563eb;
+  --color-bg-base: #111827;
+  --color-bg-surface: #374151;
+  --color-text-main: #ffffff;
+  --color-text-muted: #9ca3af;
+}
+
+body { margin: 0; background-color: var(--color-bg-base); color: var(--color-text-main); font-family: system-ui, sans-serif; }
+
+#app-loading {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-bg-base);
+  z-index: 9999;
+  transition: opacity 0.5s ease-out;
+}
+
+.loading-rings { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 2rem; }
+.ring-1 { position: absolute; width: 6rem; height: 6rem; background-color: var(--color-primary); border-radius: 9999px; opacity: 0.2; animation: ping 1s cubic-bezier(0, 0, 0.2, 1) infinite; }
+.ring-2 { position: absolute; width: 4rem; height: 4rem; background-color: var(--color-primary); border-radius: 9999px; opacity: 0.1; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+.logo-box { position: relative; width: 3rem; height: 3rem; background-color: var(--color-bg-surface); border-radius: 1rem; display: flex; align-items: center; justify-content: center; border: 1px solid rgba(var(--color-primary), 0.3); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); z-index: 10; }
+.logo-icon { width: 2rem; height: 2rem; color: var(--color-primary); }
+
+.loading-text { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; }
+.app-title { font-size: 1.5rem; font-weight: 700; background: linear-gradient(to right, var(--color-text-main), var(--color-primary), var(--color-text-main)); -webkit-background-clip: text; background-clip: text; color: transparent; background-size: 200% auto; animation: shimmer 3s linear infinite; }
+.loading-status { font-size: 0.875rem; color: var(--color-text-muted); animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+
+@keyframes ping { 75%, 100% { transform: scale(2); opacity: 0; } }
+@keyframes pulse { 50% { opacity: .5; } }
+@keyframes shimmer { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+</style>
+
+<div id="app-loading">
+  <div class="loading-rings">
+    <div class="ring-1"></div>
+    <div class="ring-2"></div>
+    <div class="logo-box">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="logo-icon"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></svg>
+    </div>
+  </div>
+  <div class="loading-text">
+    <h1 class="app-title">ChatLLM</h1>
+    <p class="loading-status">Loading knowledge base...</p>
+  </div>
+</div>
