@@ -125,7 +125,7 @@ npm install
 npm run dev
 ```
 
-前端默认通过 Vite proxy 访问 `/api`，代理到 `http://localhost:3000`。
+前端默认通过 Vite proxy 访问 `/api`，会优先读取 `server/.env` 里的 `BACKEND_URL` / `PORT`。
 
 ## 主要功能
 

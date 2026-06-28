@@ -91,10 +91,36 @@ export function validateEnvMap(label, env, rules) {
 }
 
 export function validateProjectEnvMaps(envMaps) {
+  const serverEnv = envMaps['server/.env'] || {};
+
   return [
-    ...validateEnvMap('server/.env', envMaps['server/.env'] || {}, serverRules),
+    ...validateEnvMap('server/.env', serverEnv, serverRules),
+    ...validateServerBackendUrl(serverEnv),
     ...validateEnvMap('rag-service/.env', envMaps['rag-service/.env'] || {}, ragRules),
   ];
+}
+
+function validateServerBackendUrl(env) {
+  const port = env.PORT?.trim();
+  const backendUrl = env.BACKEND_URL?.trim();
+
+  if (!port || !backendUrl) {
+    return [];
+  }
+
+  try {
+    const parsed = new URL(backendUrl);
+    const isLocalhost = ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname);
+    const backendPort = parsed.port || (parsed.protocol === 'https:' ? '443' : '80');
+
+    if (isLocalhost && backendPort !== port) {
+      return ['server/.env BACKEND_URL port must match PORT for localhost URLs'];
+    }
+  } catch {
+    return [];
+  }
+
+  return [];
 }
 
 export function readProjectEnvMaps(rootDir = process.cwd()) {

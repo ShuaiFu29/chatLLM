@@ -11,6 +11,8 @@ const weakJwtSecrets = new Set([
   'replace-with-a-long-random-secret',
 ]);
 
+const DEFAULT_SERVER_PORT = 3002;
+
 export interface ServerEnv {
   PORT: number;
   FRONTEND_URL: string;
@@ -45,7 +47,7 @@ const getBoolean = (value: string | undefined, defaultValue: boolean) => {
 };
 
 const getPort = (value: string | undefined) => {
-  const parsed = Number.parseInt(value || '3000', 10);
+  const parsed = Number.parseInt(value || String(DEFAULT_SERVER_PORT), 10);
   if (Number.isNaN(parsed) || parsed <= 0) {
     throw new Error('Server configuration invalid:\n- PORT must be a positive integer');
   }
@@ -75,10 +77,12 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     throw new Error(`Server configuration invalid:\n- ${errors.join('\n- ')}`);
   }
 
+  const port = getPort(env.PORT);
+
   return {
-    PORT: getPort(env.PORT),
+    PORT: port,
     FRONTEND_URL: env.FRONTEND_URL?.trim() || 'http://localhost:5173',
-    BACKEND_URL: env.BACKEND_URL?.trim() || 'http://localhost:3000',
+    BACKEND_URL: env.BACKEND_URL?.trim() || `http://localhost:${port}`,
     DATABASE_URL: getRequired(env, 'DATABASE_URL'),
     S3_ENDPOINT: getRequired(env, 'S3_ENDPOINT'),
     S3_ACCESS_KEY: getRequired(env, 'S3_ACCESS_KEY'),

@@ -91,3 +91,34 @@ test('validateProjectEnvMaps accepts valid server and RAG env maps', () => {
 
   assert.deepEqual(issues, []);
 });
+
+test('validateProjectEnvMaps rejects mismatched localhost backend port', () => {
+  const issues = validateProjectEnvMaps({
+    'server/.env': {
+      PORT: '3002',
+      BACKEND_URL: 'http://localhost:3000',
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      DEEPSEEK_API_KEY: 'sk-test',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_API_KEY: 'embedding-key',
+      EMBEDDING_BASE_URL: 'https://open.bigmodel.cn/api/paas/v4/',
+      EMBEDDING_MODEL: 'embedding-2',
+      EMBEDDING_DIMENSION: '1024',
+    },
+  });
+
+  assert.deepEqual(issues, [
+    'server/.env BACKEND_URL port must match PORT for localhost URLs',
+  ]);
+});

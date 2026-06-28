@@ -63,7 +63,9 @@ npm run dev
 http://localhost:5173
 
 后端健康检查：
-http://localhost:3000/health
+看 server/.env 里的 PORT。
+如果 PORT=3002，就是：
+http://localhost:3002/health
 
 RAG 健康检查：
 http://localhost:8000/health

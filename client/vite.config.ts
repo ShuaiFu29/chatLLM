@@ -5,8 +5,9 @@ import viteCompression from 'vite-plugin-compression'
 import { VitePWA } from 'vite-plugin-pwa'
 import fs from 'fs'
 import path from 'path'
+import { resolveApiProxyTarget } from './vite-proxy-target.mjs'
 
-const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://localhost:3000'
+const apiProxyTarget = resolveApiProxyTarget(process.env, __dirname)
 
 // Custom plugin to inline optimization files
 const inlineOptimization = () => {

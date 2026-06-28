@@ -9,7 +9,7 @@
     "dev:server": "npm --prefix server run dev",
     "dev:rag": "cd rag-service && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000",
     "dev:client": "npm --prefix client run dev",
-    "test": "node --test scripts/check-env.test.mjs && npm --prefix server run test && cd rag-service && python -m unittest discover -s tests",
+    "test": "node --test scripts/check-env.test.mjs client/vite-proxy-target.test.mjs && npm --prefix server run test && cd rag-service && python -m unittest discover -s tests",
     "build": "npm --prefix server run build && npm --prefix client run build",
     "lint": "npm --prefix client run lint"
   },
