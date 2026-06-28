@@ -1,7 +1,26 @@
 import React, { useState, memo, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { PrismAsyncLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import c from 'react-syntax-highlighter/dist/esm/languages/prism/c';
+import cpp from 'react-syntax-highlighter/dist/esm/languages/prism/cpp';
+import csharp from 'react-syntax-highlighter/dist/esm/languages/prism/csharp';
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
+import go from 'react-syntax-highlighter/dist/esm/languages/prism/go';
+import java from 'react-syntax-highlighter/dist/esm/languages/prism/java';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import jsx from 'react-syntax-highlighter/dist/esm/languages/prism/jsx';
+import markdown from 'react-syntax-highlighter/dist/esm/languages/prism/markdown';
+import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup';
+import powershell from 'react-syntax-highlighter/dist/esm/languages/prism/powershell';
+import python from 'react-syntax-highlighter/dist/esm/languages/prism/python';
+import rust from 'react-syntax-highlighter/dist/esm/languages/prism/rust';
+import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql';
+import tsx from 'react-syntax-highlighter/dist/esm/languages/prism/tsx';
+import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typescript';
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { Check, Copy, Terminal } from 'lucide-react';
@@ -14,6 +33,41 @@ interface MarkdownRendererProps {
 interface CodeProps extends React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
 }
+
+const languageAliases: Record<string, string> = {
+  shell: 'bash',
+  sh: 'bash',
+  zsh: 'bash',
+  html: 'markup',
+  xml: 'markup',
+  js: 'javascript',
+  ts: 'typescript',
+  py: 'python',
+  yml: 'yaml',
+  ps1: 'powershell',
+  cplusplus: 'cpp',
+  cs: 'csharp',
+};
+
+SyntaxHighlighter.registerLanguage('bash', bash);
+SyntaxHighlighter.registerLanguage('c', c);
+SyntaxHighlighter.registerLanguage('cpp', cpp);
+SyntaxHighlighter.registerLanguage('csharp', csharp);
+SyntaxHighlighter.registerLanguage('css', css);
+SyntaxHighlighter.registerLanguage('go', go);
+SyntaxHighlighter.registerLanguage('java', java);
+SyntaxHighlighter.registerLanguage('javascript', javascript);
+SyntaxHighlighter.registerLanguage('json', json);
+SyntaxHighlighter.registerLanguage('jsx', jsx);
+SyntaxHighlighter.registerLanguage('markdown', markdown);
+SyntaxHighlighter.registerLanguage('markup', markup);
+SyntaxHighlighter.registerLanguage('powershell', powershell);
+SyntaxHighlighter.registerLanguage('python', python);
+SyntaxHighlighter.registerLanguage('rust', rust);
+SyntaxHighlighter.registerLanguage('sql', sql);
+SyntaxHighlighter.registerLanguage('tsx', tsx);
+SyntaxHighlighter.registerLanguage('typescript', typescript);
+SyntaxHighlighter.registerLanguage('yaml', yaml);
 
 const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
   const { t } = useTranslation();
@@ -61,6 +115,8 @@ const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
             const match = /language-(\w+)/.exec(className || '');
             const codeString = String(children).replace(/\n$/, '');
             const codeIndex = codeString.length; // Simple stable ID strategy
+            const displayLanguage = match?.[1] || '';
+            const language = languageAliases[displayLanguage] || displayLanguage;
 
             return !inline && match ? (
               <div key={codeIndex} className="relative group rounded-xl overflow-hidden my-6 border border-border shadow-lg bg-[#0d1117]">
@@ -74,7 +130,7 @@ const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
                     </div>
                     <div className="ml-3 flex items-center gap-1.5 text-xs text-text-muted font-medium">
                       <Terminal className="w-3 h-3" />
-                      <span className="font-mono">{match[1]}</span>
+                      <span className="font-mono">{displayLanguage}</span>
                     </div>
                   </div>
                   <button
@@ -98,7 +154,7 @@ const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
 
                 <SyntaxHighlighter
                   style={oneDark}
-                  language={match[1]}
+                  language={language}
                   PreTag="div"
                   showLineNumbers={true}
                   lineNumberStyle={{ minWidth: '2.5em', paddingRight: '1em', color: '#4b5563', textAlign: 'right' }}
