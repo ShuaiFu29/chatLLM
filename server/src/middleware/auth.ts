@@ -12,6 +12,18 @@ declare global {
   }
 }
 
+type FindUserById = typeof findUserById;
+
+export const resolveAuthenticatedUser = async (
+  accessToken: string,
+  findUser: FindUserById = findUserById
+) => {
+  const tokenUser = verifyAccessToken(accessToken);
+  if (!tokenUser) return null;
+
+  return findUser(tokenUser.id);
+};
+
 export const requireAuth = async (req: Request, res: Response, next: NextFunction) => {
   const accessToken = req.cookies.access_token;
 
@@ -20,17 +32,10 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  const user = verifyAccessToken(accessToken);
+  const user = await resolveAuthenticatedUser(accessToken);
 
   if (!user) {
     res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
-    return;
-  }
-
-  const existingUser = await findUserById(user.id);
-
-  if (!existingUser) {
-    res.status(401).json({ error: 'Unauthorized: User not found, please re-login' });
     return;
   }
 
