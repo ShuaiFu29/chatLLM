@@ -6,7 +6,7 @@ import App from './App.tsx';
 import ErrorBoundary from './components/ErrorBoundary.tsx';
 
 // Register Service Worker
-// @ts-ignore - virtual module
+// @ts-expect-error - virtual module
 import { registerSW } from 'virtual:pwa-register';
 
 if ('serviceWorker' in navigator) {

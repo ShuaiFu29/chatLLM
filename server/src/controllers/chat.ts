@@ -1,31 +1,38 @@
 import { Request, Response } from 'express';
 import axios from 'axios';
-import { supabase } from '../lib/supabase';
-import { openai, getEmbedding } from '../lib/openai';
 import dotenv from 'dotenv';
+import { openai } from '../lib/openai';
+import {
+  createConversationForUser,
+  deleteConversationForUser,
+  findConversationForUser,
+  listConversations,
+  touchConversation,
+  updateConversationForUser,
+  updateConversationTitle,
+} from '../repositories/conversations';
+import {
+  deleteMessageForUser,
+  insertMessage,
+  listMessagesForConversation,
+  listRecentMessages,
+  searchMessagesForUser,
+} from '../repositories/messages';
 
 dotenv.config();
 
-// Get all conversations for current user
 export const getConversations = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const { data, error } = await supabase
-    .from('conversations')
-    .select('*')
-    .eq('user_id', req.user.id)
-    .order('updated_at', { ascending: false });
-
-  if (error) {
+  try {
+    const conversations = await listConversations(req.user.id);
+    res.json(conversations);
+  } catch (error) {
     console.error('Error fetching conversations:', error);
     res.status(500).json({ error: 'Failed to fetch conversations' });
-    return;
   }
-
-  res.json(data);
 };
 
-// Search messages
 export const searchMessages = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { q } = req.query;
@@ -35,214 +42,124 @@ export const searchMessages = async (req: Request, res: Response) => {
     return;
   }
 
-  // Use ILIKE for case-insensitive search
-  // Join with conversations to ensure we only search user's conversations and get titles
-  const { data, error } = await supabase
-    .from('messages')
-    .select(`
-      id,
-      content,
-      created_at,
-      conversation_id,
-      conversations!inner (
-        id,
-        title,
-        user_id
-      )
-    `)
-    .eq('conversations.user_id', req.user.id)
-    .ilike('content', `%${q}%`)
-    .order('created_at', { ascending: false })
-    .limit(20);
-
-  if (error) {
+  try {
+    const results = await searchMessagesForUser(req.user.id, q);
+    res.json(results);
+  } catch (error) {
+    console.error('Error searching messages:', error);
     res.status(500).json({ error: 'Failed to search messages' });
-    return;
   }
-
-  res.json(data);
 };
 
-// Create a new conversation
 export const createConversation = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { title } = req.body;
 
-  const { data: conversation, error } = await supabase
-    .from('conversations')
-    .insert({
-      user_id: req.user.id,
-      title: title || 'New Chat'
-    })
-    .select()
-    .single();
-
-  if (error) {
+  try {
+    const conversation = await createConversationForUser(req.user.id, title || 'New Chat');
+    res.json(conversation);
+  } catch (error) {
+    console.error('Error creating conversation:', error);
     res.status(500).json({ error: 'Failed to create conversation' });
-    return;
   }
-
-  res.json(conversation);
 };
 
-// Update conversation (e.g. rename or update settings)
 export const updateConversation = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
   const { title, model, temperature, system_prompt, enable_rag } = req.body;
 
-  // Build updates object dynamically
-  const updates: any = { updated_at: new Date().toISOString() };
+  const updates: any = {};
   if (title !== undefined) updates.title = title;
   if (model !== undefined) updates.model = model;
   if (temperature !== undefined) updates.temperature = temperature;
   if (system_prompt !== undefined) updates.system_prompt = system_prompt;
   if (enable_rag !== undefined) updates.enable_rag = enable_rag;
 
-  if (Object.keys(updates).length <= 1) { // Only updated_at
+  if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: 'No fields to update' });
   }
 
-  // Verify ownership and update
-  const { data, error } = await supabase
-    .from('conversations')
-    .update(updates)
-    .eq('id', conversationId)
-    .eq('user_id', req.user.id) // Ensure ownership
-    .select()
-    .single();
+  try {
+    const conversation = await updateConversationForUser(conversationId, req.user.id, updates);
 
-  if (error) {
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+
+    res.json(conversation);
+  } catch (error) {
+    console.error('Error updating conversation:', error);
     res.status(500).json({ error: 'Failed to update conversation' });
-    return;
   }
-
-  res.json(data);
 };
 
-// Delete a conversation
 export const deleteConversation = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
 
-  // Verify ownership and delete
-  const { error } = await supabase
-    .from('conversations')
-    .delete()
-    .eq('id', conversationId)
-    .eq('user_id', req.user.id); // Ensure ownership
-
-  if (error) {
+  try {
+    const deleted = await deleteConversationForUser(conversationId, req.user.id);
+    if (!deleted) return res.status(404).json({ error: 'Conversation not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting conversation:', error);
     res.status(500).json({ error: 'Failed to delete conversation' });
-    return;
   }
-
-  res.json({ success: true });
 };
 
-// Delete a single message
 export const deleteMessage = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { messageId } = req.params;
 
-  // 1. Get the message to find its conversation_id
-  const { data: message, error: fetchError } = await supabase
-    .from('messages')
-    .select('conversation_id')
-    .eq('id', messageId)
-    .single();
-
-  if (fetchError || !message) {
-    res.status(404).json({ error: 'Message not found' });
-    return;
-  }
-
-  // 2. Verify user owns the conversation
-  const { data: conversation, error: convError } = await supabase
-    .from('conversations')
-    .select('id')
-    .eq('id', message.conversation_id)
-    .eq('user_id', req.user.id)
-    .single();
-
-  if (convError || !conversation) {
-    res.status(403).json({ error: 'Unauthorized to delete this message' });
-    return;
-  }
-
-  // 3. Delete the message
-  const { error: deleteError } = await supabase
-    .from('messages')
-    .delete()
-    .eq('id', messageId);
-
-  if (deleteError) {
+  try {
+    const deleted = await deleteMessageForUser(messageId, req.user.id);
+    if (!deleted) return res.status(404).json({ error: 'Message not found' });
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error deleting message:', error);
     res.status(500).json({ error: 'Failed to delete message' });
-    return;
   }
-
-  res.json({ success: true });
 };
 
 const generateConversationTitle = async (conversationId: string, firstMessage: string) => {
   try {
     const response = await openai.chat.completions.create({
-      model: "deepseek-chat",
+      model: 'deepseek-chat',
       messages: [
         {
-          role: "system",
-          content: "Generate a short, concise title (maximum 5 words) for a conversation based on the following user message. The title should be in the same language as the user message. Do not use quotes. Return ONLY the title."
+          role: 'system',
+          content: 'Generate a short, concise title (maximum 5 words) for a conversation based on the following user message. The title should be in the same language as the user message. Do not use quotes. Return ONLY the title.',
         },
-        { role: "user", content: firstMessage }
+        { role: 'user', content: firstMessage },
       ],
       max_tokens: 20,
-      temperature: 0.7
+      temperature: 0.7,
     });
 
     const title = response.choices[0]?.message?.content?.trim();
-    if (title) {
-      await supabase
-        .from('conversations')
-        .update({ title })
-        .eq('id', conversationId);
-    }
+    if (title) await updateConversationTitle(conversationId, title);
   } catch (error) {
-    // Silent fail for title generation
+    console.warn('[Chat] Failed to generate title:', error);
   }
 };
 
-// Get messages for a conversation
 export const getMessages = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
 
-  // Verify ownership
-  const { data: conversation } = await supabase
-    .from('conversations')
-    .select('user_id')
-    .eq('id', conversationId)
-    .single();
+  try {
+    const conversation = await findConversationForUser(conversationId, req.user.id);
+    if (!conversation) return res.status(403).json({ error: 'Forbidden' });
 
-  if (!conversation || conversation.user_id !== req.user.id) {
-    res.status(403).json({ error: 'Forbidden' });
-    return;
-  }
-
-  const { data, error } = await supabase
-    .from('messages')
-    .select('*')
-    .eq('conversation_id', conversationId)
-    .order('created_at', { ascending: true });
-
-  if (error) {
+    const messages = await listMessagesForConversation(conversationId);
+    res.json(messages);
+  } catch (error) {
+    console.error('Error fetching messages:', error);
     res.status(500).json({ error: 'Failed to fetch messages' });
-    return;
   }
-
-  res.json(data);
 };
 
-// Send a message (User -> Assistant) with Streaming
 export const sendMessage = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
@@ -253,83 +170,48 @@ export const sendMessage = async (req: Request, res: Response) => {
     return;
   }
 
-  // Start parallel operations: Save message, Fetch settings, Fetch history
-  const [insertResult, conversationResult, historyResult] = await Promise.all([
-    // 1. Save user message to DB
-    supabase
-      .from('messages')
-      .insert({
-        conversation_id: conversationId,
-        role: 'user',
-        content
-      }),
-
-    // 2. Fetch conversation settings
-    supabase
-      .from('conversations')
-      .select('title, model, temperature, system_prompt, enable_rag')
-      .eq('id', conversationId)
-      .single(),
-
-    // 3. Get chat history context (last 10 messages)
-    supabase
-      .from('messages')
-      .select('role, content')
-      .eq('conversation_id', conversationId)
-      .order('created_at', { ascending: false })
-      .limit(10)
-  ]);
-
-  // Check for insert errors
-  if (insertResult.error) {
-    res.status(500).json({ error: 'Failed to save message' });
+  const conversation = await findConversationForUser(conversationId, req.user.id);
+  if (!conversation) {
+    res.status(403).json({ error: 'Forbidden' });
     return;
   }
 
-  const conversation = conversationResult.data;
+  const userMessage = await insertMessage(conversationId, 'user', content);
 
-  // Handle Title Generation (Fire and Forget)
-  if (conversation && conversation.title === 'New Chat') {
+  if (conversation.title === 'New Chat') {
     generateConversationTitle(conversationId, content);
   }
 
-  // Update timestamp (Fire and Forget)
-  supabase
-    .from('conversations')
-    .update({ updated_at: new Date().toISOString() })
-    .eq('id', conversationId)
-    .then(({ error }) => {
-      // Silent error
-    });
+  touchConversation(conversationId, req.user.id).catch((error) => {
+    console.warn('[Chat] Failed to update conversation timestamp:', error);
+  });
 
-  // 3. Setup SSE headers
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache',
-    'Connection': 'keep-alive',
+    Connection: 'keep-alive',
   });
 
   try {
-    // 4. Get Conversation Settings
-    let model = conversation?.model || "deepseek-chat";
-    let temperature = conversation?.temperature !== undefined ? conversation.temperature : 0.7;
-    let systemPrompt = conversation?.system_prompt || "You are a helpful AI assistant.";
-    let enableRag = conversation?.enable_rag !== undefined ? conversation.enable_rag : true;
+    const model = conversation.model || 'deepseek-chat';
+    const temperature = conversation.temperature !== undefined && conversation.temperature !== null
+      ? conversation.temperature
+      : 0.7;
+    const systemPrompt = conversation.system_prompt || 'You are a helpful AI assistant.';
+    const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
 
-    // 5. RAG: Retrieve relevant context
     let contextText = '';
     const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
 
     if (enableRag) {
       try {
-        const payload = {
+        const ragResponse = await axios.post(`${ragServiceUrl}/retrieve`, {
           query: content,
-          user_id: String(req.user.id || ''),
+          user_id: req.user.id,
           limit: 10,
-          threshold: 0.1
-        };
+          threshold: 0.1,
+        }, { timeout: 30000 });
 
-        const ragResponse = await axios.post(`${ragServiceUrl}/retrieve`, payload);
         const documents = ragResponse.data.results;
 
         if (documents && documents.length > 0) {
@@ -337,23 +219,22 @@ export const sendMessage = async (req: Request, res: Response) => {
 
           const sources = documents.map((doc: any) => ({
             filename: doc.metadata.filename,
-            similarity: doc.similarity
+            similarity: doc.similarity,
           }));
           res.write(`data: ${JSON.stringify({ sources })}\n\n`);
         }
-      } catch (err: any) {
-        // Silent fail
+      } catch (error) {
+        console.warn('[Chat] RAG retrieval failed; continuing without context:', error);
+        res.write(`data: ${JSON.stringify({ rag_warning: 'Knowledge retrieval failed; answering without retrieved context.' })}\n\n`);
       }
     }
 
-    // Prepare messages for LLM
-    const history = historyResult.data || [];
-    let messages = history.reverse().map(msg => ({
+    const history = await listRecentMessages(conversationId, 10);
+    const messages = history.reverse().map((msg) => ({
       role: msg.role as 'user' | 'assistant' | 'system',
-      content: msg.content
+      content: msg.content,
     }));
 
-    // Ensure the last message is the current user's message
     const lastMsg = messages[messages.length - 1];
     if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== content) {
       messages.push({ role: 'user', content });
@@ -375,45 +256,37 @@ ${originalContent}`;
       }
     }
 
-    // 7. Call LLM API with streaming
     const stream = await openai.chat.completions.create({
-      model: model, // Use user preference
+      model,
       messages: [
-        { role: "system", content: systemPrompt },
-        ...messages
+        { role: 'system', content: systemPrompt },
+        ...messages,
       ],
       stream: true,
-      temperature: temperature, // Use user preference
+      temperature,
     });
 
     let fullContent = '';
+
+    res.write(`data: ${JSON.stringify({ userMessageId: userMessage.id })}\n\n`);
 
     for await (const chunk of stream) {
       const delta = chunk.choices[0]?.delta?.content || '';
       if (delta) {
         fullContent += delta;
-        // Send SSE event
         res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
       }
     }
 
-    // 8. Save AI response to DB after stream finishes
     if (fullContent) {
-      await supabase
-        .from('messages')
-        .insert({
-          conversation_id: conversationId,
-          role: 'assistant',
-          content: fullContent
-        });
+      const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent);
+      res.write(`data: ${JSON.stringify({ assistantMessageId: assistantMessage.id })}\n\n`);
     }
 
-    // End stream
     res.write('data: [DONE]\n\n');
     res.end();
-
   } catch (error) {
-    // If headers already sent, we can only send an error event
+    console.error('[Chat] Failed to generate response:', error);
     res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
     res.end();
   }

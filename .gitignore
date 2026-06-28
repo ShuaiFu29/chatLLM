@@ -34,3 +34,6 @@ __pycache__
 *.pyc
 .venv
 venv
+
+# Runtime files
+server/uploads

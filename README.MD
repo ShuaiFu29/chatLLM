@@ -1,197 +1,157 @@
 # DocuMind - 智能文档大脑
 
-DocuMind 是一个全栈的 RAG (Retrieval-Augmented Generation) 应用程序，允许用户上传文档（如 PDF）并基于文档内容进行智能对话。项目采用现代化的技术栈，前后端分离架构，结合了高性能的向量检索服务。
+DocuMind 是一个前后端分离的 RAG 应用。用户可以通过 GitHub OAuth 登录，上传 Markdown 文档，并基于个人知识库进行流式 AI 对话。
 
-## 🌟 项目亮点与技术难点
+当前架构已经移除 Supabase，改为本地 Docker Compose 栈：
 
-### 1. 🔐 **GitHub OAuth 第三方登录**
-- **实现**: 集成了 GitHub OAuth 2.0 认证流程。
-- **难点**: 处理 OAuth 回调、交换 Access Token、获取用户信息，并将其与本地 JWT 认证体系无缝融合，确保用户体验流畅且安全。
+- React + Vite 前端
+- Express + TypeScript 后端
+- PostgreSQL 业务数据库
+- MinIO 文件存储
+- Python FastAPI RAG 服务
+- Milvus 向量数据库
 
-### 2. 📂 **大文件分片上传 (Large File Upload)**
-- **实现**: 支持 GB 级别的大文件上传。
-- **难点**: 
-    - **分片策略**: 前端将大文件切分为 2MB 的小块并发上传，后端负责接收并按序合并。
-    - **断点续传**: 利用文件 Hash 检测已上传的分片，网络中断后只需上传未完成的部分，极大地提升了上传的可靠性。
-
-### 3. 🧵 **WebWorker 前端计算优化**
-- **实现**: 在 WebWorker 中运行耗时的计算任务。
-- **难点**: 
-    - **主线程解耦**: 为了避免大文件计算 Hash 时阻塞 UI 渲染（导致页面卡顿），将计算密集型的 MD5 Hash 任务移至 WebWorker 后台线程运行。
-    - **通信机制**: 设计了高效的主线程与 Worker 之间的消息通信机制，实时反馈计算进度。
-
-### 4. 🎨 **动态主题配色切换**
-- **实现**: 支持实时切换应用的主题色（Primary Color）和深色/浅色模式。
-- **难点**: 
-    - **性能优化**: 为了避免页面加载时的 "闪烁" (FOUC)，通过 `theme.js` 在 HTML 解析早期注入 CSS 变量，结合 `vite-plugin-pwa` 和内联脚本优化首屏渲染性能。
-    - **全局一致性**: 使用 CSS Variables + Zustand 全局状态管理，确保所有组件和 Tailwind 类名能即时响应主题变化。
-
-### 5. 🧠 **Python RAG 微服务解耦**
-- **实现**: 将 RAG 核心逻辑（PDF 解析、Embedding 向量化、检索）剥离为独立的 Python FastAPI 服务。
-- **难点**: 
-    - **异构通信**: Node.js 后端与 Python 服务之间通过 HTTP 进行高效通信。
-    - **性能瓶颈**: 解决了 Python 同步阻塞问题，移除了 `async` 关键字以利用线程池处理 CPU 密集型任务（如 PDF 解析），并优化了数据库的并发写入策略。
-
-### 6. 🌊 **全链路流式输出 (Stream Output)**
-- **实现**: 实现了类似 ChatGPT 的打字机效果。
-- **难点**: 
-    - **SSE (Server-Sent Events)**: 后端通过 SSE 协议实时推送 LLM 生成的 Token。
-    - **前端解析**: 前端自定义 Hook 处理流式数据，实时拼接并渲染 Markdown，同时处理 RAG 检索到的“参考来源”数据，做到了数据与 UI 的平滑更新。
-
-## 🏗️ 系统架构
-
-项目包含三个主要服务：
-
-1.  **Client (`/client`)**: 用户界面，负责聊天交互、文件上传和渲染 Markdown。
-2.  **Server (`/server`)**: 业务网关，处理鉴权、文件存储、聊天历史记录，并转发 RAG 请求。
-3.  **RAG Service (`/rag-service`)**: 核心 AI 服务，负责文档嵌入 (Embedding) 和向量检索 (Retrieval)。
+## 系统架构
 
 ```mermaid
-graph TD
-    User[用户] --> Client
-    Client -- HTTP/REST --> Server
-    Server -- 鉴权/业务逻辑 --> Database[(Supabase)]
-    Server -- 检索请求 --> RAG_Service
-    RAG_Service -- 向量查询 --> Database
-    RAG_Service -- LLM请求 --> OpenAI
+flowchart LR
+  Client["React/Vite Client"] -->|HTTP + Cookies| Server["Express API Server"]
+  Server -->|SQL| Postgres["PostgreSQL"]
+  Server -->|S3 API| MinIO["MinIO Documents Bucket"]
+  Server -->|/ingest /retrieve /cleanup-file| Rag["Python RAG Service"]
+  Rag -->|SQL metadata/chunks| Postgres
+  Rag -->|Download source files| MinIO
+  Rag -->|Vector insert/search| Milvus["Milvus"]
+  Server -->|Streaming chat completion| LLM["DeepSeek/OpenAI-compatible API"]
 ```
 
-## 🛠️ 技术栈
+## 目录结构
 
-### 前端 (Client)
-- **框架**: React 19, Vite 6
-- **语言**: TypeScript
-- **状态管理**: Zustand
-- **UI 组件**: Radix UI, Lucide React
-- **样式**: TailwindCSS v4
-- **Markdown**: react-markdown, react-syntax-highlighter
-- **HTTP**: Axios
+```text
+chatLLM/
+  client/        React 前端
+  server/        Express 后端
+  rag-service/   Python RAG 服务
+  docker-compose.yml
+```
 
-### 后端 (Server)
-- **运行环境**: Node.js
-- **框架**: Express v5
-- **数据库**: Supabase (PostgreSQL)
-- **ORM/Query**: Supabase JS Client
-- **认证**: JWT (JSON Web Tokens)
-- **文件处理**: Multer
+## 技术栈
 
-### AI 服务 (RAG Service)
-- **语言**: Python 3.10+
-- **框架**: FastAPI
-- **AI/LLM**: OpenAI API
-- **向量库**: Supabase (pgvector)
+### Client
 
-## 🚀 快速开始
+- React 19
+- Vite
+- TypeScript
+- Zustand
+- TailwindCSS
+- react-markdown
 
-### 1. 环境准备
-确保你的本地环境已安装：
-- Node.js (v18+)
-- Python (v3.10+)
-- PostgreSQL (或直接使用 Supabase 账号)
+### Server
 
-### 2. 数据库设置 (Supabase)
-1.  创建一个 Supabase 项目。
-2.  在 SQL 编辑器中启用 `vector` 扩展：
-    ```sql
-    create extension if not exists vector;
-    ```
-3.  运行项目中的迁移脚本（如有），确保创建了 `documents`, `messages`, `users` 等表，以及向量索引。
-    *   参考 `server/migrations/optimize_indexes.sql` 进行索引优化。
+- Express 5
+- TypeScript
+- PostgreSQL via `pg`
+- MinIO/S3 via AWS SDK v3
+- JWT + HttpOnly cookies
+- GitHub OAuth
+- SSE 流式输出
 
-### 3. 后端服务 (Server)
+### RAG Service
+
+- FastAPI
+- OpenAI-compatible Embeddings API
+- PostgreSQL chunk metadata
+- MinIO source document download
+- Milvus vector storage and retrieval
+
+## 本地启动
+
+### 1. 启动基础设施
+
+```bash
+docker compose up -d postgres minio milvus-etcd milvus-minio milvus-standalone attu
+```
+
+PostgreSQL 会自动执行 `server/migrations/0001_init.sql` 初始化空库。
+
+常用端口：
+
+- PostgreSQL: `localhost:5432`
+- MinIO API: `localhost:9000`
+- MinIO Console: `localhost:9001`
+- Milvus: `localhost:19530`
+- Attu: `localhost:3001`
+
+### 2. 配置后端环境变量
+
+复制 `server/.env.example` 到 `server/.env`，填写 GitHub OAuth 和模型密钥。
+
+关键变量：
+
+```env
+DATABASE_URL=postgres://chatllm:chatllm@localhost:5432/chatllm
+S3_ENDPOINT=http://localhost:9000
+S3_ACCESS_KEY=minioadmin
+S3_SECRET_KEY=minioadmin
+S3_BUCKET=documents
+RAG_SERVICE_URL=http://localhost:8000
+```
+
+启动后端：
+
 ```bash
 cd server
 npm install
-
-# 配置环境变量
-# 复制 .env.example (如果存在) 或新建 .env 文件
-# 填写: PORT=3000, SUPABASE_URL, SUPABASE_KEY, JWT_SECRET, OPENAI_API_KEY
-```
-启动服务：
-```bash
 npm run dev
 ```
 
-### 4. RAG 服务 (Python)
+### 3. 配置 RAG 服务
+
+复制 `rag-service/.env.example` 到 `rag-service/.env`，填写 embedding API 密钥。
+
+启动 RAG 服务：
+
 ```bash
 cd rag-service
-
-# 创建并激活虚拟环境
-python -m venv .venv
-# Windows:
-..\.venv\Scripts\Activate.ps1
-# Linux/Mac:
-source .venv/bin/activate
-
-# 安装依赖
 pip install -r requirements.txt
-
-# 配置环境变量 (.env)
-# 填写: PORT=8000, OPENAI_API_KEY, SUPABASE_URL, SUPABASE_KEY
-```
-启动服务：
-```bash
 python main.py
 ```
 
-### 5. 前端项目 (Client)
+### 4. 启动前端
+
 ```bash
 cd client
 npm install
-
-# 配置环境变量 (.env)
-# 填写: VITE_API_URL=http://localhost:3000
-```
-启动开发服务器：
-```bash
 npm run dev
 ```
 
-## 📝 环境变量说明
+前端默认通过 Vite proxy 访问 `/api`，代理到 `http://localhost:3000`。
 
-建议在各目录下创建 `.env` 文件：
+## 主要功能
 
-**Server (`server/.env`)**
-```env
-PORT=3000
-SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_anon_key
-SERVICE_ROLE_KEY=your_service_role_key
-JWT_SECRET=your_jwt_secret
-OPENAI_API_KEY=sk-...
-```
+- GitHub OAuth 登录
+- JWT access token + refresh token rotation
+- ChatGPT 风格流式对话
+- 会话创建、重命名、删除
+- 消息搜索
+- Markdown 文件分片上传和断点续传
+- MinIO 文档存储
+- RAG 文档解析、切块、embedding、Milvus 检索
+- 个人资料和主题设置
 
-**RAG Service (`rag-service/.env`)**
-```env
-PORT=8000
-OPENAI_API_KEY=sk-...
-SUPABASE_URL=your_supabase_url
-SUPABASE_KEY=your_supabase_key
-```
+## 数据说明
 
-**Client (`client/.env`)**
-```env
-VITE_API_URL=http://localhost:3000/api
-```
+本项目当前不迁移旧 Supabase 数据。新环境从空 PostgreSQL 数据库启动。
 
-## 📂 目录结构
+业务数据存储在 PostgreSQL：
 
-```
-chatLLM/
-├── client/          # React 前端应用
-├── server/          # Node.js 后端应用
-├── rag-service/     # Python RAG 微服务
-└── README.md        # 项目文档
-```
+- `users`
+- `sessions`
+- `conversations`
+- `messages`
+- `files`
+- `file_chunks`
 
-## 🤝 贡献指南
+源文件存储在 MinIO `documents` bucket。
 
-1. Fork 本仓库
-2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
-3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. 推送到分支 (`git push origin feature/AmazingFeature`)
-5. 提交 Pull Request
-
-## 📄 许可证
-
-[MIT](LICENSE)
+向量数据存储在 Milvus `document_chunks` collection。

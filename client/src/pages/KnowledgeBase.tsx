@@ -31,6 +31,21 @@ export default function KnowledgeBase() {
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fetchFilesRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const stopPolling = useCallback(() => {
+    if (pollInterval.current) {
+      clearInterval(pollInterval.current);
+      pollInterval.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    if (pollInterval.current) return;
+    pollInterval.current = setInterval(() => {
+      fetchFilesRef.current();
+    }, 3000);
+  }, []);
 
   const fetchFiles = useCallback(async () => {
     try {
@@ -53,22 +68,15 @@ export default function KnowledgeBase() {
       console.error('Failed to fetch files:', error);
       setIsLoading(false);
     }
-  }, []); // Remove stopPolling and startPolling from dependencies to break cycle
-
-  const startPolling = useCallback(() => {
-    if (pollInterval.current) return;
-    pollInterval.current = setInterval(fetchFiles, 3000);
-  }, [fetchFiles]);
-
-  const stopPolling = useCallback(() => {
-    if (pollInterval.current) {
-      clearInterval(pollInterval.current);
-      pollInterval.current = null;
-    }
-  }, []);
+  }, [startPolling, stopPolling]);
 
   useEffect(() => {
-    fetchFiles();
+    fetchFilesRef.current = fetchFiles;
+  }, [fetchFiles]);
+
+  useEffect(() => {
+    fetchFilesRef.current = fetchFiles;
+    void Promise.resolve().then(() => fetchFilesRef.current());
     startPolling();
     return () => stopPolling();
   }, [fetchFiles, startPolling, stopPolling]);

@@ -1,7 +1,10 @@
 fastapi
 uvicorn
 python-dotenv
-supabase
+psycopg[binary]
+boto3
+pymilvus
 langchain
+langchain-text-splitters
 openai
 pypdf

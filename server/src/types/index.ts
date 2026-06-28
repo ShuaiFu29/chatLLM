@@ -5,7 +5,7 @@ export interface UserSettings {
 }
 
 export interface User {
-  id: string; // Supabase uses UUID string, not number
+  id: string; // PostgreSQL UUID string
   github_id: number;
   username: string;
   avatar_url: string;
@@ -16,7 +16,7 @@ export interface User {
 
 export interface Session {
   id: string;
-  user_id: string; // Supabase uses UUID string
+  user_id: string; // PostgreSQL UUID string
   created_at: string;
   expires_at: string;
 }

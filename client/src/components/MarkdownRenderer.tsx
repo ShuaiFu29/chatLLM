@@ -3,7 +3,7 @@ import ReactMarkdown from 'react-markdown';
 import { PrismAsyncLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import remarkGfm from 'remark-gfm';
-import rehypeRaw from 'rehype-raw';
+import rehypeSanitize from 'rehype-sanitize';
 import { Check, Copy, Terminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -55,7 +55,7 @@ const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
     <div className="prose prose-invert max-w-none text-sm leading-relaxed">
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        rehypePlugins={[rehypeRaw]}
+        rehypePlugins={[rehypeSanitize]}
         components={{
           code({ inline, className, children, ...props }: CodeProps) {
             const match = /language-(\w+)/.exec(className || '');

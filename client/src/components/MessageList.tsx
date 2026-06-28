@@ -76,6 +76,8 @@ export default function MessageList({
     setShouldAutoScroll(isNearBottom);
   }, []);
 
+  const lastMessageContentLength = displayMessages[displayMessages.length - 1]?.content?.length;
+
   // Auto-scroll to bottom only if shouldAutoScroll is true
   useEffect(() => {
     if (shouldAutoScroll && messagesEndRef.current) {
@@ -83,7 +85,7 @@ export default function MessageList({
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       });
     }
-  }, [displayMessages.length, sendingMessage, displayMessages[displayMessages.length - 1]?.content?.length, shouldAutoScroll]);
+  }, [displayMessages.length, sendingMessage, lastMessageContentLength, shouldAutoScroll]);
 
   return (
     <div

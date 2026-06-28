@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { User } from '../types';
 import { verifyAccessToken } from '../lib/jwt';
+import { findUserById } from '../repositories/users';
 
 // Extend Express Request type to include user
 declare global {
@@ -23,6 +24,13 @@ export const requireAuth = async (req: Request, res: Response, next: NextFunctio
 
   if (!user) {
     res.status(401).json({ error: 'Unauthorized: Invalid or expired token' });
+    return;
+  }
+
+  const existingUser = await findUserById(user.id);
+
+  if (!existingUser) {
+    res.status(401).json({ error: 'Unauthorized: User not found, please re-login' });
     return;
   }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState } from 'react';
 import { useChatStore } from '../stores/useChatStore';
 import { X, Save, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -14,58 +14,50 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
 
   const conversation = conversations.find(c => c.id === currentConversationId);
 
-  const [settings, setSettings] = useState({
+  const initialSettings = useMemo(() => ({
+    model: conversation?.model || 'deepseek-chat',
+    temperature: conversation?.temperature ?? 0.7,
+    system_prompt: conversation?.system_prompt || 'You are a helpful AI assistant.',
+    enable_rag: conversation?.enable_rag ?? true
+  }), [conversation]);
+
+  const [draftSettings, setDraftSettings] = useState<typeof initialSettings | null>(null);
+
+  const settings = draftSettings || initialSettings;
+
+  const defaultSettings = {
     model: 'deepseek-chat',
     temperature: 0.7,
     system_prompt: 'You are a helpful AI assistant.',
     enable_rag: true
-  });
+  };
 
-  const [isDirty, setIsDirty] = useState(false);
-
-  useEffect(() => {
-    if (conversation) {
-      setSettings({
-        model: conversation.model || 'deepseek-chat',
-        temperature: conversation.temperature ?? 0.7,
-        system_prompt: conversation.system_prompt || 'You are a helpful AI assistant.',
-        enable_rag: conversation.enable_rag ?? true
-      });
-      setIsDirty(false);
-    }
-  }, [conversation, isOpen]);
+  const isDirty = draftSettings !== null && (
+    settings.model !== initialSettings.model ||
+    settings.temperature !== initialSettings.temperature ||
+    settings.system_prompt !== initialSettings.system_prompt ||
+    settings.enable_rag !== initialSettings.enable_rag
+  );
 
   const handleChange = (newSettings: typeof settings) => {
-    setSettings(newSettings);
-    // Compare with initial state
-    if (conversation) {
-      const isChanged =
-        newSettings.model !== (conversation.model || 'deepseek-chat') ||
-        newSettings.temperature !== (conversation.temperature ?? 0.7) ||
-        newSettings.system_prompt !== (conversation.system_prompt || 'You are a helpful AI assistant.') ||
-        newSettings.enable_rag !== (conversation.enable_rag ?? true);
-      setIsDirty(isChanged);
-    } else {
-      setIsDirty(true);
-    }
+    setDraftSettings(newSettings);
   };
 
   const handleSave = async () => {
     if (currentConversationId) {
       await updateConversation(currentConversationId, settings);
     }
+    setDraftSettings(null);
+    onClose();
+  };
+
+  const handleClose = () => {
+    setDraftSettings(null);
     onClose();
   };
 
   const handleReset = () => {
-    const defaultSettings = {
-      model: 'deepseek-chat',
-      temperature: 0.7,
-      system_prompt: 'You are a helpful AI assistant.',
-      enable_rag: true
-    };
-    setSettings(defaultSettings);
-    handleChange(defaultSettings);
+    setDraftSettings(defaultSettings);
   };
 
   if (!isOpen) return null;
@@ -76,7 +68,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
           <h2 className="text-lg font-semibold text-text-main">{t('settings.title')}</h2>
-          <button onClick={onClose} className="text-text-muted hover:text-text-main">
+          <button onClick={handleClose} className="text-text-muted hover:text-text-main">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -167,7 +159,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           </button>
           <div className="flex gap-2">
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="px-4 py-2 text-sm text-text-muted hover:text-text-main hover:bg-bg-surface border border-border rounded-lg transition-colors"
             >
               {t('common.cancel')}

@@ -36,6 +36,12 @@ const ChatMessage = memo(({
     return filename.replace(/\.[^/.]+$/, "").trim();
   };
 
+  const formatAvatarUrl = (url?: string) => {
+    if (!url) return undefined;
+    if (url.startsWith('/api/')) return url;
+    return url.includes('?') ? `${url}&s=64` : `${url}?s=64`;
+  };
+
   return (
     <div className={`flex gap-2 md:gap-4 group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
       {msg.role === 'assistant' && (
@@ -143,7 +149,7 @@ const ChatMessage = memo(({
 
       {msg.role === 'user' && (
         <img
-          src={userAvatar ? `${userAvatar}&s=64` : undefined}
+          src={formatAvatarUrl(userAvatar)}
           alt="User"
           className="w-8 h-8 rounded-full bg-bg-surface shrink-0 order-3 object-cover"
           loading="lazy"

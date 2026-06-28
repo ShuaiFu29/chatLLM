@@ -1,5 +1,4 @@
 import os
-import threading
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -7,6 +6,7 @@ from dotenv import load_dotenv
 
 from ingestion import process_file
 from retrieval import retrieve_documents
+from vector_store import delete_file_vectors, ensure_collection
 
 # Load environment variables
 load_dotenv()
@@ -31,6 +31,9 @@ class RetrieveRequest(BaseModel):
     limit: int = 5
     threshold: float = 0.1
 
+class CleanupFileRequest(BaseModel):
+    file_id: str
+
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "rag-service"}
@@ -38,6 +41,10 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.on_event("startup")
+def startup():
+    ensure_collection()
 
 @app.post("/ingest")
 async def ingest_endpoint(request: IngestRequest, background_tasks: BackgroundTasks):
@@ -61,6 +68,14 @@ def retrieve_endpoint(request: RetrieveRequest):
             threshold=request.threshold
         )
         return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/cleanup-file")
+def cleanup_file_endpoint(request: CleanupFileRequest):
+    try:
+        delete_file_vectors(request.file_id)
+        return {"status": "deleted", "file_id": request.file_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

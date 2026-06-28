@@ -111,7 +111,7 @@ export default defineConfig({
           ],
           'vendor-markdown': [
             'react-markdown',
-            'rehype-raw',
+            'rehype-sanitize',
             'remark-gfm',
           ],
         }

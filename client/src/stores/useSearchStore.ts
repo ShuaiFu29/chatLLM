@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import api from '../lib/api';
 import type { Message } from './useChatStore';
 
-interface SearchResult extends Message {
+export interface SearchResult extends Message {
   conversation_id: string;
   conversations: {
     id: string;

@@ -446,6 +446,34 @@ export const useChatStore = create<ChatState>((set, get) => ({
             try {
               const data = JSON.parse(dataStr);
 
+              if (data.userMessageId && tempUserId) {
+                const currentMsgs = get().messages;
+                const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempUserId);
+                if (lastMsgIndex !== -1) {
+                  const updatedMsgs = [...currentMsgs];
+                  updatedMsgs[lastMsgIndex] = {
+                    ...updatedMsgs[lastMsgIndex],
+                    id: data.userMessageId
+                  };
+                  tempUserId = data.userMessageId;
+                  updateMessages(updatedMsgs);
+                }
+              }
+
+              if (data.assistantMessageId && tempAiId) {
+                const currentMsgs = get().messages;
+                const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
+                if (lastMsgIndex !== -1) {
+                  const updatedMsgs = [...currentMsgs];
+                  updatedMsgs[lastMsgIndex] = {
+                    ...updatedMsgs[lastMsgIndex],
+                    id: data.assistantMessageId
+                  };
+                  tempAiId = data.assistantMessageId;
+                  updateMessages(updatedMsgs);
+                }
+              }
+
               // Handle Sources
               if (data.sources) {
                 const currentMsgs = get().messages;

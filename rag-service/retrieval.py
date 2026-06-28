@@ -1,22 +1,36 @@
-from database import get_supabase_client
+from db import get_chunks_by_ids
 from embeddings import get_embedding
+from vector_store import search_vectors
 
-supabase = get_supabase_client()
 
 def retrieve_documents(query: str, user_id: str, limit: int = 5, threshold: float = 0.1):
-    
     embedding = get_embedding(query)
-    
-    params = {
-        "query_embedding": embedding,
-        "match_threshold": threshold,
-        "match_count": limit,
-        "filter": {"user_id": int(user_id)}
-    }
-    
-    response = supabase.rpc("match_documents", params).execute()
-    
-    if not response.data:
+    hits = search_vectors(user_id=user_id, embedding=embedding, limit=limit, threshold=threshold)
+
+    if not hits:
         return []
-        
-    return response.data
+
+    chunks = get_chunks_by_ids([hit["chunk_id"] for hit in hits])
+    chunks_by_id = {str(chunk["id"]): chunk for chunk in chunks}
+
+    results = []
+    for hit in hits:
+        chunk = chunks_by_id.get(str(hit["chunk_id"]))
+        if not chunk:
+            continue
+
+        metadata = chunk.get("metadata") or {}
+        metadata.update({
+            "filename": hit.get("filename") or metadata.get("filename"),
+            "file_id": hit.get("file_id"),
+            "chunk_index": hit.get("chunk_index"),
+        })
+
+        results.append({
+            "id": str(chunk["id"]),
+            "content": chunk["content"],
+            "metadata": metadata,
+            "similarity": hit["similarity"],
+        })
+
+    return results

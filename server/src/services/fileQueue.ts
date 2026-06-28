@@ -1,5 +1,5 @@
-import { supabaseAdmin } from '../lib/supabase';
 import axios from 'axios';
+import { claimNextPendingFile, updateFile } from '../repositories/files';
 
 class FileQueueService {
   private isProcessing = false;
@@ -25,42 +25,24 @@ class FileQueueService {
 
   private async processNextFile() {
     if (this.isProcessing) return;
+    this.isProcessing = true;
 
     try {
-      const { data: files, error } = await supabaseAdmin
-        .from('files')
-        .select('*')
-        .eq('status', 'pending')
-        .order('created_at', { ascending: true })
-        .limit(1);
-
-      if (error) {
-        return;
-      }
-
-      if (!files || files.length === 0) {
-        return;
-      }
-
-      const file = files[0];
-      this.isProcessing = true;
+      const file = await claimNextPendingFile();
+      if (!file) return;
 
       try {
         await axios.post(`${this.ragServiceUrl}/ingest`, {
-          file_id: file.id
-        });
-
-        await supabaseAdmin.from('files').update({ status: 'processing' }).eq('id', file.id);
-
+          file_id: file.id,
+        }, { timeout: 10000 });
       } catch (err: any) {
-        await supabaseAdmin.from('files').update({
+        await updateFile(file.id, {
           status: 'failed',
-          error_message: `RAG Service unavailable: ${err.message}`
-        }).eq('id', file.id);
+          error_message: `RAG Service unavailable: ${err.message}`,
+        });
       }
-
     } catch (err) {
-      // Silent fail
+      console.error('[FileQueue] Failed to process pending file:', err);
     } finally {
       this.isProcessing = false;
     }

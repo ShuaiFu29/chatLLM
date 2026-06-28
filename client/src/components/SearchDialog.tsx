@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Command } from 'cmdk';
 import { Search, Loader2, MessageSquare, Calendar } from 'lucide-react';
-import { useSearchStore } from '../stores/useSearchStore';
+import { useSearchStore, type SearchResult } from '../stores/useSearchStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -43,7 +43,7 @@ export default function SearchDialog() {
     return () => document.removeEventListener('keydown', down);
   }, [setIsOpen, isOpen]);
 
-  const handleSelect = (result: any) => {
+  const handleSelect = (result: SearchResult) => {
     // 1. Close the dialog
     setIsOpen(false);
 

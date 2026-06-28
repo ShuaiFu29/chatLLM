@@ -8,7 +8,7 @@ interface UserSettings {
 }
 
 export interface User {
-  id: number;
+  id: string;
   username: string; // Changed from login to match server
   avatar_url: string;
   display_name?: string; // Changed from name to match server
@@ -65,30 +65,23 @@ export const useAuthStore = create<AuthState>((set) => ({
   logout: async () => {
     try {
       await api.post('/auth/logout');
+    } catch (err) {
+      console.warn('Logout request failed; clearing local session anyway.', err);
+    } finally {
       set({ user: null });
       localStorage.removeItem('has_logged_in');
-    } catch (err) {
-      // Silent error
     }
   },
 
   updateProfile: async (data: Partial<User>) => {
-    try {
-      const res = await api.put('/auth/me', data);
-      set({ user: res.data.user });
-    } catch (err) {
-      throw err;
-    }
+    const res = await api.put('/auth/me', data);
+    set({ user: res.data.user });
   },
 
   deleteAccount: async () => {
-    try {
-      await api.delete('/auth/me');
-      set({ user: null });
-      localStorage.removeItem('has_logged_in');
-      window.location.href = '/login';
-    } catch (err) {
-      throw err;
-    }
+    await api.delete('/auth/me');
+    set({ user: null });
+    localStorage.removeItem('has_logged_in');
+    window.location.href = '/login';
   }
 }));
