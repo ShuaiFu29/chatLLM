@@ -514,7 +514,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     } catch (err: unknown) {
       if ((err as Error).name === 'AbortError') {
-        console.log('Generation stopped by user');
+        return;
       } else {
         console.error('Failed to send message:', err);
         // Rollback only if it was a new message

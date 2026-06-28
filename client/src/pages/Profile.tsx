@@ -54,9 +54,6 @@ export default function ProfilePage() {
       // If we simply setDisplayName here, we might overwrite user's typing if user object updates in background.
       // However, for this simple profile page, we assume user object only updates on Save.
 
-      // Debug log
-      console.log('[ProfilePage] Syncing from user object:', { serverName, serverAvatar });
-
       setDisplayName(serverName);
       setAvatarUrl(serverAvatar);
     }
@@ -67,8 +64,6 @@ export default function ProfilePage() {
     if (!user) return false;
     const current = displayName.trim();
     const server = (user.display_name || '').trim();
-    // Debug log
-    console.log('[ProfilePage] Comparing changes:', { current, server, match: current === server });
     return current !== server;
   }, [user, displayName]);
 

@@ -68,7 +68,6 @@ export default function ChatPage() {
         }
       });
 
-      console.log('File uploaded successfully');
       toast.success(`${file.name} ${t('chat.uploadSuccess')}`, { id: toastId });
     } catch (error) {
       console.error('Upload failed:', error);

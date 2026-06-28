@@ -64,7 +64,6 @@
       root.style.setProperty('--color-border', adjustColorBrightness(baseColor, -15));
     }
 
-    console.log('Theme initialized from storage:', { primaryColor, baseColor });
   } catch (e) {
     console.error('Theme init failed', e);
   }

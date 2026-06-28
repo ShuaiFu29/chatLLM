@@ -47,7 +47,6 @@ export const useSearchStore = create<SearchState>((set) => ({
       // But looking at the console logs, it seems it was 404ing on /api/chat/search?q=...
 
       const res = await api.get('/search', { params: { q: query } });
-      console.log('[Frontend] Search response:', res.data); // Log the response
       set({ results: res.data });
     } catch (err) {
       console.error('Search failed:', err);
