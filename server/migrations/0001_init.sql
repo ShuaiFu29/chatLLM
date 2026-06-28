@@ -48,6 +48,9 @@ create table if not exists conversations (
   updated_at timestamptz not null default now()
 );
 
+alter table conversations
+  add column if not exists project_space_id uuid references project_spaces(id) on delete set null;
+
 create index if not exists conversations_user_id_updated_at_idx on conversations(user_id, updated_at desc);
 create index if not exists conversations_user_id_project_space_id_updated_at_idx on conversations(user_id, project_space_id, updated_at desc);
 
@@ -60,6 +63,9 @@ create table if not exists messages (
   created_at timestamptz not null default now(),
   constraint messages_role_check check (role in ('user', 'assistant', 'system'))
 );
+
+alter table messages
+  add column if not exists sources jsonb not null default '[]'::jsonb;
 
 create index if not exists messages_conversation_id_created_at_idx on messages(conversation_id, created_at);
 create index if not exists messages_created_at_idx on messages(created_at desc);
@@ -80,6 +86,9 @@ create table if not exists files (
   updated_at timestamptz not null default now(),
   constraint files_status_check check (status in ('uploading', 'pending', 'processing', 'completed', 'failed'))
 );
+
+alter table files
+  add column if not exists project_space_id uuid references project_spaces(id) on delete set null;
 
 create index if not exists files_user_id_created_at_idx on files(user_id, created_at desc);
 create index if not exists files_user_id_project_space_id_created_at_idx on files(user_id, project_space_id, created_at desc);

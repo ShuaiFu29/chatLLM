@@ -21,6 +21,12 @@ test('conversations and files belong to optional project spaces', () => {
   assert.match(migration, /files_user_id_project_space_id_created_at_idx/i);
 });
 
+test('base schema migration backfills project space columns for existing local tables', () => {
+  assert.match(migration, /alter table conversations\s+add column if not exists project_space_id/i);
+  assert.match(migration, /alter table files\s+add column if not exists project_space_id/i);
+  assert.match(migration, /alter table messages\s+add column if not exists sources/i);
+});
+
 test('assistant messages can persist source references', () => {
   assert.match(migration, /sources jsonb not null default '\[\]'::jsonb/i);
 });
