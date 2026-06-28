@@ -7,6 +7,7 @@ import chatRoutes from './routes/chat';
 import uploadRoutes from './routes/upload';
 import searchRoutes from './routes/search';
 import { fileQueue } from './services/fileQueue';
+import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
 
 const app = express();
 
@@ -30,8 +31,8 @@ app.use(cors({
   credentials: true
 }));
 
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(express.json({ limit: JSON_REQUEST_LIMIT }));
+app.use(express.urlencoded({ limit: URLENCODED_REQUEST_LIMIT, extended: true }));
 app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);
