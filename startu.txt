@@ -1,0 +1,70 @@
+项目启动命令
+============
+
+项目根目录：
+D:\project\chatLLM
+
+说明：
+- 依赖和 .env 配置如果已经准备好，按下面命令启动即可。
+- 需要开 4 个终端窗口。
+- 这个项目当前使用 npm。如果你自己是用 pnpm 安装依赖的，可以把 npm run dev 换成 pnpm run dev。
+
+
+终端 1：启动数据库 / MinIO / Milvus
+-----------------------------------
+
+cd D:\project\chatLLM
+docker compose up -d
+
+
+终端 2：启动后端 Express
+------------------------
+
+cd D:\project\chatLLM\server
+npm run dev
+
+
+终端 3：启动 RAG 服务
+---------------------
+
+cd D:\project\chatLLM\rag-service
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+
+
+终端 4：启动前端 React
+----------------------
+
+cd D:\project\chatLLM\client
+npm run dev
+
+
+访问地址
+--------
+
+前端：
+http://localhost:5173
+
+后端健康检查：
+http://localhost:3000/health
+
+RAG 健康检查：
+http://localhost:8000/health
+
+MinIO 控制台：
+http://localhost:9001
+
+Attu / Milvus 管理界面：
+http://localhost:3001
+
+
+停止项目
+--------
+
+前端 / 后端 / RAG：
+在对应终端按 Ctrl + C
+
+Docker 基础设施：
+
+cd D:\project\chatLLM
+docker compose down
+
