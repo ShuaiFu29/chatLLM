@@ -1,10 +1,11 @@
 import axios from 'axios';
+import { serverEnv } from '../lib/env';
 import { claimNextPendingFile, updateFile } from '../repositories/files';
 
 class FileQueueService {
   private isProcessing = false;
   private interval: NodeJS.Timeout | null = null;
-  private ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
+  private ragServiceUrl = serverEnv.RAG_SERVICE_URL;
 
   start() {
     if (this.interval) return;

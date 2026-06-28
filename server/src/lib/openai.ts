@@ -1,13 +1,13 @@
 import OpenAI from 'openai';
-import dotenv from 'dotenv';
+import { serverEnv } from './env';
 
-dotenv.config();
+const chatApiKey = serverEnv.DEEPSEEK_API_KEY || serverEnv.MOONSHOT_API_KEY || serverEnv.OPENAI_API_KEY;
 
 // 1. Chat Client (DeepSeek)
 // Using DeepSeek as the primary chat model provider
 export const openai = new OpenAI({
-  apiKey: process.env.DEEPSEEK_API_KEY || process.env.MOONSHOT_API_KEY || process.env.OPENAI_API_KEY,
-  baseURL: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com",
+  apiKey: chatApiKey,
+  baseURL: serverEnv.DEEPSEEK_BASE_URL,
 });
 
 // 2. Embedding Client (ZhipuAI / General)
@@ -15,12 +15,12 @@ export const openai = new OpenAI({
 // but kept here if needed for direct embedding calls in other parts of the app.
 // Using configured embedding provider (ZhipuAI by default in env)
 const embeddingClient = new OpenAI({
-  apiKey: process.env.EMBEDDING_API_KEY || process.env.DEEPSEEK_API_KEY,
-  baseURL: process.env.EMBEDDING_BASE_URL || "https://open.bigmodel.cn/api/paas/v4/",
+  apiKey: serverEnv.EMBEDDING_API_KEY || serverEnv.DEEPSEEK_API_KEY,
+  baseURL: serverEnv.EMBEDDING_BASE_URL,
 });
 
 // Configured embedding model
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "embedding-2";
+const EMBEDDING_MODEL = serverEnv.EMBEDDING_MODEL;
 
 export const getEmbedding = async (text: string) => {
   try {

@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import axios from 'axios';
-import dotenv from 'dotenv';
 import { openai } from '../lib/openai';
+import { serverEnv } from '../lib/env';
 import {
   createConversationForUser,
   deleteConversationForUser,
@@ -18,8 +18,6 @@ import {
   listRecentMessages,
   searchMessagesForUser,
 } from '../repositories/messages';
-
-dotenv.config();
 
 export const getConversations = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
@@ -201,11 +199,10 @@ export const sendMessage = async (req: Request, res: Response) => {
     const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
 
     let contextText = '';
-    const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
 
     if (enableRag) {
       try {
-        const ragResponse = await axios.post(`${ragServiceUrl}/retrieve`, {
+        const ragResponse = await axios.post(`${serverEnv.RAG_SERVICE_URL}/retrieve`, {
           query: content,
           user_id: req.user.id,
           limit: 10,

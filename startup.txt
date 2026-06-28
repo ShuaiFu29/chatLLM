@@ -5,34 +5,52 @@
 D:\project\chatLLM
 
 说明：
-- 依赖和 .env 配置如果已经准备好，按下面命令启动即可。
-- 需要开 4 个终端窗口。
+- 依赖和 .env 配置如果已经准备好，优先用根目录的一条命令启动。
 - 这个项目当前使用 npm。如果你自己是用 pnpm 安装依赖的，可以把 npm run dev 换成 pnpm run dev。
 
 
-终端 1：启动数据库 / MinIO / Milvus
------------------------------------
+推荐启动方式
+------------
 
 cd D:\project\chatLLM
-docker compose up -d
+npm run dev
+
+或者：
+
+cd D:\project\chatLLM
+pnpm run dev
 
 
-终端 2：启动后端 Express
-------------------------
+这个命令会自动：
+- 检查 server/.env 和 rag-service/.env 是否缺关键配置
+- 启动 PostgreSQL / MinIO / Milvus / Attu
+- 启动后端 Express
+- 启动 RAG 服务
+- 启动前端 React
+
+
+单独启动命令（调试用）
+----------------------
+
+启动数据库 / MinIO / Milvus：
+
+cd D:\project\chatLLM
+npm run dev:infra
+
+
+启动后端 Express：
 
 cd D:\project\chatLLM\server
 npm run dev
 
 
-终端 3：启动 RAG 服务
----------------------
+启动 RAG 服务：
 
 cd D:\project\chatLLM\rag-service
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 
-终端 4：启动前端 React
-----------------------
+启动前端 React：
 
 cd D:\project\chatLLM\client
 npm run dev

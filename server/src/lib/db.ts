@@ -1,16 +1,8 @@
 import { Pool, PoolClient, QueryResultRow } from 'pg';
-import dotenv from 'dotenv';
-
-dotenv.config();
-
-const connectionString = process.env.DATABASE_URL;
-
-if (!connectionString) {
-  throw new Error('DATABASE_URL is missing');
-}
+import { serverEnv } from './env';
 
 export const pool = new Pool({
-  connectionString,
+  connectionString: serverEnv.DATABASE_URL,
 });
 
 pool.on('error', (error) => {

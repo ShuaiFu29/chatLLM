@@ -1,7 +1,8 @@
 import jwt from 'jsonwebtoken';
 import { User } from '../types';
+import { serverEnv } from './env';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'super-secret-jwt-key-change-me';
+const JWT_SECRET = serverEnv.JWT_SECRET;
 
 // Access Token Duration (15 minutes)
 const ACCESS_TOKEN_DURATION = '15m';

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import axios from 'axios';
 import crypto from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
+import { serverEnv } from '../lib/env';
 import { generateAccessToken } from '../lib/jwt';
 import { deleteObject } from '../lib/storage';
 import { createSession, deleteSession, deleteSessionsByUser, findSessionWithUser } from '../repositories/sessions';
@@ -51,7 +52,7 @@ const stringifyError = (error: unknown) => {
 
 let proxyAgent: ProxyAgent | undefined;
 const getDispatcher = () => {
-  const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+  const proxy = serverEnv.HTTPS_PROXY || serverEnv.HTTP_PROXY;
   if (!proxy) return undefined;
   proxyAgent = proxyAgent || new ProxyAgent(proxy);
   return proxyAgent;
@@ -98,8 +99,7 @@ const clearAuthCookies = (res: Response) => {
 };
 
 const cleanupFileVectors = async (fileId: string) => {
-  const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
-  await axios.post(`${ragServiceUrl}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
+  await axios.post(`${serverEnv.RAG_SERVICE_URL}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
 };
 
 export const githubLogin = (req: Request, res: Response) => {
@@ -107,8 +107,8 @@ export const githubLogin = (req: Request, res: Response) => {
   res.cookie('github_oauth_state', state, { httpOnly: true, maxAge: 10 * 60 * 1000 });
 
   const params = new URLSearchParams({
-    client_id: process.env.GITHUB_CLIENT_ID!,
-    redirect_uri: `${process.env.BACKEND_URL || 'http://localhost:3000'}/api/auth/github/callback`,
+    client_id: serverEnv.GITHUB_CLIENT_ID || '',
+    redirect_uri: `${serverEnv.BACKEND_URL}/api/auth/github/callback`,
     state,
     scope: 'read:user',
   });
@@ -135,8 +135,8 @@ export const githubCallback = async (req: Request, res: Response) => {
 
   try {
     const tokenBody = new URLSearchParams({
-      client_id: process.env.GITHUB_CLIENT_ID || '',
-      client_secret: process.env.GITHUB_CLIENT_SECRET || '',
+      client_id: serverEnv.GITHUB_CLIENT_ID || '',
+      client_secret: serverEnv.GITHUB_CLIENT_SECRET || '',
       code,
     });
 
@@ -182,7 +182,7 @@ export const githubCallback = async (req: Request, res: Response) => {
     const jwtAccessToken = generateAccessToken(user);
     setAuthCookies(res, jwtAccessToken, refreshToken);
 
-    res.redirect(`${process.env.FRONTEND_URL || 'http://localhost:5173'}?login=success`);
+    res.redirect(`${serverEnv.FRONTEND_URL}?login=success`);
   } catch (error) {
     const errorMessage = stringifyError(error);
     console.error('[Auth] GitHub callback failed:', error);

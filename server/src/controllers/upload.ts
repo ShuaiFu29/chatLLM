@@ -21,6 +21,7 @@ import {
 } from '../repositories/files';
 import { findUserById, updateUser } from '../repositories/users';
 import { fileQueue } from '../services/fileQueue';
+import { serverEnv } from '../lib/env';
 
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/temp');
 fs.ensureDirSync(UPLOAD_DIR);
@@ -50,8 +51,7 @@ const ensureMarkdownFilename = (filename?: string) => {
 };
 
 const cleanupFileVectors = async (fileId: string) => {
-  const ragServiceUrl = process.env.RAG_SERVICE_URL || 'http://localhost:8000';
-  await axios.post(`${ragServiceUrl}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
+  await axios.post(`${serverEnv.RAG_SERVICE_URL}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
 };
 
 export const checkFile = async (req: Request, res: Response) => {

@@ -1,15 +1,11 @@
-import os
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from dotenv import load_dotenv
 
+from config import settings
 from ingestion import process_file
 from retrieval import retrieve_documents
 from vector_store import delete_file_vectors, ensure_collection
-
-# Load environment variables
-load_dotenv()
 
 app = FastAPI(title="RAG Service", description="Microservice for Retrieval-Augmented Generation")
 
@@ -81,5 +77,4 @@ def cleanup_file_endpoint(request: CleanupFileRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=settings.port)

@@ -1,23 +1,15 @@
 import json
-import os
 from contextlib import contextmanager
 from typing import Iterable
 
 import psycopg
 from psycopg.rows import dict_row
-from dotenv import load_dotenv
-
-load_dotenv()
-
-DATABASE_URL = os.environ.get("DATABASE_URL")
-
-if not DATABASE_URL:
-    raise ValueError("DATABASE_URL must be set")
+from config import settings
 
 
 @contextmanager
 def get_conn():
-    with psycopg.connect(DATABASE_URL, row_factory=dict_row) as conn:
+    with psycopg.connect(settings.database_url, row_factory=dict_row) as conn:
         yield conn
 
 

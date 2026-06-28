@@ -1,21 +1,19 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import cookieParser from 'cookie-parser';
+import { serverEnv } from './lib/env';
 import authRoutes from './routes/auth';
 import chatRoutes from './routes/chat';
 import uploadRoutes from './routes/upload';
 import searchRoutes from './routes/search';
 import { fileQueue } from './services/fileQueue';
 
-dotenv.config();
-
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+const PORT = serverEnv.PORT;
 
 const allowedOrigins = [
-  process.env.FRONTEND_URL || 'http://localhost:5173',
+  serverEnv.FRONTEND_URL,
   'http://localhost:5174'
 ];
 

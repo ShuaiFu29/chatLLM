@@ -11,27 +11,17 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import fs from 'fs-extra';
 import path from 'path';
 import { Readable } from 'stream';
-import dotenv from 'dotenv';
+import { serverEnv } from './env';
 
-dotenv.config();
-
-const endpoint = process.env.S3_ENDPOINT;
-const accessKeyId = process.env.S3_ACCESS_KEY;
-const secretAccessKey = process.env.S3_SECRET_KEY;
-
-if (!endpoint || !accessKeyId || !secretAccessKey) {
-  throw new Error('S3_ENDPOINT, S3_ACCESS_KEY, and S3_SECRET_KEY are required');
-}
-
-export const S3_BUCKET = process.env.S3_BUCKET || 'documents';
+export const S3_BUCKET = serverEnv.S3_BUCKET;
 
 export const s3 = new S3Client({
-  endpoint,
-  region: process.env.S3_REGION || 'us-east-1',
-  forcePathStyle: process.env.S3_FORCE_PATH_STYLE !== 'false',
+  endpoint: serverEnv.S3_ENDPOINT,
+  region: serverEnv.S3_REGION,
+  forcePathStyle: serverEnv.S3_FORCE_PATH_STYLE,
   credentials: {
-    accessKeyId,
-    secretAccessKey,
+    accessKeyId: serverEnv.S3_ACCESS_KEY,
+    secretAccessKey: serverEnv.S3_SECRET_KEY,
   },
 });
 
