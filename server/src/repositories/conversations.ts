@@ -3,6 +3,7 @@ import { query } from '../lib/db';
 export interface ConversationRow {
   id: string;
   user_id: string;
+  project_space_id?: string | null;
   title: string;
   model?: string | null;
   temperature?: number | null;
@@ -15,6 +16,7 @@ export interface ConversationRow {
 const columns = `
   id,
   user_id,
+  project_space_id,
   title,
   model,
   temperature,
@@ -24,23 +26,32 @@ const columns = `
   updated_at
 `;
 
-export const listConversations = async (userId: string) => {
+export const listConversations = async (userId: string, projectSpaceId?: string) => {
+  const values: unknown[] = [userId];
+  let projectSpaceFilter = '';
+
+  if (projectSpaceId) {
+    values.push(projectSpaceId);
+    projectSpaceFilter = `and project_space_id = $${values.length}`;
+  }
+
   const { rows } = await query<ConversationRow>(
     `select ${columns}
      from conversations
      where user_id = $1
+       ${projectSpaceFilter}
      order by updated_at desc`,
-    [userId]
+    values
   );
   return rows;
 };
 
-export const createConversationForUser = async (userId: string, title = 'New Chat') => {
+export const createConversationForUser = async (userId: string, title = 'New Chat', projectSpaceId?: string | null) => {
   const { rows } = await query<ConversationRow>(
-    `insert into conversations (user_id, title)
-     values ($1, $2)
+    `insert into conversations (user_id, project_space_id, title)
+     values ($1, $2, $3)
      returning ${columns}`,
-    [userId, title]
+    [userId, projectSpaceId || null, title]
   );
   return rows[0];
 };
@@ -58,7 +69,7 @@ export const findConversationForUser = async (conversationId: string, userId: st
 export const updateConversationForUser = async (
   conversationId: string,
   userId: string,
-  updates: Partial<Pick<ConversationRow, 'title' | 'model' | 'temperature' | 'system_prompt' | 'enable_rag'>>
+  updates: Partial<Pick<ConversationRow, 'title' | 'model' | 'temperature' | 'system_prompt' | 'enable_rag' | 'project_space_id'>>
 ) => {
   const fields: string[] = ['updated_at = now()'];
   const values: unknown[] = [];

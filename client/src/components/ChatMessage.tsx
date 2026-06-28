@@ -94,15 +94,25 @@ const ChatMessage = memo(({
                       {t('chat.sources') || 'Sources & References'}
                     </span>
                   </div>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                    {Array.from(new Set(msg.sources.map(s => s.filename))).map((filename, idx) => (
-                      <div key={idx} className="flex items-center gap-2 bg-bg-surface/50 hover:bg-bg-surface p-2 rounded-lg border border-border/50 transition-all cursor-default group/source">
+                  <div className="grid grid-cols-1 gap-2">
+                    {msg.sources.slice(0, 4).map((source, idx) => (
+                      <div key={`${source.chunk_id || source.filename}-${idx}`} className="flex items-start gap-2 bg-bg-surface/50 hover:bg-bg-surface p-2 rounded-lg border border-border/50 transition-all cursor-default group/source">
                         <div className="p-1.5 rounded-md bg-primary/10 text-primary group-hover/source:bg-primary group-hover/source:text-white transition-colors">
                           <FileText className="w-3.5 h-3.5" />
                         </div>
-                        <div className="flex flex-col overflow-hidden">
-                          <span className="text-xs font-medium text-text-main truncate">{formatFilename(filename)}</span>
-                          <span className="text-[10px] text-text-muted truncate">Document Match</span>
+                        <div className="flex flex-col overflow-hidden gap-1">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-xs font-medium text-text-main truncate">{formatFilename(source.filename)}</span>
+                            <span className="text-[10px] text-text-muted shrink-0">
+                              {Math.round(source.similarity * 100)}%
+                              {source.chunk_index !== undefined ? ` · #${source.chunk_index + 1}` : ''}
+                            </span>
+                          </div>
+                          {source.content && (
+                            <p className="text-[11px] leading-relaxed text-text-muted line-clamp-2">
+                              {source.content}
+                            </p>
+                          )}
                         </div>
                       </div>
                     ))}

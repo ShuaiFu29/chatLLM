@@ -19,7 +19,7 @@ def get_file(file_id: str):
             cur.execute(
                 """
                 select id, user_id, filename, file_hash, file_size, file_type,
-                       object_key, status, progress, error_message, created_at, updated_at
+                       object_key, project_space_id, status, progress, error_message, created_at, updated_at
                 from files
                 where id = %s
                 """,
@@ -66,6 +66,7 @@ def replace_file_chunks(file_id: str, user_id: str, chunks: list[str], file_data
                     "filename": file_data["filename"],
                     "file_type": file_data.get("file_type"),
                     "user_id": user_id,
+                    "project_space_id": str(file_data.get("project_space_id")) if file_data.get("project_space_id") else None,
                     "source_file_id": file_id,
                     "chunk_index": index,
                 }
@@ -92,9 +93,20 @@ def get_chunks_by_ids(chunk_ids: Iterable[str]) -> list[dict]:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                select id, file_id, user_id, chunk_index, content, metadata
-                from file_chunks
-                where id = any(%s::uuid[])
+                select id, file_id, user_id, chunk_index, content, metadata, project_space_id
+                from (
+                    select
+                        file_chunks.id,
+                        file_chunks.file_id,
+                        file_chunks.user_id,
+                        file_chunks.chunk_index,
+                        file_chunks.content,
+                        file_chunks.metadata,
+                        files.project_space_id
+                    from file_chunks
+                    join files on files.id = file_chunks.file_id
+                    where file_chunks.id = any(%s::uuid[])
+                ) chunks
                 """,
                 (ids,),
             )

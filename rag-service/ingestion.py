@@ -68,6 +68,7 @@ def process_file(file_id: str):
 
         file_type = file_data.get("file_type")
         user_id = str(file_data["user_id"])
+        project_space_id = str(file_data.get("project_space_id")) if file_data.get("project_space_id") else ""
         file_bytes = download_object(object_key)
 
         text_content, is_markdown = extract_text(file_bytes, file_type, object_key)
@@ -97,6 +98,7 @@ def process_file(file_id: str):
                     "chunk_id": str(row["id"]),
                     "file_id": str(row["file_id"]),
                     "user_id": str(row["user_id"]),
+                    "project_space_id": project_space_id,
                     "filename": file_data["filename"],
                     "chunk_index": int(row["chunk_index"]),
                     "embedding": embedding,

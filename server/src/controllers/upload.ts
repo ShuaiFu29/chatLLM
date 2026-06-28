@@ -17,8 +17,13 @@ import {
   findFileForUser,
   findUploadingFileByUserAndHash,
   listFilesForUser,
+  retryFailedFileForUser,
   updateFile,
 } from '../repositories/files';
+import {
+  ensureDefaultProjectSpaceForUser,
+  findProjectSpaceForUser,
+} from '../repositories/projectSpaces';
 import { findUserById, updateUser } from '../repositories/users';
 import { fileQueue } from '../services/fileQueue';
 import { serverEnv } from '../lib/env';
@@ -54,6 +59,23 @@ const cleanupFileVectors = async (fileId: string) => {
   await axios.post(`${serverEnv.RAG_SERVICE_URL}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
 };
 
+const readProjectSpaceId = (value: unknown) => {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+};
+
+const resolveProjectSpaceId = async (userId: string, requestedProjectSpaceId?: string) => {
+  if (requestedProjectSpaceId) {
+    const space = await findProjectSpaceForUser(requestedProjectSpaceId, userId);
+    if (!space) return null;
+    return space.id;
+  }
+
+  const defaultSpace = await ensureDefaultProjectSpaceForUser(userId);
+  return defaultSpace.id;
+};
+
 export const checkFile = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -62,18 +84,22 @@ export const checkFile = async (req: Request, res: Response) => {
 
   try {
     ensureMarkdownFilename(filename);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
+    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
-    const existingFile = await findCompletedFileByUserAndHash(req.user.id, hash);
+    const existingFile = await findCompletedFileByUserAndHash(req.user.id, hash, projectSpaceId);
 
     if (existingFile) {
       return res.json({
         exists: true,
         uploadNeeded: false,
         fileId: existingFile.id,
+        projectSpaceId,
       });
     }
 
-    const pendingFile = await findUploadingFileByUserAndHash(req.user.id, hash);
+    const pendingFile = await findUploadingFileByUserAndHash(req.user.id, hash, projectSpaceId);
     const fileId = pendingFile?.id;
     let uploadedChunks: number[] = [];
 
@@ -90,6 +116,7 @@ export const checkFile = async (req: Request, res: Response) => {
       uploadNeeded: true,
       uploadedChunks,
       fileId,
+      projectSpaceId,
     });
   } catch (err) {
     const message = stringifyError(err);
@@ -104,16 +131,20 @@ export const initUpload = async (req: Request, res: Response) => {
 
   try {
     ensureMarkdownFilename(filename);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
+    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
     const file = await createUploadFile({
       userId: req.user.id,
+      projectSpaceId,
       filename,
       hash,
       size,
       type: type || 'text/markdown',
     });
 
-    res.json({ uploadId: file.id });
+    res.json({ uploadId: file.id, projectSpaceId });
   } catch (err) {
     const message = stringifyError(err);
     const status = message.includes('Only .md') ? 400 : 500;
@@ -225,10 +256,31 @@ export const listFiles = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const files = await listFilesForUser(req.user.id);
+    const requestedProjectSpaceId = readProjectSpaceId(req.query.projectSpaceId || req.query.project_space_id);
+    if (requestedProjectSpaceId) {
+      const space = await findProjectSpaceForUser(requestedProjectSpaceId, req.user.id);
+      if (!space) return res.status(404).json({ error: 'Project space not found' });
+    }
+
+    const files = await listFilesForUser(req.user.id, requestedProjectSpaceId);
     res.json(files);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch files', details: stringifyError(err) });
+  }
+};
+
+export const retryFileProcessing = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { id } = req.params;
+
+  try {
+    const file = await retryFailedFileForUser(id, req.user.id);
+    if (!file) return res.status(404).json({ error: 'Failed file not found' });
+
+    fileQueue.trigger();
+    res.json(file);
+  } catch (err) {
+    res.status(500).json({ error: 'Retry failed', details: stringifyError(err) });
   }
 };
 
@@ -249,7 +301,9 @@ export const deleteFile = async (req: Request, res: Response) => {
       });
     }
 
-    await deleteObject(file.object_key);
+    if (file.object_key) {
+      await deleteObject(file.object_key);
+    }
     const deleted = await deleteFileForUser(id, req.user.id);
 
     if (!deleted) return res.status(404).json({ error: 'File not found' });

@@ -1,6 +1,7 @@
 import { Sliders } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { type Conversation } from '../stores/useChatStore';
+import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 interface ChatHeaderProps {
   conversation?: Conversation;
@@ -9,6 +10,8 @@ interface ChatHeaderProps {
 
 export default function ChatHeader({ conversation, onOpenSettings }: ChatHeaderProps) {
   const { t } = useTranslation();
+  const { projectSpaces } = useProjectSpaceStore();
+  const projectSpace = projectSpaces.find((space) => space.id === conversation?.project_space_id);
 
   return (
     <div className="flex items-center justify-between p-3 md:p-4 border-b border-border bg-bg-base/80 backdrop-blur sticky top-0 z-10 shrink-0">
@@ -23,6 +26,11 @@ export default function ChatHeader({ conversation, onOpenSettings }: ChatHeaderP
         }`}>
           {conversation?.model === 'deepseek-reasoner' ? 'DeepSeek-R1' : 'DeepSeek-V3'}
         </span>
+        {projectSpace && (
+          <span className="hidden sm:inline text-[10px] md:text-xs px-2 py-0.5 rounded-full border border-border text-text-muted whitespace-nowrap">
+            {projectSpace.name}
+          </span>
+        )}
       </div>
       <button
         onClick={onOpenSettings}

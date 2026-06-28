@@ -1,6 +1,6 @@
 # DocuMind - 智能文档大脑
 
-DocuMind 是一个前后端分离的 RAG 应用。用户可以通过 GitHub OAuth 登录，上传 Markdown 文档，并基于个人知识库进行流式 AI 对话。
+DocuMind 是一个前后端分离的 AI 聊天工作台。用户可以通过 GitHub OAuth 登录，把文件、会话和基础 RAG 检索组织到 Project Spaces 中，并在对话中查看引用来源。
 
 当前架构已经移除 Supabase，改为本地 Docker Compose 栈：
 
@@ -106,7 +106,7 @@ RAG_SERVICE_URL=http://localhost:8000
 - MinIO Console：`http://localhost:9001`
 - Attu / Milvus 管理界面：`http://localhost:3001`
 
-PostgreSQL 会自动执行 `server/migrations/0001_init.sql` 初始化空库。
+Docker 首次创建空 PostgreSQL 数据库时会使用 `server/migrations/0001_init.sql` 初始化基础表结构。Express 后端启动时会自动执行 `server/migrations` 目录里尚未应用的 SQL 迁移，因此已有本地数据库也会补齐后续表结构。
 
 ### 单独启动调试
 
@@ -132,13 +132,21 @@ npm run dev
 
 - GitHub OAuth 登录
 - JWT access token + refresh token rotation
+- Project Spaces：按项目组织会话、文件和 RAG 检索上下文
 - ChatGPT 风格流式对话
 - 会话创建、重命名、删除
+- 会话可移动到不同 Project Space
 - 消息搜索
 - Markdown 文件分片上传和断点续传
+- 文件处理失败后可重试
 - MinIO 文档存储
 - RAG 文档解析、切块、embedding、Milvus 检索
+- 对话回答展示基础引用来源、片段编号、相似度和摘要
 - 个人资料和主题设置
+
+## 产品边界
+
+chatLLM 的定位是面向用户的聊天入口和项目知识工作台：管理会话、文件、Project Spaces、基础检索和回答引用。后续如果开发 `agent-flow` 和 `agentic-rag`，建议把工作流编排、工具调用、多步规划、多跳检索、复杂 rerank/trace 等能力放到那两个项目中，避免三个项目高度重合。
 
 ## 数据说明
 
@@ -148,6 +156,7 @@ npm run dev
 
 - `users`
 - `sessions`
+- `project_spaces`
 - `conversations`
 - `messages`
 - `files`

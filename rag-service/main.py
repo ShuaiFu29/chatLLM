@@ -24,6 +24,7 @@ class IngestRequest(BaseModel):
 class RetrieveRequest(BaseModel):
     query: str
     user_id: str
+    project_space_id: str | None = None
     limit: int = 5
     threshold: float = 0.1
 
@@ -60,6 +61,7 @@ def retrieve_endpoint(request: RetrieveRequest):
         results = retrieve_documents(
             query=request.query, 
             user_id=request.user_id, 
+            project_space_id=request.project_space_id,
             limit=request.limit,
             threshold=request.threshold
         )

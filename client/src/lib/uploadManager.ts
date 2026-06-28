@@ -37,7 +37,8 @@ const runHashWorker = (file: File, onProgress?: (progress: number) => void): Pro
 
 export const uploadFile = async (
   file: File,
-  onProgress: (progress: UploadProgress) => void
+  onProgress: (progress: UploadProgress) => void,
+  options?: { projectSpaceId?: string | null }
 ) => {
   try {
     // 1. Hash (Web Worker)
@@ -50,7 +51,8 @@ export const uploadFile = async (
     // 2. Check
     const { data: checkData } = await api.post('/upload/check', {
       hash,
-      filename: file.name
+      filename: file.name,
+      project_space_id: options?.projectSpaceId || undefined
     });
 
     if (checkData.exists) {
@@ -67,7 +69,8 @@ export const uploadFile = async (
         filename: file.name,
         hash,
         size: file.size,
-        type: file.type
+        type: file.type,
+        project_space_id: options?.projectSpaceId || undefined
       });
       uploadId = initData.uploadId;
     }

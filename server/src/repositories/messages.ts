@@ -1,30 +1,33 @@
 import { query } from '../lib/db';
+import { ChatSource } from '../lib/chatSources';
 
 export interface MessageRow {
   id: string;
   conversation_id: string;
   role: 'user' | 'assistant' | 'system';
   content: string;
+  sources: ChatSource[];
   created_at: string;
 }
 
 export const insertMessage = async (
   conversationId: string,
   role: MessageRow['role'],
-  content: string
+  content: string,
+  sources: ChatSource[] = []
 ) => {
   const { rows } = await query<MessageRow>(
-    `insert into messages (conversation_id, role, content)
-     values ($1, $2, $3)
-     returning id, conversation_id, role, content, created_at`,
-    [conversationId, role, content]
+    `insert into messages (conversation_id, role, content, sources)
+     values ($1, $2, $3, $4)
+     returning id, conversation_id, role, content, sources, created_at`,
+    [conversationId, role, content, JSON.stringify(sources)]
   );
   return rows[0];
 };
 
 export const listMessagesForConversation = async (conversationId: string) => {
   const { rows } = await query<MessageRow>(
-    `select id, conversation_id, role, content, created_at
+    `select id, conversation_id, role, content, sources, created_at
      from messages
      where conversation_id = $1
      order by created_at asc`,
@@ -50,12 +53,14 @@ export const searchMessagesForUser = async (userId: string, search: string) => {
     `select
        m.id,
        m.content,
+       m.sources,
        m.created_at,
        m.conversation_id,
        json_build_object(
          'id', c.id,
          'title', c.title,
-         'user_id', c.user_id
+         'user_id', c.user_id,
+         'project_space_id', c.project_space_id
        ) as conversations
      from messages m
      join conversations c on c.id = m.conversation_id

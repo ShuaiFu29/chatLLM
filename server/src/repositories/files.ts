@@ -4,6 +4,7 @@ import { query, withTransaction } from '../lib/db';
 export interface FileRow {
   id: string;
   user_id: string;
+  project_space_id?: string | null;
   filename: string;
   file_hash: string;
   file_size?: number | null;
@@ -19,6 +20,7 @@ export interface FileRow {
 const columns = `
   id,
   user_id,
+  project_space_id,
   filename,
   file_hash,
   file_size,
@@ -31,26 +33,44 @@ const columns = `
   updated_at
 `;
 
-export const findCompletedFileByUserAndHash = async (userId: string, hash: string) => {
+export const findCompletedFileByUserAndHash = async (userId: string, hash: string, projectSpaceId?: string | null) => {
+  const values: unknown[] = [userId, hash];
+  let projectSpaceFilter = '';
+
+  if (projectSpaceId) {
+    values.push(projectSpaceId);
+    projectSpaceFilter = `and project_space_id = $${values.length}`;
+  }
+
   const { rows } = await query<FileRow>(
     `select ${columns}
      from files
      where user_id = $1 and file_hash = $2 and status = 'completed'
+       ${projectSpaceFilter}
      order by created_at desc
      limit 1`,
-    [userId, hash]
+    values
   );
   return rows[0] || null;
 };
 
-export const findUploadingFileByUserAndHash = async (userId: string, hash: string) => {
+export const findUploadingFileByUserAndHash = async (userId: string, hash: string, projectSpaceId?: string | null) => {
+  const values: unknown[] = [userId, hash];
+  let projectSpaceFilter = '';
+
+  if (projectSpaceId) {
+    values.push(projectSpaceId);
+    projectSpaceFilter = `and project_space_id = $${values.length}`;
+  }
+
   const { rows } = await query<Pick<FileRow, 'id'>>(
     `select id
      from files
      where user_id = $1 and file_hash = $2 and status = 'uploading'
+       ${projectSpaceFilter}
      order by created_at desc
      limit 1`,
-    [userId, hash]
+    values
   );
   return rows[0] || null;
 };
@@ -61,12 +81,13 @@ export const createUploadFile = async (input: {
   hash: string;
   size?: number;
   type?: string;
+  projectSpaceId?: string | null;
 }) => {
   const { rows } = await query<FileRow>(
-    `insert into files (user_id, filename, file_hash, file_size, file_type, status)
-     values ($1, $2, $3, $4, $5, 'uploading')
+    `insert into files (user_id, project_space_id, filename, file_hash, file_size, file_type, status)
+     values ($1, $2, $3, $4, $5, $6, 'uploading')
      returning ${columns}`,
-    [input.userId, input.filename, input.hash, input.size || null, input.type || null]
+    [input.userId, input.projectSpaceId || null, input.filename, input.hash, input.size || null, input.type || null]
   );
   return rows[0];
 };
@@ -81,13 +102,22 @@ export const findFileForUser = async (fileId: string, userId: string) => {
   return rows[0] || null;
 };
 
-export const listFilesForUser = async (userId: string) => {
+export const listFilesForUser = async (userId: string, projectSpaceId?: string) => {
+  const values: unknown[] = [userId];
+  let projectSpaceFilter = '';
+
+  if (projectSpaceId) {
+    values.push(projectSpaceId);
+    projectSpaceFilter = `and project_space_id = $${values.length}`;
+  }
+
   const { rows } = await query<FileRow>(
     `select ${columns}
      from files
      where user_id = $1
+       ${projectSpaceFilter}
      order by created_at desc`,
-    [userId]
+    values
   );
   return rows;
 };
@@ -113,6 +143,24 @@ export const updateFile = async (
      where id = $${values.length}
      returning ${columns}`,
     values
+  );
+
+  return rows[0] || null;
+};
+
+export const retryFailedFileForUser = async (fileId: string, userId: string) => {
+  const { rows } = await query<FileRow>(
+    `update files
+     set status = 'pending',
+         progress = 0,
+         error_message = null,
+         updated_at = now()
+     where id = $1
+       and user_id = $2
+       and status = 'failed'
+       and object_key is not null
+     returning ${columns}`,
+    [fileId, userId]
   );
 
   return rows[0] || null;

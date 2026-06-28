@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useChatStore } from '../stores/useChatStore';
 import { X, Save, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 interface ChatSettingsDialogProps {
   isOpen: boolean;
@@ -11,6 +12,7 @@ interface ChatSettingsDialogProps {
 export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDialogProps) {
   const { t } = useTranslation();
   const { currentConversationId, conversations, updateConversation } = useChatStore();
+  const { projectSpaces, currentProjectSpaceId } = useProjectSpaceStore();
 
   const conversation = conversations.find(c => c.id === currentConversationId);
 
@@ -18,8 +20,9 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     model: conversation?.model || 'deepseek-chat',
     temperature: conversation?.temperature ?? 0.7,
     system_prompt: conversation?.system_prompt || 'You are a helpful AI assistant.',
-    enable_rag: conversation?.enable_rag ?? true
-  }), [conversation]);
+    enable_rag: conversation?.enable_rag ?? true,
+    project_space_id: conversation?.project_space_id || currentProjectSpaceId || ''
+  }), [conversation, currentProjectSpaceId]);
 
   const [draftSettings, setDraftSettings] = useState<typeof initialSettings | null>(null);
 
@@ -29,14 +32,16 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     model: 'deepseek-chat',
     temperature: 0.7,
     system_prompt: 'You are a helpful AI assistant.',
-    enable_rag: true
+    enable_rag: true,
+    project_space_id: currentProjectSpaceId || ''
   };
 
   const isDirty = draftSettings !== null && (
     settings.model !== initialSettings.model ||
     settings.temperature !== initialSettings.temperature ||
     settings.system_prompt !== initialSettings.system_prompt ||
-    settings.enable_rag !== initialSettings.enable_rag
+    settings.enable_rag !== initialSettings.enable_rag ||
+    settings.project_space_id !== initialSettings.project_space_id
   );
 
   const handleChange = (newSettings: typeof settings) => {
@@ -97,6 +102,22 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
             <p className="text-xs text-text-muted">
               {t('settings.selectModel')}
             </p>
+          </div>
+
+          {/* Project Space */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-text-main">Project Space</label>
+            <select
+              value={settings.project_space_id}
+              onChange={(e) => handleChange({ ...settings, project_space_id: e.target.value })}
+              className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none"
+            >
+              {projectSpaces.map((space) => (
+                <option key={space.id} value={space.id}>
+                  {space.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Temperature */}

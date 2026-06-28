@@ -3,6 +3,7 @@ import api from '../lib/api';
 
 export interface Conversation {
   id: string;
+  project_space_id?: string | null;
   title: string;
   created_at: string;
   updated_at: string;
@@ -17,7 +18,14 @@ export interface Message {
   role: 'user' | 'assistant';
   content: string;
   created_at: string;
-  sources?: { filename: string; similarity: number }[];
+  sources?: {
+    chunk_id?: string;
+    file_id?: string;
+    filename: string;
+    chunk_index?: number;
+    similarity: number;
+    content: string;
+  }[];
 }
 
 interface ChatState {
@@ -69,11 +77,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  createConversation: async (title?: string) => {
+  createConversation: async (title?: string, settings?: Partial<Conversation>) => {
     // Optimistic Update
     const tempId = 'temp-' + Date.now();
     const tempConv: Conversation = {
       id: tempId,
+      project_space_id: settings?.project_space_id,
       title: title || 'New Chat',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
@@ -96,7 +105,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }));
 
     try {
-      const res = await api.post('/chat/conversations', { title });
+      const res = await api.post('/chat/conversations', {
+        title,
+        project_space_id: settings?.project_space_id,
+      });
       const newConv = res.data;
 
       set((state) => {

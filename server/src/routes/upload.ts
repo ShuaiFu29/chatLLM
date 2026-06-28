@@ -1,5 +1,15 @@
 import express from 'express';
-import { checkFile, initUpload, uploadChunk, mergeChunks, listFiles, deleteFile, uploadAvatar, getAvatar } from '../controllers/upload';
+import {
+  checkFile,
+  initUpload,
+  uploadChunk,
+  mergeChunks,
+  listFiles,
+  deleteFile,
+  retryFileProcessing,
+  uploadAvatar,
+  getAvatar,
+} from '../controllers/upload';
 import { requireAuth } from '../middleware/auth';
 import { handleUploadError } from '../middleware/uploadErrors';
 import { avatarUpload, chunkUpload } from '../lib/uploadMiddleware';
@@ -15,6 +25,7 @@ router.post('/merge', mergeChunks);
 router.post('/avatar', avatarUpload.single('file'), uploadAvatar);
 router.get('/avatar/:userId', getAvatar);
 router.get('/files', listFiles);
+router.post('/files/:id/retry', retryFileProcessing);
 router.delete('/files/:id', deleteFile);
 router.use(handleUploadError);
 

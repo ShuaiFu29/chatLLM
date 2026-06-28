@@ -1,13 +1,14 @@
-import { useEffect, useState, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
-import { MessageSquare, Plus, LogOut, Database, Trash2, Pencil, Menu, X, Search } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, Database, Trash2, Pencil, Menu, X, Search, Folder } from 'lucide-react';
 import api from '../lib/api';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
+import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -15,6 +16,13 @@ export default function MainLayout() {
   const location = useLocation();
   const { user, logout } = useAuthStore();
   const { setIsOpen: setSearchOpen } = useSearchStore();
+  const {
+    projectSpaces,
+    currentProjectSpaceId,
+    fetchProjectSpaces,
+    createProjectSpace,
+    selectProjectSpace,
+  } = useProjectSpaceStore();
   const {
     conversations,
     currentConversationId,
@@ -36,23 +44,35 @@ export default function MainLayout() {
   const [editTitle, setEditTitle] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
 
-  const fetchKnowledgeFiles = async () => {
+  const currentProjectConversations = useMemo(
+    () => conversations.filter((conv) => conv.project_space_id === currentProjectSpaceId),
+    [conversations, currentProjectSpaceId]
+  );
+
+  const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
+
+  const fetchKnowledgeFiles = useCallback(async () => {
     try {
-      const res = await api.get('/upload/files');
+      const res = await api.get('/upload/files', {
+        params: { projectSpaceId: currentProjectSpaceId || undefined }
+      });
       setKnowledgeFiles(res.data);
     } catch (err) {
       console.error('Failed to fetch knowledge files:', err);
     }
-  };
+  }, [currentProjectSpaceId]);
 
   useEffect(() => {
     const initData = async () => {
+      await fetchProjectSpaces();
       await fetchConversations();
-      await fetchKnowledgeFiles();
     };
     initData();
+  }, [fetchConversations, fetchProjectSpaces]);
 
-    // Listen for updates from KnowledgeBase component
+  useEffect(() => {
+    void Promise.resolve().then(() => fetchKnowledgeFiles());
+
     const handleKnowledgeUpdate = () => {
       fetchKnowledgeFiles();
     };
@@ -61,7 +81,7 @@ export default function MainLayout() {
     return () => {
       window.removeEventListener('knowledge-updated', handleKnowledgeUpdate);
     };
-  }, [fetchConversations]);
+  }, [currentProjectSpaceId, fetchKnowledgeFiles]);
 
   useEffect(() => {
     if (editingId && editInputRef.current) {
@@ -77,9 +97,25 @@ export default function MainLayout() {
   };
 
   const handleNewChat = async () => {
-    await createConversation();
+    await createConversation(undefined, { project_space_id: currentProjectSpaceId });
     navigate('/');
     setIsMobileMenuOpen(false); // Close sidebar on mobile
+  };
+
+  const handleCreateProjectSpace = async () => {
+    const name = window.prompt('Project space name');
+    const trimmedName = name?.trim();
+    if (!trimmedName) return;
+
+    await createProjectSpace(trimmedName);
+    await fetchConversations();
+    navigate('/knowledge');
+    setIsMobileMenuOpen(false);
+  };
+
+  const handleSelectProjectSpace = (id: string) => {
+    selectProjectSpace(id);
+    setIsMobileMenuOpen(false);
   };
 
   const handleDeleteClick = (e: React.MouseEvent, id: string) => {
@@ -197,7 +233,41 @@ export default function MainLayout() {
         </div>
 
         <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          {conversations.map((conv) => (
+          <div className="pb-3 mb-3 border-b border-border">
+            <div className="flex items-center justify-between px-2 py-1">
+              <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">Project Spaces</span>
+              <button
+                onClick={handleCreateProjectSpace}
+                className="p-1 text-text-muted hover:text-text-main hover:bg-bg-surface rounded transition-colors"
+                title="New Project Space"
+                aria-label="New Project Space"
+              >
+                <Plus className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div className="space-y-1">
+              {projectSpaces.map((space) => (
+                <button
+                  key={space.id}
+                  onClick={() => handleSelectProjectSpace(space.id)}
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-left ${
+                    currentProjectSpaceId === space.id
+                      ? 'bg-bg-surface text-text-main border border-border'
+                      : 'text-text-muted hover:text-text-main hover:bg-bg-surface'
+                  }`}
+                >
+                  <Folder className="w-4 h-4 shrink-0" />
+                  <span className="truncate text-sm flex-1">{space.name}</span>
+                  {space.is_default && <span className="text-[10px] text-text-muted">default</span>}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="px-2 pb-1 text-xs text-text-muted">
+            {currentProjectSpace?.name || 'Project'} conversations
+          </div>
+          {currentProjectConversations.map((conv) => (
             <div
               key={conv.id}
               className={`w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors group relative ${currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
@@ -256,7 +326,7 @@ export default function MainLayout() {
               )}
             </div>
           ))}
-          {conversations.length === 0 && (
+          {currentProjectConversations.length === 0 && (
             <div className="text-text-muted text-sm text-center mt-4">{t('sidebar.noConversations')}</div>
           )}
 

@@ -6,8 +6,10 @@ import authRoutes from './routes/auth';
 import chatRoutes from './routes/chat';
 import uploadRoutes from './routes/upload';
 import searchRoutes from './routes/search';
+import projectSpaceRoutes from './routes/projectSpaces';
 import { fileQueue } from './services/fileQueue';
 import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
+import { runMigrations } from './lib/migrations';
 
 const app = express();
 
@@ -36,6 +38,7 @@ app.use(express.urlencoded({ limit: URLENCODED_REQUEST_LIMIT, extended: true }))
 app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);
+app.use('/api/project-spaces', projectSpaceRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/upload', uploadRoutes);
@@ -44,15 +47,24 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  fileQueue.start();
-});
+const startServer = async () => {
+  await runMigrations();
 
-process.on('SIGTERM', () => {
-  console.log('SIGTERM signal received: closing HTTP server');
-  fileQueue.stop();
-  server.close(() => {
-    console.log('HTTP server closed');
+  const server = app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    fileQueue.start();
   });
+
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    fileQueue.stop();
+    server.close(() => {
+      console.log('HTTP server closed');
+    });
+  });
+};
+
+startServer().catch((error) => {
+  console.error('[Server] Failed to start:', error);
+  process.exit(1);
 });

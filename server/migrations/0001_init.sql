@@ -11,6 +11,20 @@ create table if not exists users (
   created_at timestamptz not null default now()
 );
 
+create table if not exists project_spaces (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references users(id) on delete cascade,
+  name text not null,
+  description text not null default '',
+  is_default boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create unique index if not exists project_spaces_one_default_per_user_idx on project_spaces(user_id) where is_default;
+create unique index if not exists project_spaces_user_lower_name_idx on project_spaces(user_id, lower(name));
+create index if not exists project_spaces_user_id_updated_at_idx on project_spaces(user_id, updated_at desc);
+
 create table if not exists sessions (
   id uuid primary key,
   user_id uuid not null references users(id) on delete cascade,
@@ -24,6 +38,7 @@ create index if not exists sessions_expires_at_idx on sessions(expires_at);
 create table if not exists conversations (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references users(id) on delete cascade,
+  project_space_id uuid references project_spaces(id) on delete set null,
   title text not null default 'New Chat',
   model text,
   temperature double precision,
@@ -34,12 +49,14 @@ create table if not exists conversations (
 );
 
 create index if not exists conversations_user_id_updated_at_idx on conversations(user_id, updated_at desc);
+create index if not exists conversations_user_id_project_space_id_updated_at_idx on conversations(user_id, project_space_id, updated_at desc);
 
 create table if not exists messages (
   id uuid primary key default gen_random_uuid(),
   conversation_id uuid not null references conversations(id) on delete cascade,
   role text not null,
   content text not null,
+  sources jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now(),
   constraint messages_role_check check (role in ('user', 'assistant', 'system'))
 );
@@ -50,6 +67,7 @@ create index if not exists messages_created_at_idx on messages(created_at desc);
 create table if not exists files (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references users(id) on delete cascade,
+  project_space_id uuid references project_spaces(id) on delete set null,
   filename text not null,
   file_hash text not null,
   file_size bigint,
@@ -64,6 +82,7 @@ create table if not exists files (
 );
 
 create index if not exists files_user_id_created_at_idx on files(user_id, created_at desc);
+create index if not exists files_user_id_project_space_id_created_at_idx on files(user_id, project_space_id, created_at desc);
 create index if not exists files_status_created_at_idx on files(status, created_at);
 create index if not exists files_file_hash_idx on files(file_hash);
 

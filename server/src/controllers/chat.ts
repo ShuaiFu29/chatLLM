@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import axios from 'axios';
 import { openai } from '../lib/openai';
 import { serverEnv } from '../lib/env';
+import { buildChatSources, ChatSource, RagDocument } from '../lib/chatSources';
 import {
   createConversationForUser,
   deleteConversationForUser,
@@ -18,12 +19,34 @@ import {
   listRecentMessages,
   searchMessagesForUser,
 } from '../repositories/messages';
+import {
+  ensureDefaultProjectSpaceForUser,
+  findProjectSpaceForUser,
+} from '../repositories/projectSpaces';
+
+const readProjectSpaceId = (value: unknown) => {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  return trimmed || undefined;
+};
+
+const resolveProjectSpaceId = async (userId: string, requestedProjectSpaceId?: string) => {
+  if (requestedProjectSpaceId) {
+    const space = await findProjectSpaceForUser(requestedProjectSpaceId, userId);
+    if (!space) return null;
+    return space.id;
+  }
+
+  const defaultSpace = await ensureDefaultProjectSpaceForUser(userId);
+  return defaultSpace.id;
+};
 
 export const getConversations = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const conversations = await listConversations(req.user.id);
+    const projectSpaceId = readProjectSpaceId(req.query.projectSpaceId || req.query.project_space_id);
+    const conversations = await listConversations(req.user.id, projectSpaceId);
     res.json(conversations);
   } catch (error) {
     console.error('Error fetching conversations:', error);
@@ -54,7 +77,11 @@ export const createConversation = async (req: Request, res: Response) => {
   const { title } = req.body;
 
   try {
-    const conversation = await createConversationForUser(req.user.id, title || 'New Chat');
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
+    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
+
+    const conversation = await createConversationForUser(req.user.id, title || 'New Chat', projectSpaceId);
     res.json(conversation);
   } catch (error) {
     console.error('Error creating conversation:', error);
@@ -67,12 +94,30 @@ export const updateConversation = async (req: Request, res: Response) => {
   const { conversationId } = req.params;
   const { title, model, temperature, system_prompt, enable_rag } = req.body;
 
-  const updates: any = {};
+  const updates: {
+    title?: string;
+    model?: string;
+    temperature?: number;
+    system_prompt?: string;
+    enable_rag?: boolean;
+    project_space_id?: string | null;
+  } = {};
   if (title !== undefined) updates.title = title;
   if (model !== undefined) updates.model = model;
   if (temperature !== undefined) updates.temperature = temperature;
   if (system_prompt !== undefined) updates.system_prompt = system_prompt;
   if (enable_rag !== undefined) updates.enable_rag = enable_rag;
+
+  if (req.body.project_space_id !== undefined || req.body.projectSpaceId !== undefined) {
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    if (!requestedProjectSpaceId) {
+      updates.project_space_id = null;
+    } else {
+      const space = await findProjectSpaceForUser(requestedProjectSpaceId, req.user.id);
+      if (!space) return res.status(404).json({ error: 'Project space not found' });
+      updates.project_space_id = space.id;
+    }
+  }
 
   if (Object.keys(updates).length === 0) {
     return res.status(400).json({ error: 'No fields to update' });
@@ -199,26 +244,25 @@ export const sendMessage = async (req: Request, res: Response) => {
     const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
 
     let contextText = '';
+    let assistantSources: ChatSource[] = [];
 
     if (enableRag) {
       try {
         const ragResponse = await axios.post(`${serverEnv.RAG_SERVICE_URL}/retrieve`, {
           query: content,
           user_id: req.user.id,
+          project_space_id: conversation.project_space_id || undefined,
           limit: 10,
           threshold: 0.1,
         }, { timeout: 30000 });
 
-        const documents = ragResponse.data.results;
+        const documents = ragResponse.data.results as RagDocument[];
 
         if (documents && documents.length > 0) {
-          contextText = documents.map((doc: any) => doc.content).join('\n---\n');
+          contextText = documents.map((doc) => doc.content || '').join('\n---\n');
 
-          const sources = documents.map((doc: any) => ({
-            filename: doc.metadata.filename,
-            similarity: doc.similarity,
-          }));
-          res.write(`data: ${JSON.stringify({ sources })}\n\n`);
+          assistantSources = buildChatSources(documents);
+          res.write(`data: ${JSON.stringify({ sources: assistantSources })}\n\n`);
         }
       } catch (error) {
         console.warn('[Chat] RAG retrieval failed; continuing without context:', error);
@@ -276,7 +320,7 @@ ${originalContent}`;
     }
 
     if (fullContent) {
-      const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent);
+      const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent, assistantSources);
       res.write(`data: ${JSON.stringify({ assistantMessageId: assistantMessage.id })}\n\n`);
     }
 

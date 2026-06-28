@@ -24,6 +24,7 @@ pnpm run dev
 这个命令会自动：
 - 检查 server/.env 和 rag-service/.env 是否缺关键配置
 - 启动 PostgreSQL / MinIO / Milvus / Attu
+- 后端启动时自动执行 server/migrations 里尚未应用的数据库迁移
 - 启动后端 Express
 - 启动 RAG 服务
 - 启动前端 React

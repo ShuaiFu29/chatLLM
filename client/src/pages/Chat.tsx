@@ -8,10 +8,12 @@ import ChatSettingsDialog from '../components/ChatSettingsDialog';
 import ChatHeader from '../components/ChatHeader';
 import MessageList from '../components/MessageList';
 import ChatInput from '../components/ChatInput';
+import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 export default function ChatPage() {
   const { user } = useAuthStore();
   const { t } = useTranslation();
+  const { currentProjectSpaceId } = useProjectSpaceStore();
   const {
     currentConversationId,
     conversations,
@@ -40,13 +42,13 @@ export default function ChatPage() {
 
     // If no conversation selected, create one first
     if (!currentConversationId) {
-      await createConversation(input.slice(0, 30)); // Use first 30 chars as title
+      await createConversation(input.slice(0, 30), { project_space_id: currentProjectSpaceId }); // Use first 30 chars as title
     }
 
     const content = input;
     setInput('');
     await sendMessage(content);
-  }, [input, sendingMessage, currentConversationId, createConversation, sendMessage]);
+  }, [input, sendingMessage, currentConversationId, createConversation, currentProjectSpaceId, sendMessage]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -66,7 +68,7 @@ export default function ChatPage() {
         } else if (progress.status === 'processing') {
           toast.message('Processing file content...', { id: toastId });
         }
-      });
+      }, { projectSpaceId: currentProjectSpaceId });
 
       toast.success(`${file.name} ${t('chat.uploadSuccess')}`, { id: toastId });
     } catch (error) {
@@ -75,7 +77,7 @@ export default function ChatPage() {
     } finally {
       setIsUploading(false);
     }
-  }, [t]);
+  }, [currentProjectSpaceId, t]);
 
   const handleCopyMessage = useCallback((content: string, id: string) => {
     navigator.clipboard.writeText(content);

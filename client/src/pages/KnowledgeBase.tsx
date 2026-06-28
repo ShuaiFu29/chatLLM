@@ -5,6 +5,7 @@ import api from '../lib/api';
 import { uploadFile, type UploadProgress } from '../lib/uploadManager';
 import Modal from '../components/Modal';
 import Skeleton from '../components/Skeleton';
+import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 interface FileRecord {
   id: string;
@@ -13,6 +14,7 @@ interface FileRecord {
   progress: number;
   created_at: string;
   error_message?: string;
+  project_space_id?: string | null;
 }
 
 interface UploadingFile {
@@ -24,6 +26,7 @@ interface UploadingFile {
 
 export default function KnowledgeBase() {
   const { t } = useTranslation();
+  const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore();
   const [files, setFiles] = useState<FileRecord[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [uploadState, setUploadState] = useState<UploadingFile | null>(null);
@@ -49,7 +52,9 @@ export default function KnowledgeBase() {
 
   const fetchFiles = useCallback(async () => {
     try {
-      const res = await api.get('/upload/files');
+      const res = await api.get('/upload/files', {
+        params: { projectSpaceId: currentProjectSpaceId || undefined }
+      });
       setFiles(res.data);
       setIsLoading(false);
 
@@ -68,7 +73,9 @@ export default function KnowledgeBase() {
       console.error('Failed to fetch files:', error);
       setIsLoading(false);
     }
-  }, [startPolling, stopPolling]);
+  }, [currentProjectSpaceId, startPolling, stopPolling]);
+
+  const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
 
   useEffect(() => {
     fetchFilesRef.current = fetchFiles;
@@ -164,7 +171,7 @@ export default function KnowledgeBase() {
           fetchFiles();
           window.dispatchEvent(new Event('knowledge-updated'));
         }
-      });
+      }, { projectSpaceId: currentProjectSpaceId });
 
       setUploadState(null);
       fetchFiles();
@@ -176,6 +183,19 @@ export default function KnowledgeBase() {
       setUploadState(prev => prev ? { ...prev, status: 'error', message: t('knowledge.uploadFail') } : null);
       setTimeout(() => setUploadState(null), 5000);
       showNotification('error', t('knowledge.uploadFail'));
+    }
+  };
+
+  const handleRetryFile = async (id: string) => {
+    try {
+      const { data } = await api.post(`/upload/files/${id}/retry`);
+      setFiles(prev => prev.map(file => file.id === id ? data : file));
+      showNotification('success', 'File queued for retry');
+      startPolling();
+      window.dispatchEvent(new Event('knowledge-updated'));
+    } catch (error) {
+      console.error('Retry failed:', error);
+      showNotification('error', 'Failed to retry file');
     }
   };
 
@@ -237,6 +257,11 @@ export default function KnowledgeBase() {
         <div className="flex items-center gap-2">
           <Database className="w-5 h-5 text-primary" />
           <h1 className="text-xl font-semibold">{t('knowledge.title')}</h1>
+          {currentProjectSpace && (
+            <span className="text-sm text-text-muted border border-border rounded-lg px-2 py-1">
+              {currentProjectSpace.name}
+            </span>
+          )}
         </div>
       </div>
 
@@ -384,6 +409,15 @@ export default function KnowledgeBase() {
                       >
                         <Trash2 className="w-4 h-4" />
                       </button>
+                      {file.status === 'failed' && (
+                        <button
+                          onClick={() => handleRetryFile(file.id)}
+                          className="ml-2 p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                          title="Retry processing"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -440,6 +474,14 @@ export default function KnowledgeBase() {
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
+                  {file.status === 'failed' && (
+                    <button
+                      onClick={() => handleRetryFile(file.id)}
+                      className="p-2 text-text-muted hover:text-primary active:bg-primary/10 rounded-lg transition-colors"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border">
