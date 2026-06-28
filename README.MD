@@ -66,25 +66,26 @@ chatLLM/
 
 ## 本地启动
 
-### 1. 启动基础设施
+依赖和 `.env` 配置准备好后，优先在项目根目录使用一条命令启动：
 
 ```bash
-docker compose up -d postgres minio milvus-etcd milvus-minio milvus-standalone attu
+cd D:\project\chatLLM
+npm run dev
 ```
 
-PostgreSQL 会自动执行 `server/migrations/0001_init.sql` 初始化空库。
+这个命令会自动检查配置、启动 Docker 基础设施，并同时启动 Express 后端、Python RAG 服务和 React 前端。
 
-常用端口：
+如果使用 pnpm，也可以执行：
 
-- PostgreSQL: `localhost:5432`
-- MinIO API: `localhost:9000`
-- MinIO Console: `localhost:9001`
-- Milvus: `localhost:19530`
-- Attu: `localhost:3001`
+```bash
+cd D:\project\chatLLM
+pnpm run dev
+```
 
-### 2. 配置后端环境变量
+### 环境变量
 
 复制 `server/.env.example` 到 `server/.env`，填写 GitHub OAuth 和模型密钥。
+复制 `rag-service/.env.example` 到 `rag-service/.env`，填写 embedding API 密钥。
 
 关键变量：
 
@@ -97,31 +98,31 @@ S3_BUCKET=documents
 RAG_SERVICE_URL=http://localhost:8000
 ```
 
-启动后端：
+### 访问地址
+
+- 前端：`http://localhost:5173`
+- 后端健康检查：看 `server/.env` 的 `PORT`，默认是 `http://localhost:3002/health`
+- RAG 健康检查：`http://localhost:8000/health`
+- MinIO Console：`http://localhost:9001`
+- Attu / Milvus 管理界面：`http://localhost:3001`
+
+PostgreSQL 会自动执行 `server/migrations/0001_init.sql` 初始化空库。
+
+### 单独启动调试
+
+平时不需要分开启动。只有调试单个服务时才使用下面的命令：
 
 ```bash
-cd server
-npm install
+cd D:\project\chatLLM
+npm run dev:infra
+
+cd D:\project\chatLLM\server
 npm run dev
-```
 
-### 3. 配置 RAG 服务
+cd D:\project\chatLLM\rag-service
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
-复制 `rag-service/.env.example` 到 `rag-service/.env`，填写 embedding API 密钥。
-
-启动 RAG 服务：
-
-```bash
-cd rag-service
-pip install -r requirements.txt
-python main.py
-```
-
-### 4. 启动前端
-
-```bash
-cd client
-npm install
+cd D:\project\chatLLM\client
 npm run dev
 ```
 
