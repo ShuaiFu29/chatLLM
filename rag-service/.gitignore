@@ -12,6 +12,7 @@ env/
 # Environment Variables
 .env
 .env.*
+!.env.example
 
 # Distribution / Packaging
 build/
