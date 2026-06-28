@@ -6,6 +6,8 @@ import { VitePWA } from 'vite-plugin-pwa'
 import fs from 'fs'
 import path from 'path'
 
+const apiProxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://localhost:3000'
+
 // Custom plugin to inline optimization files
 const inlineOptimization = () => {
   return {
@@ -82,7 +84,7 @@ export default defineConfig({
     strictPort: true, // Fail if port is in use, don't auto-switch
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: apiProxyTarget,
         changeOrigin: true,
         secure: false,
       }
