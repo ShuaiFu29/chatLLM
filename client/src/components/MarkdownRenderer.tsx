@@ -23,7 +23,7 @@ import typescript from 'react-syntax-highlighter/dist/esm/languages/prism/typesc
 import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
-import { Check, Copy, Terminal } from 'lucide-react';
+import { Check, Copy, ImageOff, Terminal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 interface MarkdownRendererProps {
@@ -32,6 +32,10 @@ interface MarkdownRendererProps {
 
 interface CodeProps extends React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
+}
+
+interface MarkdownImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
+  node?: unknown;
 }
 
 const languageAliases: Record<string, string> = {
@@ -68,6 +72,66 @@ SyntaxHighlighter.registerLanguage('sql', sql);
 SyntaxHighlighter.registerLanguage('tsx', tsx);
 SyntaxHighlighter.registerLanguage('typescript', typescript);
 SyntaxHighlighter.registerLanguage('yaml', yaml);
+
+const getImageFilename = (source?: string) => {
+  if (!source) return 'image';
+
+  try {
+    const decodedSource = decodeURIComponent(source);
+    const pathWithoutQuery = decodedSource.split(/[?#]/)[0];
+    return pathWithoutQuery.split(/[\\/]/).filter(Boolean).pop() || source;
+  } catch {
+    return source;
+  }
+};
+
+const isRemoteImageSource = (source?: string) => {
+  if (!source) return false;
+  return /^https?:\/\//i.test(source) || source.startsWith('//');
+};
+
+const MarkdownImage = ({ src, alt, node, className = '', ...props }: MarkdownImageProps) => {
+  const { t } = useTranslation();
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  const hasError = !src || failedSource === src;
+  const imageName = alt || getImageFilename(src);
+  const missingImageHintKey = isRemoteImageSource(src)
+    ? 'knowledge.imageRemoteUnavailableHint'
+    : 'knowledge.imageLocalUnavailableHint';
+
+  void node;
+
+  if (hasError) {
+    return (
+      <span
+        role="note"
+        aria-label={t('knowledge.imageUnavailable', { filename: imageName })}
+        className="my-4 flex max-w-full items-start gap-3 rounded-lg border border-border bg-bg-surface p-3 text-left not-italic text-text-main shadow-sm"
+      >
+        <span className="mt-0.5 rounded-md border border-border bg-bg-base p-1.5 text-text-muted">
+          <ImageOff className="h-4 w-4" />
+        </span>
+        <span className="min-w-0">
+          <span className="block truncate text-sm font-medium text-text-main">{imageName}</span>
+          <span className="block text-xs leading-5 text-text-muted">
+            {t(missingImageHintKey)}
+          </span>
+        </span>
+      </span>
+    );
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt || ''}
+      loading="lazy"
+      onError={() => setFailedSource(src || '')}
+      className={`my-4 max-h-[520px] max-w-full rounded-lg border border-border object-contain ${className}`.trim()}
+      {...props}
+    />
+  );
+};
 
 const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
   const { t } = useTranslation();
@@ -209,6 +273,9 @@ const MarkdownRenderer = memo(({ content }: MarkdownRendererProps) => {
                 {children}
               </a>
             );
+          },
+          img({ src, alt, ...props }) {
+            return <MarkdownImage src={src} alt={alt} {...props} />;
           },
           blockquote({ children }) {
             return (

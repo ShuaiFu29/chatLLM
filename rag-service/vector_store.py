@@ -3,8 +3,21 @@ from typing import Any
 from pymilvus import DataType, MilvusClient
 from config import settings
 
-client = MilvusClient(uri=settings.milvus_uri)
+client: MilvusClient | None = None
 _project_space_field_available: bool | None = None
+
+
+def get_client() -> MilvusClient:
+    global client
+
+    if client is None:
+        client = MilvusClient(uri=settings.milvus_uri)
+
+    return client
+
+
+def _escape_filter_value(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
 def _has_project_space_field() -> bool:
@@ -13,6 +26,7 @@ def _has_project_space_field() -> bool:
     if _project_space_field_available is not None:
         return _project_space_field_available
 
+    client = get_client()
     try:
         description = client.describe_collection(collection_name=settings.milvus_collection)
         fields = description.get("fields", [])
@@ -26,6 +40,7 @@ def _has_project_space_field() -> bool:
 def ensure_collection():
     global _project_space_field_available
 
+    client = get_client()
     if client.has_collection(settings.milvus_collection):
         return
 
@@ -55,11 +70,19 @@ def ensure_collection():
     _project_space_field_available = True
 
 
+def check_vector_store_ready() -> bool:
+    client = get_client()
+    client.has_collection(settings.milvus_collection)
+    return True
+
+
 def delete_file_vectors(file_id: str):
+    client = get_client()
     ensure_collection()
+    escaped_file_id = _escape_filter_value(file_id)
     client.delete(
         collection_name=settings.milvus_collection,
-        filter=f'file_id == "{file_id}"',
+        filter=f'file_id == "{escaped_file_id}"',
     )
 
 
@@ -67,6 +90,7 @@ def insert_vectors(rows: list[dict[str, Any]]):
     if not rows:
         return
 
+    client = get_client()
     ensure_collection()
     if not _has_project_space_field():
         rows = [{key: value for key, value in row.items() if key != "project_space_id"} for row in rows]
@@ -80,13 +104,16 @@ def search_vectors(
     threshold: float,
     project_space_id: str | None = None,
 ):
+    client = get_client()
     ensure_collection()
     has_project_space_field = _has_project_space_field()
-    filters = [f'user_id == "{user_id}"']
+    escaped_user_id = _escape_filter_value(user_id)
+    filters = [f'user_id == "{escaped_user_id}"']
     output_fields = ["chunk_id", "file_id", "user_id", "filename", "chunk_index"]
 
     if project_space_id and has_project_space_field:
-        filters.append(f'project_space_id == "{project_space_id}"')
+        escaped_project_space_id = _escape_filter_value(project_space_id)
+        filters.append(f'project_space_id == "{escaped_project_space_id}"')
         output_fields.append("project_space_id")
 
     results = client.search(

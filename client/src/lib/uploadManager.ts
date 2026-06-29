@@ -1,12 +1,18 @@
 import api from './api';
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
+const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
 
 export interface UploadProgress {
   status: 'hashing' | 'uploading' | 'merging' | 'processing' | 'completed' | 'error';
   progress: number; // 0-100
   message?: string;
 }
+
+export const isSupportedMarkdownDocument = (file: File | { name: string }) => {
+  const normalizedName = file.name.trim().toLowerCase();
+  return MARKDOWN_EXTENSIONS.some((extension) => normalizedName.endsWith(extension));
+};
 
 // Helper to run worker
 const runHashWorker = (file: File, onProgress?: (progress: number) => void): Promise<string> => {
@@ -41,6 +47,10 @@ export const uploadFile = async (
   options?: { projectSpaceId?: string | null }
 ) => {
   try {
+    if (!isSupportedMarkdownDocument(file)) {
+      throw new Error('Only Markdown files (.md, .markdown) are supported');
+    }
+
     // 1. Hash (Web Worker)
     onProgress({ status: 'hashing', progress: 0 });
     const hash = await runHashWorker(file, (p) => {

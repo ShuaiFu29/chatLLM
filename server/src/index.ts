@@ -7,18 +7,30 @@ import chatRoutes from './routes/chat';
 import uploadRoutes from './routes/upload';
 import searchRoutes from './routes/search';
 import projectSpaceRoutes from './routes/projectSpaces';
+import usageRoutes from './routes/usage';
+import promptTemplateRoutes from './routes/promptTemplates';
 import { fileQueue } from './services/fileQueue';
+import { maintenanceService } from './services/maintenance';
 import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
 import { runMigrations } from './lib/migrations';
+import { liveHealthHandler, readyHealthHandler } from './lib/health';
+import { installGracefulShutdown } from './lib/gracefulShutdown';
+import { requestContextMiddleware } from './middleware/requestContext';
+import { createRateLimit } from './middleware/rateLimit';
+import { metricsHandler } from './lib/metrics';
+import { securityHeadersMiddleware } from './middleware/securityHeaders';
+import { errorHandlerMiddleware } from './middleware/errorHandler';
+import { notFoundMiddleware } from './middleware/notFound';
 
-const app = express();
+export const app = express();
 
 const PORT = serverEnv.PORT;
 
-const allowedOrigins = [
-  serverEnv.FRONTEND_URL,
-  'http://localhost:5174'
-];
+const allowedOrigins = serverEnv.CORS_ALLOWED_ORIGINS;
+
+app.set('trust proxy', 1);
+app.use(requestContextMiddleware);
+app.use(securityHeadersMiddleware);
 
 app.use(cors({
   origin: (origin, callback) => {
@@ -30,7 +42,23 @@ app.use(cors({
       callback(new Error('Not allowed by CORS'));
     }
   },
-  credentials: true
+  credentials: true,
+  exposedHeaders: [
+    'x-chatllm-has-more',
+    'x-chatllm-next-cursor',
+    'x-chatllm-page-limit',
+  ],
+}));
+
+app.get('/health', liveHealthHandler);
+app.get('/health/live', liveHealthHandler);
+app.get('/health/ready', readyHealthHandler);
+app.get('/metrics', metricsHandler);
+
+app.use(createRateLimit({
+  keyPrefix: 'global',
+  windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
+  max: serverEnv.RATE_LIMIT_MAX,
 }));
 
 app.use(express.json({ limit: JSON_REQUEST_LIMIT }));
@@ -40,31 +68,41 @@ app.use(cookieParser());
 app.use('/api/auth', authRoutes);
 app.use('/api/project-spaces', projectSpaceRoutes);
 app.use('/api/search', searchRoutes);
-app.use('/api/chat', chatRoutes);
-app.use('/api/upload', uploadRoutes);
+app.use('/api/usage', usageRoutes);
+app.use('/api/prompt-templates', promptTemplateRoutes);
+app.use('/api/chat', createRateLimit({
+  keyPrefix: 'chat',
+  windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
+  max: serverEnv.CHAT_RATE_LIMIT_MAX,
+  message: 'Too many chat requests',
+}), chatRoutes);
+app.use('/api/upload', createRateLimit({
+  keyPrefix: 'upload',
+  windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
+  max: serverEnv.UPLOAD_RATE_LIMIT_MAX,
+  message: 'Too many upload requests',
+}), uploadRoutes);
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok' });
-});
+app.use(notFoundMiddleware);
+app.use(errorHandlerMiddleware);
 
-const startServer = async () => {
+export const startServer = async () => {
   await runMigrations();
 
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     fileQueue.start();
+    maintenanceService.start();
   });
 
-  process.on('SIGTERM', () => {
-    console.log('SIGTERM signal received: closing HTTP server');
-    fileQueue.stop();
-    server.close(() => {
-      console.log('HTTP server closed');
-    });
-  });
+  installGracefulShutdown(server);
+
+  return server;
 };
 
-startServer().catch((error) => {
-  console.error('[Server] Failed to start:', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  startServer().catch((error) => {
+    console.error('[Server] Failed to start:', error);
+    process.exit(1);
+  });
+}

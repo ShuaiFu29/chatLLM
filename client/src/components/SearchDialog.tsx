@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { Command } from 'cmdk';
-import { Search, Loader2, MessageSquare, Calendar } from 'lucide-react';
+import { Search, Loader2, MessageSquare, Calendar, Filter } from 'lucide-react';
 import { useSearchStore, type SearchResult } from '../stores/useSearchStore';
 import { useChatStore } from '../stores/useChatStore';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 // We'll create a custom CommandPalette component using cmdk
 // Since we want to use our existing Modal infrastructure, we can wrap it
@@ -14,8 +15,9 @@ import { useTranslation } from 'react-i18next';
 export default function SearchDialog() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { isOpen, setIsOpen, query, setQuery, results, isLoading, searchMessages, clearResults } = useSearchStore();
+  const { isOpen, setIsOpen, query, setQuery, results, isLoading, filters, setFilters, searchMessages, clearResults } = useSearchStore();
   const { selectConversation } = useChatStore();
+  const { projectSpaces } = useProjectSpaceStore();
 
   // Debounce search
   useEffect(() => {
@@ -28,7 +30,7 @@ export default function SearchDialog() {
     }, 300);
 
     return () => clearTimeout(timer);
-  }, [query, searchMessages, clearResults]);
+  }, [query, filters, searchMessages, clearResults]);
 
   // Handle keyboard shortcut (Cmd+K)
   useEffect(() => {
@@ -79,6 +81,72 @@ export default function SearchDialog() {
             {isLoading && <Loader2 className="w-4 h-4 text-primary animate-spin ml-2" />}
           </div>
 
+          <div className="border-b border-border bg-bg-surface/30 px-4 py-3">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-text-muted">
+              <Filter className="h-3.5 w-3.5" />
+              {t('search.filters')}
+            </div>
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-3">
+              <label className="flex items-center gap-2 rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-muted">
+                <input
+                  type="checkbox"
+                  checked={filters.favoriteOnly}
+                  onChange={(event) => setFilters({ favoriteOnly: event.target.checked })}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {t('search.favoriteOnly')}
+              </label>
+              <label className="flex items-center gap-2 rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-muted">
+                <input
+                  type="checkbox"
+                  checked={filters.hasSources}
+                  onChange={(event) => setFilters({ hasSources: event.target.checked })}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {t('search.hasSources')}
+              </label>
+              <label className="flex items-center gap-2 rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-muted">
+                <input
+                  type="checkbox"
+                  checked={filters.includeArchived}
+                  onChange={(event) => setFilters({ includeArchived: event.target.checked })}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                {t('search.includeArchived')}
+              </label>
+              <select
+                value={filters.projectSpaceId}
+                onChange={(event) => setFilters({ projectSpaceId: event.target.value })}
+                className="rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-main outline-none focus:border-primary"
+                aria-label={t('search.workspace')}
+              >
+                <option value="">{t('search.allWorkspaces')}</option>
+                {projectSpaces.map((space) => (
+                  <option key={space.id} value={space.id}>
+                    {space.name}
+                  </option>
+                ))}
+              </select>
+              <select
+                value={filters.model}
+                onChange={(event) => setFilters({ model: event.target.value })}
+                className="rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-main outline-none focus:border-primary"
+                aria-label={t('search.model')}
+              >
+                <option value="">{t('search.allModels')}</option>
+                <option value="deepseek-chat">DeepSeek-V3</option>
+                <option value="deepseek-reasoner">DeepSeek-R1</option>
+              </select>
+              <input
+                value={filters.tag}
+                onChange={(event) => setFilters({ tag: event.target.value })}
+                className="rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-main outline-none placeholder:text-text-muted focus:border-primary"
+                placeholder={t('search.tagPlaceholder')}
+                aria-label={t('search.tag')}
+              />
+            </div>
+          </div>
+
           <Command.List className="max-h-[60vh] overflow-y-auto p-2">
             <Command.Empty className="py-6 text-center text-text-muted text-sm">
               {query ? (isLoading ? t('common.loading') : t('search.noResults')) : t('search.typeToSearch')}
@@ -98,7 +166,7 @@ export default function SearchDialog() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between mb-1">
                         <span className="font-medium text-text-main truncate">
-                          {result.conversations?.title || 'Unknown Chat'}
+                          {result.conversations?.title || t('search.unknownChat')}
                         </span>
                         <span className="flex items-center text-xs text-text-muted">
                           <Calendar className="w-3 h-3 mr-1" />
@@ -120,11 +188,11 @@ export default function SearchDialog() {
         <div className="px-4 py-2 bg-bg-surface/50 border-t border-border flex items-center justify-between text-xs text-text-muted">
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-bg-base border border-border rounded flex items-center justify-center min-w-[20px]">Cmd K</span>
-            <span>to open</span>
+            <span>{t('search.shortcutOpen')}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-bg-base border border-border rounded flex items-center justify-center min-w-[20px]">Esc</span>
-            <span>to close</span>
+            <span>{t('search.shortcutClose')}</span>
           </div>
         </div>
       </div>

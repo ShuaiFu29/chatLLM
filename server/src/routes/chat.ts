@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getConversations, createConversation, updateConversation, deleteConversation, getMessages, sendMessage, searchMessages } from '../controllers/chat';
+import { getConversations, createConversation, updateConversation, deleteConversation, getMessages, sendMessage, searchMessages, branchConversation, compareConversations } from '../controllers/chat';
 import { requireAuth } from '../middleware/auth';
 
 const router = Router();
@@ -8,6 +8,8 @@ router.get('/search', requireAuth, searchMessages);
 
 router.get('/conversations', requireAuth, getConversations);
 router.post('/conversations', requireAuth, createConversation);
+router.post('/conversations/:conversationId/branches', requireAuth, branchConversation);
+router.get('/conversations/:conversationId/compare/:otherConversationId', requireAuth, compareConversations);
 router.patch('/conversations/:conversationId', requireAuth, updateConversation);
 router.delete('/conversations/:conversationId', requireAuth, deleteConversation);
 

@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect, useMemo, useDeferredValue } from 'react';
-import { Bot } from 'lucide-react';
+import { Bot, ChevronsUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Message, Conversation } from '../stores/useChatStore';
 import type { User } from '../stores/useAuthStore';
@@ -12,9 +12,14 @@ interface MessageListProps {
   sendingMessage: boolean;
   user: User | null;
   currentConversation?: Conversation;
+  hasMoreMessages?: boolean;
+  loadingOlderMessages?: boolean;
+  onLoadOlderMessages?: () => Promise<void> | void;
   onCopy: (content: string, id: string) => void;
   onRegenerate: () => void;
   onDelete: (id: string) => void;
+  onBranch?: (id: string) => void;
+  onEditAsDraft?: (content: string) => void;
   copiedMessageId: string | null;
 }
 
@@ -24,9 +29,14 @@ export default function MessageList({
   sendingMessage,
   user,
   currentConversation,
+  hasMoreMessages = false,
+  loadingOlderMessages = false,
+  onLoadOlderMessages,
   onCopy,
   onRegenerate,
   onDelete,
+  onBranch,
+  onEditAsDraft,
   copiedMessageId
 }: MessageListProps) {
   const { t } = useTranslation();
@@ -77,15 +87,19 @@ export default function MessageList({
   }, []);
 
   const lastMessageContentLength = displayMessages[displayMessages.length - 1]?.content?.length;
+  const handleLoadOlderMessages = useCallback(() => {
+    setShouldAutoScroll(false);
+    void onLoadOlderMessages?.();
+  }, [onLoadOlderMessages]);
 
   // Auto-scroll to bottom only if shouldAutoScroll is true
   useEffect(() => {
-    if (shouldAutoScroll && messagesEndRef.current) {
+    if (shouldAutoScroll && !loadingOlderMessages && messagesEndRef.current) {
       requestAnimationFrame(() => {
         messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       });
     }
-  }, [displayMessages.length, sendingMessage, lastMessageContentLength, shouldAutoScroll]);
+  }, [displayMessages.length, sendingMessage, lastMessageContentLength, shouldAutoScroll, loadingOlderMessages]);
 
   return (
     <div
@@ -108,6 +122,19 @@ export default function MessageList({
         </div>
       ) : (
         <>
+          {hasMoreMessages && (
+            <div className="flex justify-center">
+              <button
+                type="button"
+                onClick={handleLoadOlderMessages}
+                disabled={loadingOlderMessages}
+                className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm text-text-muted transition-colors hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <ChevronsUp className={`h-4 w-4 ${loadingOlderMessages ? 'animate-pulse' : ''}`} />
+                {loadingOlderMessages ? t('chat.loadingOlderMessages') : t('chat.loadOlderMessages')}
+              </button>
+            </div>
+          )}
           {displayMessages.map((msg, index) => (
             <ChatMessage
               key={msg.id}
@@ -119,6 +146,8 @@ export default function MessageList({
               onCopy={onCopy}
               onRegenerate={onRegenerate}
               onDelete={onDelete}
+              onBranch={onBranch}
+              onEditAsDraft={onEditAsDraft}
               copiedMessageId={copiedMessageId}
               enableRag={currentConversation?.enable_rag}
             />

@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const DEFAULT_BACKEND_PORT = '3002';
+const DEFAULT_BACKEND_PORT = '3000';
 
 function parseEnvFile(content) {
   const values = {};

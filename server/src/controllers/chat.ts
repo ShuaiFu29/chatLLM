@@ -1,10 +1,15 @@
 import { Request, Response } from 'express';
-import axios from 'axios';
 import { openai } from '../lib/openai';
-import { serverEnv } from '../lib/env';
-import { buildChatSources, ChatSource, RagDocument } from '../lib/chatSources';
+import { buildChatSources, ChatSource } from '../lib/chatSources';
+import { normalizeChatMessageContent } from '../lib/chatInput';
+import { normalizeMessagePageQuery } from '../lib/messagePagination';
+import { normalizeSearchQuery, readSearchFilters } from '../lib/searchInput';
+import { tryAcquireChatStreamSlot } from '../lib/concurrencyGate';
+import { retrieveRagDocuments } from '../lib/ragClient';
 import {
+  compareConversationsForUser,
   createConversationForUser,
+  createConversationBranchForUser,
   deleteConversationForUser,
   findConversationForUser,
   listConversations,
@@ -15,7 +20,7 @@ import {
 import {
   deleteMessageForUser,
   insertMessage,
-  listMessagesForConversation,
+  listMessagesForConversationPage,
   listRecentMessages,
   searchMessagesForUser,
 } from '../repositories/messages';
@@ -28,6 +33,11 @@ const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
+};
+
+const readBooleanQuery = (value: unknown) => {
+  if (typeof value !== 'string') return false;
+  return value === 'true' || value === '1';
 };
 
 const resolveProjectSpaceId = async (userId: string, requestedProjectSpaceId?: string) => {
@@ -46,7 +56,8 @@ export const getConversations = async (req: Request, res: Response) => {
 
   try {
     const projectSpaceId = readProjectSpaceId(req.query.projectSpaceId || req.query.project_space_id);
-    const conversations = await listConversations(req.user.id, projectSpaceId);
+    const includeArchived = readBooleanQuery(req.query.includeArchived || req.query.include_archived);
+    const conversations = await listConversations(req.user.id, { projectSpaceId, includeArchived });
     res.json(conversations);
   } catch (error) {
     console.error('Error fetching conversations:', error);
@@ -56,15 +67,15 @@ export const getConversations = async (req: Request, res: Response) => {
 
 export const searchMessages = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  const { q } = req.query;
+  const normalizedQuery = normalizeSearchQuery(req.query.q);
 
-  if (!q || typeof q !== 'string') {
-    res.status(400).json({ error: 'Search query is required' });
+  if (!normalizedQuery.ok) {
+    res.status(normalizedQuery.statusCode).json({ error: normalizedQuery.error });
     return;
   }
 
   try {
-    const results = await searchMessagesForUser(req.user.id, q);
+    const results = await searchMessagesForUser(req.user.id, normalizedQuery.query, readSearchFilters(req.query));
     res.json(results);
   } catch (error) {
     console.error('Error searching messages:', error);
@@ -92,7 +103,7 @@ export const createConversation = async (req: Request, res: Response) => {
 export const updateConversation = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
-  const { title, model, temperature, system_prompt, enable_rag } = req.body;
+  const { title, model, temperature, system_prompt, enable_rag, is_pinned, archived, is_favorite, tags, note } = req.body;
 
   const updates: {
     title?: string;
@@ -101,12 +112,28 @@ export const updateConversation = async (req: Request, res: Response) => {
     system_prompt?: string;
     enable_rag?: boolean;
     project_space_id?: string | null;
+    is_pinned?: boolean;
+    archived_at?: string | null;
+    is_favorite?: boolean;
+    tags?: string[];
+    note?: string;
   } = {};
   if (title !== undefined) updates.title = title;
   if (model !== undefined) updates.model = model;
   if (temperature !== undefined) updates.temperature = temperature;
   if (system_prompt !== undefined) updates.system_prompt = system_prompt;
   if (enable_rag !== undefined) updates.enable_rag = enable_rag;
+  if (is_pinned !== undefined) updates.is_pinned = Boolean(is_pinned);
+  if (archived !== undefined) updates.archived_at = archived ? new Date().toISOString() : null;
+  if (is_favorite !== undefined) updates.is_favorite = Boolean(is_favorite);
+  if (Array.isArray(tags)) {
+    updates.tags = tags
+      .filter((tag): tag is string => typeof tag === 'string')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+  }
+  if (note !== undefined && typeof note === 'string') updates.note = note.slice(0, 2000);
 
   if (req.body.project_space_id !== undefined || req.body.projectSpaceId !== undefined) {
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
@@ -134,6 +161,42 @@ export const updateConversation = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error updating conversation:', error);
     res.status(500).json({ error: 'Failed to update conversation' });
+  }
+};
+
+export const branchConversation = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { conversationId } = req.params;
+  const messageId = typeof req.body.messageId === 'string' ? req.body.messageId : undefined;
+  const title = typeof req.body.title === 'string' ? req.body.title : undefined;
+
+  try {
+    const conversation = await createConversationBranchForUser({
+      userId: req.user.id,
+      conversationId,
+      messageId,
+      title,
+    });
+
+    if (!conversation) return res.status(404).json({ error: 'Conversation or message not found' });
+    res.json(conversation);
+  } catch (error) {
+    console.error('Error branching conversation:', error);
+    res.status(500).json({ error: 'Failed to branch conversation' });
+  }
+};
+
+export const compareConversations = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { conversationId, otherConversationId } = req.params;
+
+  try {
+    const comparison = await compareConversationsForUser(req.user.id, conversationId, otherConversationId);
+    if (!comparison) return res.status(404).json({ error: 'Conversation not found' });
+    res.json(comparison);
+  } catch (error) {
+    console.error('Error comparing conversations:', error);
+    res.status(500).json({ error: 'Failed to compare conversations' });
   }
 };
 
@@ -190,13 +253,22 @@ const generateConversationTitle = async (conversationId: string, firstMessage: s
 export const getMessages = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
+  const pageQuery = normalizeMessagePageQuery(req.query);
+
+  if (!pageQuery.ok) {
+    res.status(pageQuery.statusCode).json({ error: pageQuery.error });
+    return;
+  }
 
   try {
     const conversation = await findConversationForUser(conversationId, req.user.id);
     if (!conversation) return res.status(403).json({ error: 'Forbidden' });
 
-    const messages = await listMessagesForConversation(conversationId);
-    res.json(messages);
+    const page = await listMessagesForConversationPage(conversationId, pageQuery);
+    res.setHeader('x-chatllm-has-more', String(page.hasMore));
+    res.setHeader('x-chatllm-next-cursor', page.nextCursor || '');
+    res.setHeader('x-chatllm-page-limit', String(pageQuery.limit));
+    res.json(page.messages);
   } catch (error) {
     console.error('Error fetching messages:', error);
     res.status(500).json({ error: 'Failed to fetch messages' });
@@ -206,12 +278,13 @@ export const getMessages = async (req: Request, res: Response) => {
 export const sendMessage = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
-  const { content } = req.body;
+  const normalizedContent = normalizeChatMessageContent(req.body.content);
 
-  if (!content) {
-    res.status(400).json({ error: 'Content is required' });
+  if (!normalizedContent.ok) {
+    res.status(normalizedContent.statusCode).json({ error: normalizedContent.error });
     return;
   }
+  const { content } = normalizedContent;
 
   const conversation = await findConversationForUser(conversationId, req.user.id);
   if (!conversation) {
@@ -219,23 +292,37 @@ export const sendMessage = async (req: Request, res: Response) => {
     return;
   }
 
-  const userMessage = await insertMessage(conversationId, 'user', content);
-
-  if (conversation.title === 'New Chat') {
-    generateConversationTitle(conversationId, content);
+  const chatSlot = tryAcquireChatStreamSlot(req.user.id);
+  if (!chatSlot.acquired) {
+    res.setHeader('Retry-After', String(chatSlot.retryAfterSeconds));
+    res.status(429).json({
+      error: 'Too many active chat streams',
+      retryAfter: chatSlot.retryAfterSeconds,
+    });
+    return;
   }
 
-  touchConversation(conversationId, req.user.id).catch((error) => {
-    console.warn('[Chat] Failed to update conversation timestamp:', error);
-  });
-
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  });
+  let streamStarted = false;
+  let failed = false;
 
   try {
+    const userMessage = await insertMessage(conversationId, 'user', content);
+
+    if (conversation.title === 'New Chat') {
+      generateConversationTitle(conversationId, content);
+    }
+
+    touchConversation(conversationId, req.user.id).catch((error) => {
+      console.warn('[Chat] Failed to update conversation timestamp:', error);
+    });
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    streamStarted = true;
+
     const model = conversation.model || 'deepseek-chat';
     const temperature = conversation.temperature !== undefined && conversation.temperature !== null
       ? conversation.temperature
@@ -248,15 +335,13 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     if (enableRag) {
       try {
-        const ragResponse = await axios.post(`${serverEnv.RAG_SERVICE_URL}/retrieve`, {
+        const documents = await retrieveRagDocuments({
           query: content,
           user_id: req.user.id,
           project_space_id: conversation.project_space_id || undefined,
           limit: 10,
           threshold: 0.1,
-        }, { timeout: 30000 });
-
-        const documents = ragResponse.data.results as RagDocument[];
+        });
 
         if (documents && documents.length > 0) {
           contextText = documents.map((doc) => doc.content || '').join('\n---\n');
@@ -327,8 +412,15 @@ ${originalContent}`;
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (error) {
+    failed = true;
     console.error('[Chat] Failed to generate response:', error);
-    res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
-    res.end();
+    if (streamStarted) {
+      res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
+      res.end();
+    } else {
+      res.status(500).json({ error: 'Failed to generate response' });
+    }
+  } finally {
+    chatSlot.release(failed);
   }
 };

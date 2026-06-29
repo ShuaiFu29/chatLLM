@@ -7,4 +7,3 @@ pymilvus
 langchain
 langchain-text-splitters
 openai
-pypdf

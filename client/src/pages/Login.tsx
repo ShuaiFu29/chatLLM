@@ -9,7 +9,7 @@ export default function LoginPage() {
   const loading = useAuthStore((state) => state.loading);
   const { t } = useTranslation();
 
-  if (loading) return <div>Loading...</div>;
+  if (loading) return <div>{t('common.loading')}</div>;
   if (user) return <Navigate to="/" replace />;
 
   return (
@@ -38,7 +38,7 @@ export default function LoginPage() {
               rel="noopener noreferrer"
               className="text-xs text-primary hover:text-primary-dark transition-colors"
             >
-              {t('auth.switchAccount') || 'Switch GitHub Account'}
+              {t('auth.switchAccount')}
             </a>
           </div>
         </div>

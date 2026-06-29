@@ -1,7 +1,8 @@
-import { memo, lazy, Suspense } from 'react';
-import { Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2 } from 'lucide-react';
+import { memo, lazy, Suspense, useState } from 'react';
+import { Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil } from 'lucide-react';
 import type { Message } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
+import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
@@ -14,6 +15,8 @@ interface ChatMessageProps {
   onCopy: (content: string, id: string) => void;
   onRegenerate: () => void;
   onDelete: (id: string) => void;
+  onBranch?: (id: string) => void;
+  onEditAsDraft?: (content: string) => void;
   copiedMessageId: string | null;
   enableRag?: boolean;
 }
@@ -27,13 +30,16 @@ const ChatMessage = memo(({
   onCopy,
   onRegenerate,
   onDelete,
+  onBranch,
+  onEditAsDraft,
   copiedMessageId,
   enableRag
 }: ChatMessageProps) => {
   const { t } = useTranslation();
+  const [selectedSourceDocument, setSelectedSourceDocument] = useState<DocumentReference | null>(null);
 
   const formatFilename = (filename: string) => {
-    return filename.replace(/\.[^/.]+$/, "").trim();
+    return filename.replace(/\.(?:md|markdown)$/i, "").trim();
   };
 
   const formatAvatarUrl = (url?: string) => {
@@ -43,6 +49,7 @@ const ChatMessage = memo(({
   };
 
   return (
+    <>
     <div className={`flex gap-2 md:gap-4 group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
       {msg.role === 'assistant' && (
         <div className="flex w-8 h-8 rounded-full bg-primary/20 border border-primary/30 items-center justify-center shrink-0 shadow-sm">
@@ -63,7 +70,7 @@ const ChatMessage = memo(({
               {isSending && isLast && !msg.content && enableRag !== false && (
                 <div className="flex items-center gap-2 text-text-muted mb-2 animate-pulse">
                   <Search className="w-4 h-4" />
-                  <span className="text-sm">Searching knowledge base...</span>
+                  <span className="text-sm">{t('chat.searchingWorkspaceDocuments')}</span>
                 </div>
               )}
 
@@ -73,7 +80,7 @@ const ChatMessage = memo(({
                   <Suspense fallback={
                     <div className="flex items-center gap-2 text-text-muted">
                       <Loader2 className="w-4 h-4 animate-spin" />
-                      <span className="text-xs">Loading content...</span>
+                      <span className="text-xs">{t('chat.loadingContent')}</span>
                     </div>
                   }>
                     <MarkdownRenderer content={
@@ -91,31 +98,58 @@ const ChatMessage = memo(({
                   <div className="flex items-center gap-2 mb-2">
                     <BookOpen className="w-3.5 h-3.5 text-primary" />
                     <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-                      {t('chat.sources') || 'Sources & References'}
+                      {t('chat.sources')}
                     </span>
                   </div>
                   <div className="grid grid-cols-1 gap-2">
-                    {msg.sources.slice(0, 4).map((source, idx) => (
-                      <div key={`${source.chunk_id || source.filename}-${idx}`} className="flex items-start gap-2 bg-bg-surface/50 hover:bg-bg-surface p-2 rounded-lg border border-border/50 transition-all cursor-default group/source">
-                        <div className="p-1.5 rounded-md bg-primary/10 text-primary group-hover/source:bg-primary group-hover/source:text-white transition-colors">
-                          <FileText className="w-3.5 h-3.5" />
-                        </div>
-                        <div className="flex flex-col overflow-hidden gap-1">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span className="text-xs font-medium text-text-main truncate">{formatFilename(source.filename)}</span>
-                            <span className="text-[10px] text-text-muted shrink-0">
-                              {Math.round(source.similarity * 100)}%
-                              {source.chunk_index !== undefined ? ` · #${source.chunk_index + 1}` : ''}
-                            </span>
+                    {msg.sources.slice(0, 4).map((source, idx) => {
+                      const sourceContent = (
+                        <>
+                          <div className="p-1.5 rounded-md bg-primary/10 text-primary group-hover/source:bg-primary group-hover/source:text-white transition-colors">
+                            <FileText className="w-3.5 h-3.5" />
                           </div>
-                          {source.content && (
-                            <p className="text-[11px] leading-relaxed text-text-muted line-clamp-2">
-                              {source.content}
-                            </p>
-                          )}
+                          <div className="flex min-w-0 flex-1 flex-col gap-1">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-xs font-medium text-text-main">{formatFilename(source.filename)}</span>
+                              <span className="shrink-0 text-[10px] text-text-muted">
+                                {Math.round(source.similarity * 100)}%
+                                {source.chunk_index !== undefined ? ` · #${source.chunk_index + 1}` : ''}
+                              </span>
+                            </div>
+                            {source.file_id ? (
+                              <span className="text-[11px] text-primary">{t('chat.viewOriginalDocument')}</span>
+                            ) : source.content ? (
+                              <p className="line-clamp-2 text-[11px] leading-relaxed text-text-muted">
+                                {source.content}
+                              </p>
+                            ) : null}
+                          </div>
+                        </>
+                      );
+
+                      return source.file_id ? (
+                        <button
+                          key={`${source.chunk_id || source.filename}-${idx}`}
+                          onClick={() => setSelectedSourceDocument({
+                            id: source.file_id!,
+                            filename: source.filename,
+                            citationContent: source.content,
+                            chunkIndex: source.chunk_index,
+                          })}
+                          className="group/source flex items-start gap-2 rounded-lg border border-border/50 bg-bg-surface/50 p-2 text-left transition-all hover:border-primary/60 hover:bg-bg-surface"
+                          aria-label={t('chat.viewOriginalDocument')}
+                        >
+                          {sourceContent}
+                        </button>
+                      ) : (
+                        <div
+                          key={`${source.chunk_id || source.filename}-${idx}`}
+                          className="group/source flex cursor-default items-start gap-2 rounded-lg border border-border/50 bg-bg-surface/50 p-2 transition-all hover:bg-bg-surface"
+                        >
+                          {sourceContent}
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -133,6 +167,28 @@ const ChatMessage = memo(({
           >
             {copiedMessageId === msg.id ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
           </button>
+
+          {msg.role === 'user' && onEditAsDraft && (
+            <button
+              onClick={() => onEditAsDraft(msg.content)}
+              className="p-1 text-text-muted hover:text-primary hover:bg-bg-surface rounded transition-colors"
+              title={t('chat.editAsDraft')}
+              aria-label={t('chat.editAsDraft')}
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+          )}
+
+          {onBranch && !msg.id.startsWith('temp-') && !msg.id.startsWith('welcome-') && (
+            <button
+              onClick={() => onBranch(msg.id)}
+              className="p-1 text-text-muted hover:text-primary hover:bg-bg-surface rounded transition-colors"
+              title={t('chat.branchFromMessage')}
+              aria-label={t('chat.branchFromMessage')}
+            >
+              <GitBranch className="w-3 h-3" />
+            </button>
+          )}
 
           {/* Regenerate only for the latest assistant message */}
           {isLast && !isSending && msg.role === 'assistant' && (
@@ -167,6 +223,11 @@ const ChatMessage = memo(({
         />
       )}
     </div>
+    <DocumentViewerModal
+      document={selectedSourceDocument}
+      onClose={() => setSelectedSourceDocument(null)}
+    />
+    </>
   );
 });
 

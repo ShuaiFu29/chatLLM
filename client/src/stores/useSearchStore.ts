@@ -8,7 +8,20 @@ export interface SearchResult extends Message {
     id: string;
     title: string;
     user_id: string;
+    project_space_id?: string | null;
+    is_favorite?: boolean;
+    tags?: string[];
+    archived_at?: string | null;
   };
+}
+
+export interface SearchFilters {
+  projectSpaceId: string;
+  hasSources: boolean;
+  model: string;
+  favoriteOnly: boolean;
+  tag: string;
+  includeArchived: boolean;
 }
 
 interface SearchState {
@@ -16,22 +29,38 @@ interface SearchState {
   query: string;
   results: SearchResult[];
   isLoading: boolean;
+  filters: SearchFilters;
 
   setIsOpen: (open: boolean) => void;
   setQuery: (query: string) => void;
+  setFilters: (filters: Partial<SearchFilters>) => void;
   searchMessages: (query: string) => Promise<void>;
   clearResults: () => void;
 }
 
-export const useSearchStore = create<SearchState>((set) => ({
+const defaultFilters: SearchFilters = {
+  projectSpaceId: '',
+  hasSources: false,
+  model: '',
+  favoriteOnly: false,
+  tag: '',
+  includeArchived: false,
+};
+
+export const useSearchStore = create<SearchState>((set, get) => ({
   isOpen: false,
   query: '',
   results: [],
   isLoading: false,
+  filters: defaultFilters,
 
   setIsOpen: (open) => set({ isOpen: open }),
 
   setQuery: (query) => set({ query }),
+
+  setFilters: (filters) => set((state) => ({
+    filters: { ...state.filters, ...filters },
+  })),
 
   searchMessages: async (query: string) => {
     if (!query.trim()) {
@@ -41,12 +70,18 @@ export const useSearchStore = create<SearchState>((set) => ({
 
     set({ isLoading: true });
     try {
-      // Encode the query parameter properly to handle special characters
-      // Note: axios params option automatically encodes, but let's be explicit if needed
-      // Actually axios handles it. The issue might be the 404 from before.
-      // But looking at the console logs, it seems it was 404ing on /api/chat/search?q=...
-
-      const res = await api.get('/search', { params: { q: query } });
+      const filters = get().filters;
+      const res = await api.get('/search', {
+        params: {
+          q: query,
+          projectSpaceId: filters.projectSpaceId || undefined,
+          hasSources: filters.hasSources || undefined,
+          model: filters.model || undefined,
+          favoriteOnly: filters.favoriteOnly || undefined,
+          tag: filters.tag || undefined,
+          includeArchived: filters.includeArchived || undefined,
+        }
+      });
       set({ results: res.data });
     } catch (err) {
       console.error('Search failed:', err);

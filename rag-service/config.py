@@ -19,10 +19,14 @@ class Settings:
     s3_force_path_style: bool
     milvus_uri: str
     milvus_collection: str
+    embedding_provider: str
     embedding_api_key: str
     embedding_base_url: str
     embedding_model: str
     embedding_dimension: int
+    rag_readiness_timeout_ms: int
+    rag_ingest_concurrency: int
+    rag_allowed_origins: list[str]
 
 
 def _required(name: str) -> str:
@@ -50,7 +54,17 @@ def _bool(name: str, default: bool) -> bool:
     return raw.strip().lower() != "false"
 
 
+def _string_list(name: str, default: list[str]) -> list[str]:
+    raw = os.environ.get(name, "")
+    values = [item.strip() for item in raw.split(",") if item.strip()]
+    return list(dict.fromkeys(values or default))
+
+
 def load_settings() -> Settings:
+    embedding_provider = os.environ.get("EMBEDDING_PROVIDER", "openai-compatible").strip().lower() or "openai-compatible"
+    if embedding_provider not in {"openai-compatible", "local"}:
+        raise ValueError("EMBEDDING_PROVIDER must be either openai-compatible or local")
+
     required_keys = [
         "DATABASE_URL",
         "S3_ENDPOINT",
@@ -58,11 +72,14 @@ def load_settings() -> Settings:
         "S3_SECRET_KEY",
         "MILVUS_URI",
         "MILVUS_COLLECTION",
-        "EMBEDDING_API_KEY",
-        "EMBEDDING_BASE_URL",
-        "EMBEDDING_MODEL",
-        "EMBEDDING_DIMENSION",
     ]
+    if embedding_provider != "local":
+        required_keys.extend([
+            "EMBEDDING_API_KEY",
+            "EMBEDDING_BASE_URL",
+            "EMBEDDING_MODEL",
+        ])
+    required_keys.append("EMBEDDING_DIMENSION")
     missing = [key for key in required_keys if not _required(key)]
 
     if missing:
@@ -79,10 +96,17 @@ def load_settings() -> Settings:
         s3_force_path_style=_bool("S3_FORCE_PATH_STYLE", True),
         milvus_uri=_required("MILVUS_URI"),
         milvus_collection=_required("MILVUS_COLLECTION"),
+        embedding_provider=embedding_provider,
         embedding_api_key=_required("EMBEDDING_API_KEY"),
         embedding_base_url=_required("EMBEDDING_BASE_URL"),
-        embedding_model=_required("EMBEDDING_MODEL"),
+        embedding_model="local-hash" if embedding_provider == "local" else _required("EMBEDDING_MODEL"),
         embedding_dimension=_positive_int("EMBEDDING_DIMENSION"),
+        rag_readiness_timeout_ms=_positive_int("RAG_READINESS_TIMEOUT_MS", "2000"),
+        rag_ingest_concurrency=_positive_int("RAG_INGEST_CONCURRENCY", "2"),
+        rag_allowed_origins=_string_list(
+            "RAG_ALLOWED_ORIGINS",
+            ["http://localhost:3000", "http://localhost:5173"],
+        ),
     )
 
 

@@ -1,9 +1,12 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import i18n from '../i18n';
 
 export interface Conversation {
   id: string;
   project_space_id?: string | null;
+  parent_conversation_id?: string | null;
+  branched_from_message_id?: string | null;
   title: string;
   created_at: string;
   updated_at: string;
@@ -11,11 +14,18 @@ export interface Conversation {
   temperature?: number;
   system_prompt?: string;
   enable_rag?: boolean;
+  is_pinned?: boolean;
+  archived_at?: string | null;
+  branch_name?: string;
+  is_favorite?: boolean;
+  tags?: string[];
+  note?: string;
 }
 
 export interface Message {
   id: string;
-  role: 'user' | 'assistant';
+  conversation_id?: string;
+  role: 'user' | 'assistant' | 'system';
   content: string;
   created_at: string;
   sources?: {
@@ -28,47 +38,101 @@ export interface Message {
   }[];
 }
 
+export interface ConversationComparison {
+  conversations: Conversation[];
+  messagesByConversation: Record<string, Message[]>;
+}
+
+export interface MessagePageInfo {
+  hasMore: boolean;
+  nextCursor: string | null;
+  limit: number;
+}
+
 interface ChatState {
   conversations: Conversation[];
   currentConversationId: string | null;
   messages: Message[];
   messagesCache: Record<string, Message[]>;
+  messagePagination: Record<string, MessagePageInfo>;
   loadingConversations: boolean;
   loadingMessages: boolean;
+  loadingOlderMessages: boolean;
   sendingMessage: boolean;
   isStopped: boolean; // Add this
   abortController: AbortController | null;
 
-  fetchConversations: () => Promise<void>;
+  fetchConversations: (options?: { includeArchived?: boolean }) => Promise<void>;
   createConversation: (title?: string, settings?: Partial<Conversation>) => Promise<string>;
   renameConversation: (id: string, title: string) => Promise<void>;
   updateConversation: (id: string, updates: Partial<Conversation>) => Promise<void>;
+  toggleConversationPinned: (id: string) => Promise<void>;
+  toggleConversationFavorite: (id: string) => Promise<void>;
+  branchConversation: (conversationId: string, messageId?: string) => Promise<string | null>;
+  compareConversations: (conversationId: string, otherConversationId: string) => Promise<ConversationComparison | null>;
+  archiveConversation: (id: string) => Promise<void>;
+  unarchiveConversation: (id: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   deleteMessage: (messageId: string) => Promise<void>;
   regenerateMessage: () => Promise<void>;
   stopGeneration: () => void;
   continueGeneration: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
+  loadOlderMessages: (id?: string) => Promise<void>;
   sendMessage: (content: string, isContinue?: boolean) => Promise<void>;
 }
 
+const DEFAULT_MESSAGE_PAGE_LIMIT = 100;
 
+type ResponseHeaders = {
+  get?: (name: string) => unknown;
+  [key: string]: unknown;
+};
+
+const readResponseHeader = (headers: ResponseHeaders, name: string) => {
+  const value = typeof headers.get === 'function' ? headers.get(name) : headers[name];
+  if (Array.isArray(value)) return value[0] ? String(value[0]) : '';
+  return value === undefined || value === null ? '' : String(value);
+};
+
+const readMessagePageInfo = (headers: ResponseHeaders): MessagePageInfo => ({
+  hasMore: readResponseHeader(headers, 'x-chatllm-has-more') === 'true',
+  nextCursor: readResponseHeader(headers, 'x-chatllm-next-cursor') || null,
+  limit: Number.parseInt(readResponseHeader(headers, 'x-chatllm-page-limit'), 10) || DEFAULT_MESSAGE_PAGE_LIMIT,
+});
+
+const mergeMessagePages = (olderMessages: Message[], currentMessages: Message[]) => {
+  const seen = new Set<string>();
+  const merged: Message[] = [];
+
+  [...olderMessages, ...currentMessages].forEach((message) => {
+    if (seen.has(message.id)) return;
+    seen.add(message.id);
+    merged.push(message);
+  });
+
+  return merged;
+};
 
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
   messages: [],
   messagesCache: {},
+  messagePagination: {},
   loadingConversations: false,
   loadingMessages: false,
+  loadingOlderMessages: false,
   sendingMessage: false,
   isStopped: false,
   abortController: null,
 
-  fetchConversations: async () => {
+  fetchConversations: async (options = { includeArchived: true }) => {
     set({ loadingConversations: true });
     try {
-      const res = await api.get('/chat/conversations');
+      const res = await api.get('/chat/conversations', {
+        params: { includeArchived: options.includeArchived }
+      });
       set({ conversations: res.data });
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
@@ -83,7 +147,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const tempConv: Conversation = {
       id: tempId,
       project_space_id: settings?.project_space_id,
-      title: title || 'New Chat',
+      title: title || i18n.t('sidebar.newChat'),
+      is_pinned: false,
+      is_favorite: false,
+      tags: [],
+      note: '',
+      archived_at: null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
@@ -93,7 +162,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const optimisticWelcomeMsg: Message = {
       id: 'welcome-' + tempId,
       role: 'assistant',
-      content: 'Thinking...', // or just empty
+      content: i18n.t('common.loading'),
       created_at: new Date().toISOString()
     };
 
@@ -101,7 +170,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
       conversations: [tempConv, ...state.conversations],
       currentConversationId: tempId,
       messages: [optimisticWelcomeMsg],
-      messagesCache: { ...state.messagesCache, [tempId]: [optimisticWelcomeMsg] }
+      messagesCache: { ...state.messagesCache, [tempId]: [optimisticWelcomeMsg] },
+      messagePagination: {
+        ...state.messagePagination,
+        [tempId]: { hasMore: false, nextCursor: null, limit: DEFAULT_MESSAGE_PAGE_LIMIT }
+      }
     }));
 
     try {
@@ -123,11 +196,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
           newCache[newConv.id] = newCache[tempId];
           delete newCache[tempId];
         }
+        const newPagination = { ...state.messagePagination };
+        newPagination[newConv.id] = newPagination[tempId] || {
+          hasMore: false,
+          nextCursor: null,
+          limit: DEFAULT_MESSAGE_PAGE_LIMIT
+        };
+        delete newPagination[tempId];
 
         return {
           conversations: newConversations,
           currentConversationId: state.currentConversationId === tempId ? newConv.id : state.currentConversationId,
-          messagesCache: newCache
+          messagesCache: newCache,
+          messagePagination: newPagination
         };
       });
 
@@ -187,23 +268,115 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
+  toggleConversationPinned: async (id: string) => {
+    const conversation = get().conversations.find(c => c.id === id);
+    if (!conversation) return;
+
+    await get().updateConversation(id, { is_pinned: !conversation.is_pinned });
+  },
+
+  toggleConversationFavorite: async (id: string) => {
+    const conversation = get().conversations.find(c => c.id === id);
+    if (!conversation) return;
+
+    await get().updateConversation(id, { is_favorite: !conversation.is_favorite });
+  },
+
+  branchConversation: async (conversationId: string, messageId?: string) => {
+    try {
+      const res = await api.post<Conversation>(`/chat/conversations/${conversationId}/branches`, {
+        messageId,
+      });
+      const branch = res.data;
+
+      set((state) => ({
+        conversations: [branch, ...state.conversations.filter(c => c.id !== branch.id)],
+        currentConversationId: branch.id,
+        messages: [],
+      }));
+
+      await get().selectConversation(branch.id);
+      return branch.id;
+    } catch (err) {
+      console.error('Failed to branch conversation:', err);
+      return null;
+    }
+  },
+
+  compareConversations: async (conversationId: string, otherConversationId: string) => {
+    try {
+      const res = await api.get<ConversationComparison>(
+        `/chat/conversations/${conversationId}/compare/${otherConversationId}`
+      );
+      return res.data;
+    } catch (err) {
+      console.error('Failed to compare conversations:', err);
+      return null;
+    }
+  },
+
+  archiveConversation: async (id: string) => {
+    const previousConversations = get().conversations;
+    const previousCurrentId = get().currentConversationId;
+    const previousMessages = get().messages;
+    const archivedAt = new Date().toISOString();
+
+    set((state) => ({
+      currentConversationId: state.currentConversationId === id ? null : state.currentConversationId,
+      messages: state.currentConversationId === id ? [] : state.messages,
+      conversations: state.conversations.map(c =>
+        c.id === id ? { ...c, archived_at: archivedAt, is_pinned: false } : c
+      )
+    }));
+
+    try {
+      await api.patch(`/chat/conversations/${id}`, { archived: true, is_pinned: false });
+    } catch (err) {
+      console.error('Failed to archive conversation:', err);
+      set({
+        currentConversationId: previousCurrentId,
+        conversations: previousConversations,
+        messages: previousMessages
+      });
+    }
+  },
+
+  unarchiveConversation: async (id: string) => {
+    const previousConversations = get().conversations;
+
+    set((state) => ({
+      conversations: state.conversations.map(c =>
+        c.id === id ? { ...c, archived_at: null } : c
+      )
+    }));
+
+    try {
+      await api.patch(`/chat/conversations/${id}`, { archived: false });
+    } catch (err) {
+      console.error('Failed to unarchive conversation:', err);
+      set({ conversations: previousConversations });
+    }
+  },
+
   deleteConversation: async (id: string) => {
     const previousConversations = get().conversations;
     const previousCurrentId = get().currentConversationId;
 
     // Optimistic Update
-    set((state) => ({
-      conversations: state.conversations.filter(c => c.id !== id),
-      currentConversationId: state.currentConversationId === id ? null : state.currentConversationId
-    }));
+      set((state) => ({
+        conversations: state.conversations.filter(c => c.id !== id),
+        currentConversationId: state.currentConversationId === id ? null : state.currentConversationId
+      }));
 
     try {
       await api.delete(`/chat/conversations/${id}`);
       // Remove from cache
       set((state) => {
         const newCache = { ...state.messagesCache };
+        const newPagination = { ...state.messagePagination };
         delete newCache[id];
-        return { messagesCache: newCache };
+        delete newPagination[id];
+        return { messagesCache: newCache, messagePagination: newPagination };
       });
     } catch (err) {
       console.error('Failed to delete conversation:', err);
@@ -335,15 +508,60 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
 
     try {
-      const res = await api.get(`/chat/conversations/${id}/messages`);
+      const res = await api.get(`/chat/conversations/${id}/messages`, {
+        params: { limit: DEFAULT_MESSAGE_PAGE_LIMIT }
+      });
+      const pageInfo = readMessagePageInfo(res.headers as ResponseHeaders);
       set((state) => ({
         messages: res.data,
         messagesCache: { ...state.messagesCache, [id]: res.data },
+        messagePagination: { ...state.messagePagination, [id]: pageInfo },
         loadingMessages: false
       }));
     } catch (err) {
       console.error('Failed to fetch messages:', err);
       set({ loadingMessages: false });
+    }
+  },
+
+  loadOlderMessages: async (id?: string) => {
+    const conversationId = id || get().currentConversationId;
+    if (!conversationId) return;
+
+    const pageInfo = get().messagePagination[conversationId];
+    if (!pageInfo?.hasMore || !pageInfo.nextCursor || get().loadingOlderMessages) return;
+
+    set({ loadingOlderMessages: true });
+
+    try {
+      const res = await api.get(`/chat/conversations/${conversationId}/messages`, {
+        params: {
+          limit: pageInfo.limit || DEFAULT_MESSAGE_PAGE_LIMIT,
+          cursor: pageInfo.nextCursor,
+        }
+      });
+      const nextPageInfo = readMessagePageInfo(res.headers as ResponseHeaders);
+
+      set((state) => {
+        const currentMessages = state.messagesCache[conversationId] || [];
+        const mergedMessages = mergeMessagePages(res.data, currentMessages);
+
+        return {
+          messages: state.currentConversationId === conversationId ? mergedMessages : state.messages,
+          messagesCache: {
+            ...state.messagesCache,
+            [conversationId]: mergedMessages
+          },
+          messagePagination: {
+            ...state.messagePagination,
+            [conversationId]: nextPageInfo
+          }
+        };
+      });
+    } catch (err) {
+      console.error('Failed to load older messages:', err);
+    } finally {
+      set({ loadingOlderMessages: false });
     }
   },
 

@@ -82,14 +82,14 @@ export default function ProfilePage() {
     });
 
     toast.promise(promise, {
-      loading: t('common.uploading') || 'Uploading...',
+      loading: t('common.uploading'),
       success: (res) => {
         setAvatarUrl(res.data.url);
         // Auto-save the profile after successful upload
         updateProfile({ avatar_url: res.data.url });
-        return 'Avatar updated successfully!';
+        return t('profile.avatarUploadSuccess');
       },
-      error: 'Failed to upload avatar.',
+      error: t('profile.avatarUploadFail'),
     });
 
     try {
@@ -109,7 +109,7 @@ export default function ProfilePage() {
     const promise = updateProfile({ display_name: displayName, avatar_url: avatarUrl });
 
     toast.promise(promise, {
-      loading: t('common.saving') || 'Saving...',
+      loading: t('common.saving'),
       success: t('profile.saveSuccess'),
       error: t('profile.saveFail')
     });
@@ -127,8 +127,8 @@ export default function ProfilePage() {
     const promise = deleteAccount();
 
     toast.promise(promise, {
-      loading: 'Deleting account...',
-      success: 'Account deleted.',
+      loading: t('profile.deleteLoading'),
+      success: t('profile.deleteSuccess'),
       error: t('profile.deleteFail')
     });
 
@@ -253,7 +253,7 @@ export default function ProfilePage() {
                           value={displayName}
                           onChange={(e) => setDisplayName(e.target.value)}
                           className="w-full bg-bg-base border border-border rounded-lg px-3 py-2 text-sm text-text-main focus:ring-2 focus:ring-primary outline-none transition-all"
-                          placeholder="Your Name"
+                          placeholder={t('profile.displayNamePlaceholder')}
                         />
                       </div>
 
@@ -357,7 +357,7 @@ export default function ProfilePage() {
                         />
                         <div
                           className="w-8 h-8 rounded-full border-2 border-border flex items-center justify-center bg-linear-to-br from-red-500 via-green-500 to-blue-500"
-                          title="Custom Color"
+                          title={t('profile.customColor')}
                         />
                       </div>
                     </div>

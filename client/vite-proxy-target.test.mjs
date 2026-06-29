@@ -49,7 +49,7 @@ test('uses BACKEND_URL from server .env before deriving a localhost port', () =>
   });
 });
 
-test('falls back to localhost port 3002 when server .env is unavailable', () => {
+test('falls back to localhost port 3000 when server .env is unavailable', () => {
   const workspaceRoot = mkdtempSync(path.join(tmpdir(), 'chatllm-vite-proxy-'));
   const clientDir = path.join(workspaceRoot, 'client');
 
@@ -58,7 +58,7 @@ test('falls back to localhost port 3002 when server .env is unavailable', () => 
   try {
     const target = resolveApiProxyTarget({}, clientDir);
 
-    assert.equal(target, 'http://localhost:3002');
+    assert.equal(target, 'http://localhost:3000');
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
   }

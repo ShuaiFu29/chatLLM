@@ -74,10 +74,12 @@ export default defineConfig({
     viteCompression({
       algorithm: 'gzip',
       ext: '.gz',
+      verbose: false,
     }),
     viteCompression({
       algorithm: 'brotliCompress',
       ext: '.br',
+      verbose: false,
     })
   ],
   server: {

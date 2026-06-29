@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -18,6 +19,7 @@ const serverRoot = path.resolve(__dirname, '..');
 
 const { generateAccessToken } = require(path.join(serverRoot, 'dist', 'lib', 'jwt.js'));
 const { resolveAuthenticatedUser } = require(path.join(serverRoot, 'dist', 'middleware', 'auth.js'));
+const authControllerSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'auth.ts'), 'utf8');
 
 test('resolveAuthenticatedUser returns the current database user rather than stale token fields', async () => {
   const token = generateAccessToken({
@@ -55,4 +57,12 @@ test('resolveAuthenticatedUser does not query the database for invalid tokens', 
 
   assert.equal(user, null);
   assert.equal(databaseWasQueried, false);
+});
+
+test('GitHub OAuth state cookie uses the same baseline security options as auth cookies', () => {
+  assert.match(authControllerSource, /github_oauth_state'[\s\S]*httpOnly:\s*true/);
+  assert.match(authControllerSource, /github_oauth_state'[\s\S]*secure:\s*process\.env\.NODE_ENV === 'production'/);
+  assert.match(authControllerSource, /github_oauth_state'[\s\S]*sameSite:\s*'lax'/);
+  assert.match(authControllerSource, /github_oauth_state'[\s\S]*path:\s*'\/api\/auth'/);
+  assert.match(authControllerSource, /clearCookie\('github_oauth_state',\s*\{\s*path:\s*'\/api\/auth'\s*\}\)/);
 });

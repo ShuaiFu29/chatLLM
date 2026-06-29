@@ -23,11 +23,28 @@ pnpm run dev
 
 这个命令会自动：
 - 检查 server/.env 和 rag-service/.env 是否缺关键配置
+- 检查后端 / 前端 / RAG 端口是否已经被其他进程占用
 - 启动 PostgreSQL / MinIO / Milvus / Attu
 - 后端启动时自动执行 server/migrations 里尚未应用的数据库迁移
 - 启动后端 Express
 - 启动 RAG 服务
 - 启动前端 React
+
+如果 npm run dev 提示 Port check failed，说明端口已经被别的项目或旧进程占用。
+先关闭占用 3000 / 5173 / 8000 的进程，再重新执行 npm run dev。
+也可以先单独检查：
+
+cd D:\project\chatLLM
+npm run check:ports
+
+如果 GitHub OAuth 登录跳回 localhost 后显示 Authentication failed，并且 details 里有 fetch failed / Connect Timeout Error：
+- 说明浏览器可以访问 GitHub，但后端 Node.js 进程没有走本机代理。
+- 在 server\.env 里加入与你系统代理一致的地址，例如：
+
+HTTP_PROXY=http://127.0.0.1:7897
+HTTPS_PROXY=http://127.0.0.1:7897
+
+- 保存后重新执行 npm run dev。
 
 
 单独启动命令（调试用）
@@ -65,11 +82,34 @@ http://localhost:5173
 
 后端健康检查：
 看 server/.env 里的 PORT。
-如果 PORT=3002，就是：
-http://localhost:3002/health
+如果 PORT=3000，就是：
+http://localhost:3000/health
+http://localhost:3000/health/live
+http://localhost:3000/health/ready
+
+后端指标：
+http://localhost:3000/metrics
 
 RAG 健康检查：
 http://localhost:8000/health
+http://localhost:8000/health/ready
+
+简单压测 / 冒烟检查：
+
+cd D:\project\chatLLM
+npm run load:smoke
+
+RAG 端到端冒烟检查（不消耗外部 embedding API 额度）：
+
+cd D:\project\chatLLM
+npm run rag:smoke
+
+这个命令会临时启动一个使用本地 deterministic embedding 的 RAG 服务，自动写入临时 MinIO / PostgreSQL 数据，验证 ingest -> Milvus -> retrieve，然后清理临时数据。
+
+如需指定目标和并发：
+
+cd D:\project\chatLLM
+$env:LOAD_TARGET_URL="http://localhost:3000"; $env:LOAD_REQUESTS="100"; $env:LOAD_CONCURRENCY="10"; npm run load:smoke
 
 MinIO 控制台：
 http://localhost:9001

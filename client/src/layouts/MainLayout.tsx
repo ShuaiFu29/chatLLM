@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
-import { MessageSquare, Plus, LogOut, Database, Trash2, Pencil, Menu, X, Search, Folder } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote } from 'lucide-react';
 import api from '../lib/api';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
@@ -21,6 +21,8 @@ export default function MainLayout() {
     currentProjectSpaceId,
     fetchProjectSpaces,
     createProjectSpace,
+    renameProjectSpace,
+    deleteProjectSpace,
     selectProjectSpace,
   } = useProjectSpaceStore();
   const {
@@ -30,6 +32,9 @@ export default function MainLayout() {
     createConversation,
     deleteConversation,
     renameConversation,
+    toggleConversationPinned,
+    archiveConversation,
+    unarchiveConversation,
     selectConversation,
   } = useChatStore();
 
@@ -44,12 +49,44 @@ export default function MainLayout() {
   const [editTitle, setEditTitle] = useState('');
   const editInputRef = useRef<HTMLInputElement>(null);
 
+  // Workspace creation state
+  const [isCreateProjectSpaceOpen, setIsCreateProjectSpaceOpen] = useState(false);
+  const [newProjectSpaceName, setNewProjectSpaceName] = useState('');
+  const [createProjectSpaceError, setCreateProjectSpaceError] = useState<string | null>(null);
+  const [isCreatingProjectSpace, setIsCreatingProjectSpace] = useState(false);
+  const createProjectSpaceInputRef = useRef<HTMLInputElement>(null);
+
+  const [renamingProjectSpaceId, setRenamingProjectSpaceId] = useState<string | null>(null);
+  const [renamingProjectSpaceName, setRenamingProjectSpaceName] = useState('');
+  const [renameProjectSpaceError, setRenameProjectSpaceError] = useState<string | null>(null);
+  const [isRenamingProjectSpace, setIsRenamingProjectSpace] = useState(false);
+  const renameProjectSpaceInputRef = useRef<HTMLInputElement>(null);
+
+  const [deleteProjectSpaceTarget, setDeleteProjectSpaceTarget] = useState<{ id: string; name: string } | null>(null);
+  const [deleteProjectSpaceError, setDeleteProjectSpaceError] = useState<string | null>(null);
+  const [isDeletingProjectSpace, setIsDeletingProjectSpace] = useState(false);
+  const [conversationFilter, setConversationFilter] = useState<'active' | 'archived'>('active');
+
+  const baseProjectConversations = useMemo(
+    () => conversations
+      .filter((conv) => conv.project_space_id === currentProjectSpaceId)
+      .filter((conv) => conversationFilter === 'archived' ? !!conv.archived_at : !conv.archived_at),
+    [conversations, conversationFilter, currentProjectSpaceId]
+  );
+
   const currentProjectConversations = useMemo(
-    () => conversations.filter((conv) => conv.project_space_id === currentProjectSpaceId),
-    [conversations, currentProjectSpaceId]
+    () => baseProjectConversations
+      .slice()
+      .sort((a, b) => {
+        const pinnedDelta = Number(b.is_pinned || false) - Number(a.is_pinned || false);
+        if (pinnedDelta !== 0) return pinnedDelta;
+        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+      }),
+    [baseProjectConversations]
   );
 
   const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
+  const currentWorkspaceName = currentProjectSpace?.name || t('workspace.fallbackName');
 
   const fetchKnowledgeFiles = useCallback(async () => {
     try {
@@ -65,7 +102,7 @@ export default function MainLayout() {
   useEffect(() => {
     const initData = async () => {
       await fetchProjectSpaces();
-      await fetchConversations();
+      await fetchConversations({ includeArchived: true });
     };
     initData();
   }, [fetchConversations, fetchProjectSpaces]);
@@ -89,6 +126,27 @@ export default function MainLayout() {
     }
   }, [editingId]);
 
+  useEffect(() => {
+    if (!isCreateProjectSpaceOpen) return;
+
+    const focusTimer = window.setTimeout(() => {
+      createProjectSpaceInputRef.current?.focus();
+    }, 0);
+
+    return () => window.clearTimeout(focusTimer);
+  }, [isCreateProjectSpaceOpen]);
+
+  useEffect(() => {
+    if (!renamingProjectSpaceId) return;
+
+    const focusTimer = window.setTimeout(() => {
+      renameProjectSpaceInputRef.current?.focus();
+      renameProjectSpaceInputRef.current?.select();
+    }, 0);
+
+    return () => window.clearTimeout(focusTimer);
+  }, [renamingProjectSpaceId]);
+
   const handleSelectConversation = (id: string) => {
     if (editingId) return; // Prevent selection while editing
     selectConversation(id);
@@ -97,25 +155,107 @@ export default function MainLayout() {
   };
 
   const handleNewChat = async () => {
+    setConversationFilter('active');
     await createConversation(undefined, { project_space_id: currentProjectSpaceId });
     navigate('/');
     setIsMobileMenuOpen(false); // Close sidebar on mobile
   };
 
-  const handleCreateProjectSpace = async () => {
-    const name = window.prompt('Project space name');
-    const trimmedName = name?.trim();
-    if (!trimmedName) return;
+  const handleOpenCreateProjectSpace = () => {
+    setNewProjectSpaceName('');
+    setCreateProjectSpaceError(null);
+    setIsCreateProjectSpaceOpen(true);
+  };
 
-    await createProjectSpace(trimmedName);
-    await fetchConversations();
-    navigate('/knowledge');
-    setIsMobileMenuOpen(false);
+  const handleCreateProjectSpace = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+
+    const trimmedName = newProjectSpaceName.trim();
+    if (!trimmedName) {
+      setCreateProjectSpaceError(t('workspace.nameRequired'));
+      return;
+    }
+
+    setIsCreatingProjectSpace(true);
+    setCreateProjectSpaceError(null);
+
+    try {
+      await createProjectSpace(trimmedName);
+      await fetchConversations({ includeArchived: true });
+      setIsCreateProjectSpaceOpen(false);
+      navigate('/knowledge');
+      setIsMobileMenuOpen(false);
+    } catch (error) {
+      console.error('Failed to create workspace:', error);
+      setCreateProjectSpaceError(t('workspace.createFailed'));
+    } finally {
+      setIsCreatingProjectSpace(false);
+    }
   };
 
   const handleSelectProjectSpace = (id: string) => {
     selectProjectSpace(id);
     setIsMobileMenuOpen(false);
+  };
+
+  const handleOpenRenameProjectSpace = (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    setRenamingProjectSpaceId(id);
+    setRenamingProjectSpaceName(name);
+    setRenameProjectSpaceError(null);
+  };
+
+  const handleRenameProjectSpace = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    if (!renamingProjectSpaceId) return;
+
+    const trimmedName = renamingProjectSpaceName.trim();
+    if (!trimmedName) {
+      setRenameProjectSpaceError(t('workspace.nameRequired'));
+      return;
+    }
+
+    setIsRenamingProjectSpace(true);
+    setRenameProjectSpaceError(null);
+
+    try {
+      await renameProjectSpace(renamingProjectSpaceId, trimmedName);
+      setRenamingProjectSpaceId(null);
+    } catch (error) {
+      console.error('Failed to rename workspace:', error);
+      setRenameProjectSpaceError(t('workspace.renameFailed'));
+    } finally {
+      setIsRenamingProjectSpace(false);
+    }
+  };
+
+  const handleOpenDeleteProjectSpace = (e: React.MouseEvent, id: string, name: string) => {
+    e.stopPropagation();
+    setDeleteProjectSpaceTarget({ id, name });
+    setDeleteProjectSpaceError(null);
+  };
+
+  const confirmDeleteProjectSpace = async () => {
+    if (!deleteProjectSpaceTarget) return;
+
+    const isCurrentProjectSpace = deleteProjectSpaceTarget.id === currentProjectSpaceId;
+    setIsDeletingProjectSpace(true);
+    setDeleteProjectSpaceError(null);
+
+    try {
+      await deleteProjectSpace(deleteProjectSpaceTarget.id);
+      await fetchConversations({ includeArchived: true });
+      setDeleteProjectSpaceTarget(null);
+      window.dispatchEvent(new Event('knowledge-updated'));
+      if (isCurrentProjectSpace) {
+        navigate('/knowledge');
+      }
+    } catch (error) {
+      console.error('Failed to delete workspace:', error);
+      setDeleteProjectSpaceError(t('workspace.deleteFailed'));
+    } finally {
+      setIsDeletingProjectSpace(false);
+    }
   };
 
   const handleDeleteClick = (e: React.MouseEvent, id: string) => {
@@ -127,6 +267,21 @@ export default function MainLayout() {
     e.stopPropagation();
     setEditingId(id);
     setEditTitle(currentTitle);
+  };
+
+  const handleTogglePinClick = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    toggleConversationPinned(id);
+  };
+
+  const handleArchiveClick = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    archiveConversation(id);
+  };
+
+  const handleUnarchiveClick = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    unarchiveConversation(id);
   };
 
   const handleRenameSubmit = async (e?: React.FormEvent) => {
@@ -147,6 +302,8 @@ export default function MainLayout() {
   };
 
   const isKnowledgePage = location.pathname === '/knowledge';
+  const isUsagePage = location.pathname === '/usage';
+  const isPromptsPage = location.pathname === '/prompts';
 
   useEffect(() => {
     // Also support clicking on the search trigger
@@ -162,7 +319,174 @@ export default function MainLayout() {
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-main transition-colors duration-300">
-      <SearchDialog /><Modal
+      <SearchDialog />
+      <Modal
+        isOpen={isCreateProjectSpaceOpen}
+        onClose={() => {
+          if (!isCreatingProjectSpace) {
+            setIsCreateProjectSpaceOpen(false);
+          }
+        }}
+        title={t('workspace.createTitle')}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setIsCreateProjectSpaceOpen(false)}
+              disabled={isCreatingProjectSpace}
+              className="px-4 py-2 text-sm text-text-muted hover:text-text-main hover:bg-bg-surface border border-border rounded-lg transition-colors disabled:opacity-50"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              type="submit"
+              form="create-project-space-form"
+              disabled={isCreatingProjectSpace || !newProjectSpaceName.trim()}
+              className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover text-white rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isCreatingProjectSpace ? t('common.saving') : t('workspace.createAction')}
+            </button>
+          </>
+        }
+      >
+        <form id="create-project-space-form" onSubmit={handleCreateProjectSpace} className="space-y-4">
+          <div className="flex items-start gap-3 rounded-lg border border-border bg-bg-surface/40 p-3">
+            <div className="mt-0.5 rounded-lg bg-primary/10 p-2 text-primary">
+              <FolderPlus className="h-4 w-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="font-medium text-text-main">{t('workspace.createDescription')}</p>
+              <p className="mt-1 text-xs leading-5 text-text-muted">{t('workspace.createScopeHint')}</p>
+            </div>
+          </div>
+
+          <div>
+            <label htmlFor="project-space-name" className="mb-2 block text-sm font-medium text-text-main">
+              {t('workspace.nameLabel')}
+            </label>
+            <input
+              id="project-space-name"
+              ref={createProjectSpaceInputRef}
+              type="text"
+              value={newProjectSpaceName}
+              maxLength={80}
+              onChange={(event) => {
+                setNewProjectSpaceName(event.target.value);
+                if (createProjectSpaceError) setCreateProjectSpaceError(null);
+              }}
+              placeholder={t('workspace.namePlaceholder')}
+              aria-invalid={!!createProjectSpaceError}
+              className="w-full rounded-lg border border-border bg-bg-base px-3 py-2.5 text-sm text-text-main outline-none transition-colors placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+            />
+            <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+              <p className={createProjectSpaceError ? 'text-red-400' : 'text-text-muted'}>
+                {createProjectSpaceError || t('workspace.nameHint')}
+              </p>
+              <span className="shrink-0 text-text-muted">{newProjectSpaceName.trim().length}/80</span>
+            </div>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!renamingProjectSpaceId}
+        onClose={() => {
+          if (!isRenamingProjectSpace) {
+            setRenamingProjectSpaceId(null);
+          }
+        }}
+        title={t('workspace.renameTitle')}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setRenamingProjectSpaceId(null)}
+              disabled={isRenamingProjectSpace}
+              className="px-4 py-2 text-sm text-text-muted hover:text-text-main hover:bg-bg-surface border border-border rounded-lg transition-colors disabled:opacity-50"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              type="submit"
+              form="rename-project-space-form"
+              disabled={isRenamingProjectSpace || !renamingProjectSpaceName.trim()}
+              className="px-4 py-2 text-sm bg-primary hover:bg-primary-hover text-white rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isRenamingProjectSpace ? t('common.saving') : t('workspace.renameAction')}
+            </button>
+          </>
+        }
+      >
+        <form id="rename-project-space-form" onSubmit={handleRenameProjectSpace} className="space-y-4">
+          <div>
+            <label htmlFor="rename-project-space-name" className="mb-2 block text-sm font-medium text-text-main">
+              {t('workspace.nameLabel')}
+            </label>
+            <input
+              id="rename-project-space-name"
+              ref={renameProjectSpaceInputRef}
+              type="text"
+              value={renamingProjectSpaceName}
+              maxLength={80}
+              onChange={(event) => {
+                setRenamingProjectSpaceName(event.target.value);
+                if (renameProjectSpaceError) setRenameProjectSpaceError(null);
+              }}
+              aria-invalid={!!renameProjectSpaceError}
+              className="w-full rounded-lg border border-border bg-bg-base px-3 py-2.5 text-sm text-text-main outline-none transition-colors placeholder:text-text-muted focus:border-primary focus:ring-2 focus:ring-primary/20"
+            />
+            <div className="mt-2 flex items-center justify-between gap-3 text-xs">
+              <p className={renameProjectSpaceError ? 'text-red-400' : 'text-text-muted'}>
+                {renameProjectSpaceError || t('workspace.nameHint')}
+              </p>
+              <span className="shrink-0 text-text-muted">{renamingProjectSpaceName.trim().length}/80</span>
+            </div>
+          </div>
+        </form>
+      </Modal>
+
+      <Modal
+        isOpen={!!deleteProjectSpaceTarget}
+        onClose={() => {
+          if (!isDeletingProjectSpace) {
+            setDeleteProjectSpaceTarget(null);
+          }
+        }}
+        title={t('workspace.deleteTitle')}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setDeleteProjectSpaceTarget(null)}
+              disabled={isDeletingProjectSpace}
+              className="px-4 py-2 text-sm text-text-muted hover:text-text-main hover:bg-bg-surface border border-border rounded-lg transition-colors disabled:opacity-50"
+            >
+              {t('common.cancel')}
+            </button>
+            <button
+              onClick={confirmDeleteProjectSpace}
+              disabled={isDeletingProjectSpace}
+              className="px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isDeletingProjectSpace ? t('common.loading') : t('workspace.deleteAction')}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <p className="text-sm text-text-muted">
+            {t('workspace.deleteConfirm', { name: deleteProjectSpaceTarget?.name || '' })}
+          </p>
+          <p className="rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-xs leading-5 text-red-300">
+            {t('workspace.deleteWarning')}
+          </p>
+          {deleteProjectSpaceError && (
+            <p className="text-sm text-red-400">{deleteProjectSpaceError}</p>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
         isOpen={!!deleteId}
         onClose={() => setDeleteId(null)}
         title={t('common.delete')}
@@ -199,83 +523,148 @@ export default function MainLayout() {
       {/* Sidebar */}
       <div className={`
         fixed md:relative inset-y-0 left-0 z-50
-        w-64 bg-bg-sidebar border-r border-border flex flex-col transition-transform duration-300
+        w-72 max-w-[calc(100vw-1rem)] bg-bg-sidebar border-r border-border flex flex-col transition-transform duration-300
         ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-      `}>
-        <div className="p-4 border-b border-border space-y-3">
-          <div className="flex items-center justify-center relative">
-            <h1 className="text-xl font-bold text-primary text-center w-full">ChatLLM</h1>
+      `} data-testid="app-sidebar">
+        <div className="border-b border-border p-4">
+          <div className="relative mb-4 flex items-center">
+            <button
+              type="button"
+              onClick={() => {
+                navigate('/');
+                setIsMobileMenuOpen(false);
+              }}
+              className="flex min-w-0 items-center gap-2 rounded-xl px-1 py-1 text-left transition-colors hover:bg-bg-surface"
+              title="ChatLLM"
+            >
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-primary text-sm font-bold text-white">
+                C
+              </span>
+              <span className="truncate text-lg font-semibold text-text-main">ChatLLM</span>
+            </button>
             {/* Close button for mobile */}
             <button
               onClick={() => setIsMobileMenuOpen(false)}
-              className="md:hidden p-2 text-text-muted hover:text-text-main absolute right-0"
+              className="absolute right-0 rounded-lg p-2 text-text-muted transition-colors hover:bg-bg-surface hover:text-text-main md:hidden"
+              aria-label={t('common.close')}
             >
               <X className="w-5 h-5" />
             </button>
           </div>
 
-          <button
-            onClick={handleNewChat}
-            className="w-full flex items-center justify-center gap-2 bg-primary hover:bg-primary-hover text-white py-2 px-4 rounded-lg transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            {t('sidebar.newChat')}
-          </button>
+          <div className="space-y-2">
+            <button
+              onClick={handleNewChat}
+              className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-primary-hover"
+            >
+              <Plus className="w-4 h-4" />
+              {t('sidebar.newChat')}
+            </button>
 
-          <button
-            onClick={() => setSearchOpen(true)}
-            data-search-trigger
-            className="w-full flex items-center gap-2 bg-bg-surface hover:bg-bg-base text-text-muted hover:text-text-main py-2 px-3 rounded-lg border border-border transition-colors text-sm"
-          >
-            <Search className="w-4 h-4" />
-            <span className="flex-1 text-left">{t('search.placeholder') || 'Search...'}</span>
-          </button>
+            <button
+              onClick={() => setSearchOpen(true)}
+              data-search-trigger
+              className="flex h-10 w-full items-center gap-2 rounded-xl border border-border bg-bg-base px-3 text-sm text-text-muted transition-colors hover:border-primary/50 hover:bg-bg-surface hover:text-text-main"
+            >
+              <Search className="w-4 h-4" />
+              <span className="flex-1 text-left">{t('search.placeholder') || 'Search...'}</span>
+            </button>
+          </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-2 space-y-2">
-          <div className="pb-3 mb-3 border-b border-border">
-            <div className="flex items-center justify-between px-2 py-1">
-              <span className="text-xs font-semibold uppercase tracking-wider text-text-muted">Project Spaces</span>
+        <div className="flex-1 overflow-y-auto p-3 space-y-4">
+          <div className="rounded-xl bg-bg-base/40 p-2">
+            <div className="flex items-center justify-between px-2 pb-2 pt-1">
+              <span className="text-xs font-semibold uppercase tracking-wide text-text-muted">{t('workspace.sectionTitle')}</span>
               <button
-                onClick={handleCreateProjectSpace}
-                className="p-1 text-text-muted hover:text-text-main hover:bg-bg-surface rounded transition-colors"
-                title="New Project Space"
-                aria-label="New Project Space"
+                onClick={handleOpenCreateProjectSpace}
+                className="rounded-lg p-1.5 text-text-muted transition-colors hover:bg-bg-surface hover:text-text-main"
+                title={t('workspace.createAction')}
+                aria-label={t('workspace.createAction')}
               >
                 <Plus className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="space-y-1">
+            <div className="space-y-1.5">
               {projectSpaces.map((space) => (
-                <button
+                <div
                   key={space.id}
-                  onClick={() => handleSelectProjectSpace(space.id)}
-                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg transition-colors text-left ${
+                  className={`group/workspace flex items-center rounded-xl transition-colors ${
                     currentProjectSpaceId === space.id
-                      ? 'bg-bg-surface text-text-main border border-border'
+                      ? 'border border-border bg-bg-surface text-text-main shadow-sm'
                       : 'text-text-muted hover:text-text-main hover:bg-bg-surface'
                   }`}
                 >
-                  <Folder className="w-4 h-4 shrink-0" />
-                  <span className="truncate text-sm flex-1">{space.name}</span>
-                  {space.is_default && <span className="text-[10px] text-text-muted">default</span>}
-                </button>
+                  <button
+                    onClick={() => handleSelectProjectSpace(space.id)}
+                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left"
+                  >
+                    <Folder className="w-4 h-4 shrink-0" />
+                    <span className="truncate text-sm flex-1">{space.name}</span>
+                    {space.is_default && <span className="text-[10px] text-text-muted">{t('workspace.defaultBadge')}</span>}
+                  </button>
+                  {!space.is_default && (
+                    <div className="flex shrink-0 items-center gap-1 pr-2 opacity-0 transition-opacity group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100">
+                      <button
+                        onClick={(event) => handleOpenRenameProjectSpace(event, space.id, space.name)}
+                        className="rounded p-1 text-text-muted transition-colors hover:bg-bg-base hover:text-text-main"
+                        title={t('workspace.renameAction')}
+                        aria-label={t('workspace.renameAction')}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={(event) => handleOpenDeleteProjectSpace(event, space.id, space.name)}
+                        className="rounded p-1 text-text-muted transition-colors hover:bg-red-500/20 hover:text-red-300"
+                        title={t('workspace.deleteAction')}
+                        aria-label={t('workspace.deleteAction')}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )}
+                </div>
               ))}
             </div>
           </div>
 
-          <div className="px-2 pb-1 text-xs text-text-muted">
-            {currentProjectSpace?.name || 'Project'} conversations
-          </div>
-          {currentProjectConversations.map((conv) => (
-            <div
-              key={conv.id}
-              className={`w-full flex items-center gap-3 p-3 rounded-lg text-left transition-colors group relative ${currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
-                ? 'bg-primary text-white'
-                : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
-                }`}
-            >
+          <div className="space-y-2 rounded-xl bg-bg-base/40 p-2">
+            <div className="flex items-center justify-between gap-2 px-2 pb-1">
+              <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-text-muted">
+                {t('workspace.conversationsLabel', { name: currentWorkspaceName })}
+              </span>
+              <div className="flex shrink-0 rounded-lg border border-border bg-bg-sidebar p-0.5">
+                <button
+                  onClick={() => setConversationFilter('active')}
+                  className={`rounded-md px-2 py-1 text-[10px] transition-colors ${
+                    conversationFilter === 'active' ? 'bg-primary text-white' : 'text-text-muted hover:text-text-main'
+                  }`}
+                >
+                  {t('chat.showActive')}
+                </button>
+                <button
+                  onClick={() => setConversationFilter('archived')}
+                  className={`rounded-md px-2 py-1 text-[10px] transition-colors ${
+                    conversationFilter === 'archived' ? 'bg-primary text-white' : 'text-text-muted hover:text-text-main'
+                  }`}
+                >
+                  {t('chat.showArchived')}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-1.5">
+              {currentProjectConversations.map((conv) => (
+                <div
+                  key={conv.id}
+                  className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-colors group relative ${currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
+                    ? 'bg-primary text-white shadow-sm'
+                    : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+                    }`}
+                >
               <MessageSquare className="w-4 h-4 shrink-0" />
+              {conv.is_pinned && conversationFilter === 'active' && (
+                <Pin className="h-3 w-3 shrink-0 text-primary" />
+              )}
 
               {editingId === conv.id ? (
                 <form onSubmit={handleRenameSubmit} className="flex-1 flex items-center gap-1 min-w-0">
@@ -296,55 +685,128 @@ export default function MainLayout() {
                   />
                 </form>
               ) : (
-                <span
-                  className="truncate text-sm flex-1 cursor-pointer"
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 cursor-pointer text-left"
                   onClick={() => handleSelectConversation(conv.id)}
                 >
-                  {conv.title === 'New Chat' ? t('sidebar.newChat') : conv.title}
-                </span>
+                  <span className="block truncate text-sm">
+                    {conv.title === 'New Chat' ? t('sidebar.newChat') : conv.title}
+                  </span>
+                  {((conv.tags && conv.tags.length > 0) || conv.note) && (
+                    <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+                      {conv.tags?.slice(0, 2).map((tag) => (
+                        <span
+                          key={tag}
+                          className={`max-w-20 truncate rounded border px-1.5 py-0.5 text-[10px] ${
+                            currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
+                              ? 'border-white/25 text-white/80'
+                              : 'border-border text-text-muted'
+                          }`}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                      {conv.note && (
+                        <span
+                          className={`inline-flex items-center rounded border px-1 py-0.5 ${
+                            currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
+                              ? 'border-white/25 text-white/80'
+                              : 'border-border text-text-muted'
+                          }`}
+                          title={`${t('chat.conversationNote')}: ${conv.note}`}
+                          aria-label={t('chat.conversationNote')}
+                        >
+                          <StickyNote className="h-3 w-3" />
+                        </span>
+                      )}
+                    </span>
+                  )}
+                </button>
               )}
 
               {/* Action Buttons */}
               {!editingId && (
                 <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${currentConversationId === conv.id ? 'text-white' : 'text-text-muted'
                   }`}>
+                  {conversationFilter === 'active' && (
+                    <button
+                      onClick={(e) => handleTogglePinClick(e, conv.id)}
+                      className={`p-1 hover:bg-white/20 rounded transition-colors`}
+                      title={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
+                      aria-label={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
+                    >
+                      <Pin className={`w-3 h-3 ${conv.is_pinned ? 'fill-current' : ''}`} />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => handleEditClick(e, conv.id, conv.title)}
                     className={`p-1 hover:bg-white/20 rounded transition-colors`}
-                    title="Rename"
+                    title={t('common.edit')}
+                    aria-label={t('common.edit')}
                   >
                     <Pencil className="w-3 h-3" />
                   </button>
+                  {conversationFilter === 'archived' ? (
+                    <button
+                      onClick={(e) => handleUnarchiveClick(e, conv.id)}
+                      className={`p-1 hover:bg-white/20 rounded transition-colors`}
+                      title={t('chat.unarchiveConversation')}
+                      aria-label={t('chat.unarchiveConversation')}
+                    >
+                      <ArchiveRestore className="w-3 h-3" />
+                    </button>
+                  ) : (
+                    <button
+                      onClick={(e) => handleArchiveClick(e, conv.id)}
+                      className={`p-1 hover:bg-white/20 rounded transition-colors`}
+                      title={t('chat.archiveConversation')}
+                      aria-label={t('chat.archiveConversation')}
+                    >
+                      <Archive className="w-3 h-3" />
+                    </button>
+                  )}
                   <button
                     onClick={(e) => handleDeleteClick(e, conv.id)}
                     className={`p-1 hover:bg-red-500/80 hover:text-white rounded transition-colors`}
-                    title="Delete"
+                    title={t('common.delete')}
+                    aria-label={t('common.delete')}
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
               )}
+                </div>
+              ))}
             </div>
-          ))}
-          {currentProjectConversations.length === 0 && (
-            <div className="text-text-muted text-sm text-center mt-4">{t('sidebar.noConversations')}</div>
-          )}
+            {currentProjectConversations.length === 0 && (
+              <div className="px-3 py-4 text-center text-sm text-text-muted">
+                {conversationFilter === 'archived' ? t('sidebar.noArchivedConversations') : t('sidebar.noConversations')}
+              </div>
+            )}
+          </div>
 
-          {/* Knowledge Base Section */}
-          <div className="pt-4 mt-4 border-t border-border">
+          {/* Workspace Documents Section */}
+          <div className="rounded-xl bg-bg-base/40 p-2">
             <button
               onClick={() => {
                 navigate('/knowledge');
                 setIsMobileMenuOpen(false);
               }}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-lg transition-colors group ${isKnowledgePage
-                ? 'bg-primary text-white'
+              className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl transition-colors group ${isKnowledgePage
+                ? 'bg-primary text-white shadow-sm'
                 : 'text-text-muted hover:text-text-main hover:bg-bg-surface'
                 }`}
+              title={t('workspace.knowledgeScopeHint')}
             >
-              <div className="flex items-center gap-2">
-                <Database className="w-4 h-4" />
-                <span className="text-xs font-semibold uppercase tracking-wider">{t('sidebar.knowledgeBase')}</span>
+              <div className="flex min-w-0 items-center gap-2">
+                <FileText className="w-4 h-4 shrink-0" />
+                <div className="min-w-0 text-left">
+                  <span className="block truncate text-xs font-semibold uppercase tracking-wider">{t('sidebar.knowledgeBase')}</span>
+                  <span className={`block truncate text-[10px] ${isKnowledgePage ? 'text-white/75' : 'text-text-muted'}`}>
+                    {t('workspace.documentsScopeLabel', { name: currentWorkspaceName })}
+                  </span>
+                </div>
               </div>
               <span className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${isKnowledgePage
                 ? 'bg-primary-hover border-white/20'
@@ -356,17 +818,43 @@ export default function MainLayout() {
           </div>
         </div>
 
-        <div className="p-4 border-t border-border bg-bg-sidebar">
+        <div className="border-t border-border bg-bg-sidebar p-3">
+          <button
+            onClick={() => {
+              navigate('/prompts');
+              setIsMobileMenuOpen(false);
+            }}
+            className={`mb-2 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
+              isPromptsPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+            }`}
+            title={t('sidebar.promptTemplates')}
+          >
+            <BookOpenText className="h-4 w-4 shrink-0" />
+            <span className="text-sm font-medium">{t('sidebar.promptTemplates')}</span>
+          </button>
+          <button
+            onClick={() => {
+              navigate('/usage');
+              setIsMobileMenuOpen(false);
+            }}
+            className={`mb-3 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
+              isUsagePage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+            }`}
+            title={t('usage.title')}
+          >
+            <BarChart3 className="h-4 w-4 shrink-0" />
+            <span className="text-sm font-medium">{t('sidebar.usage')}</span>
+          </button>
           <div
             onClick={() => {
               navigate('/profile');
               setIsMobileMenuOpen(false);
             }}
-            className={`flex items-center gap-3 mb-3 p-2 -mx-2 rounded-lg cursor-pointer transition-colors group ${location.pathname === '/profile'
+            className={`mb-3 flex cursor-pointer items-center gap-3 rounded-xl border border-border bg-bg-base/50 p-2.5 transition-colors group ${location.pathname === '/profile'
               ? 'bg-bg-surface'
               : 'hover:bg-bg-surface'
               }`}
-            title="View Profile & Settings"
+            title={t('profile.title')}
           >
             <img
               src={user?.avatar_url}
@@ -383,7 +871,7 @@ export default function MainLayout() {
           <div className="space-y-2">
             <button
               onClick={() => logout()}
-              className="w-full flex items-center justify-center gap-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-900/20 py-2 rounded transition-colors"
+              className="flex w-full items-center justify-center gap-2 rounded-xl py-2 text-sm text-red-400 transition-colors hover:bg-red-900/20 hover:text-red-300"
             >
               <LogOut className="w-4 h-4" />
               {t('sidebar.signOut')}
@@ -399,6 +887,8 @@ export default function MainLayout() {
           <button
             onClick={() => setIsMobileMenuOpen(true)}
             className="p-2 -ml-1 text-text-muted hover:text-text-main rounded-lg hover:bg-bg-surface"
+            title={t('sidebar.openMenu')}
+            aria-label={t('sidebar.openMenu')}
           >
             <Menu className="w-5 h-5" />
           </button>

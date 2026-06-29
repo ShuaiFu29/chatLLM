@@ -1,6 +1,3 @@
-import io
-
-import pypdf
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from db import get_file, replace_file_chunks, update_file_progress, update_file_status
@@ -9,22 +6,30 @@ from storage import download_object
 from vector_store import delete_file_vectors, insert_vectors
 
 
+EMBEDDING_BATCH_SIZE = 10
+
+
+def format_ingestion_error(error: Exception) -> str:
+    message = str(error)
+    if "1113" in message or "余额不足或无可用资源包" in message:
+        return "百炼 embedding 额度不足或无可用资源包，请充值或购买资源包后点击重试。"
+    if "batch size is invalid" in message:
+        return "Embedding 批量大小超过服务限制，请稍后重试。"
+    return message
+
+
 def extract_text(file_bytes: bytes, file_type: str | None, object_key: str) -> tuple[str, bool]:
-    text_content = ""
-    is_markdown = False
+    normalized_key = object_key.lower()
+    is_markdown = (
+        file_type == "text/markdown"
+        or normalized_key.endswith(".md")
+        or normalized_key.endswith(".markdown")
+    )
 
-    if file_type == "application/pdf" or object_key.lower().endswith(".pdf"):
-        pdf_stream = io.BytesIO(file_bytes)
-        reader = pypdf.PdfReader(pdf_stream)
-        for page in reader.pages:
-            text_content += (page.extract_text() or "") + "\n"
-    elif file_type == "text/markdown" or object_key.lower().endswith(".md"):
-        text_content = file_bytes.decode("utf-8")
-        is_markdown = True
-    else:
-        text_content = file_bytes.decode("utf-8")
+    if not is_markdown:
+        raise ValueError("Only Markdown files (.md, .markdown) are supported")
 
-    return text_content, is_markdown
+    return file_bytes.decode("utf-8"), True
 
 
 def split_text(text_content: str, is_markdown: bool) -> list[str]:
@@ -84,7 +89,7 @@ def process_file(file_id: str):
         delete_file_vectors(file_id)
         chunk_rows = replace_file_chunks(file_id, user_id, chunks, file_data)
 
-        batch_size = 20
+        batch_size = EMBEDDING_BATCH_SIZE
         processed_count = 0
 
         for i in range(0, total_chunks, batch_size):
@@ -115,5 +120,5 @@ def process_file(file_id: str):
         return {"status": "success", "chunks": total_chunks}
 
     except Exception as e:
-        update_file_status(file_id, "failed", error_message=str(e))
+        update_file_status(file_id, "failed", error_message=format_ingestion_error(e))
         raise

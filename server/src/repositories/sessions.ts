@@ -69,3 +69,8 @@ export const deleteSession = async (id: string) => {
 export const deleteSessionsByUser = async (userId: string) => {
   await query('delete from sessions where user_id = $1', [userId]);
 };
+
+export const deleteExpiredSessions = async () => {
+  const { rowCount } = await query('delete from sessions where expires_at < now()');
+  return rowCount || 0;
+};

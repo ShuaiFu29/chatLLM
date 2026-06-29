@@ -73,7 +73,23 @@ cd D:\project\chatLLM
 npm run dev
 ```
 
-这个命令会自动检查配置、启动 Docker 基础设施，并同时启动 Express 后端、Python RAG 服务和 React 前端。
+这个命令会自动检查配置和本地端口占用，启动 Docker 基础设施，并同时启动 Express 后端、Python RAG 服务和 React 前端。
+
+如果 `npm run dev` 提示 `Port check failed`，说明后端、前端或 RAG 端口已经被其他项目或旧进程占用。先关闭占用 `3000` / `5173` / `8000` 的进程，再重新启动。也可以单独执行：
+
+```bash
+cd D:\project\chatLLM
+npm run check:ports
+```
+
+RAG 链路可以用本地 deterministic embedding 做端到端冒烟验证，不消耗外部 embedding API 额度：
+
+```bash
+cd D:\project\chatLLM
+npm run rag:smoke
+```
+
+这个命令会临时启动一个独立 RAG 服务，写入临时 PostgreSQL / MinIO 数据，验证 ingest、Milvus 写入、retrieve 命中，然后清理临时数据。
 
 如果使用 pnpm，也可以执行：
 
@@ -96,12 +112,26 @@ S3_ACCESS_KEY=minioadmin
 S3_SECRET_KEY=minioadmin
 S3_BUCKET=documents
 RAG_SERVICE_URL=http://localhost:8000
+RAG_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
+RAG_CLEANUP_TIMEOUT_MS=10000
+FILE_QUEUE_INGEST_TIMEOUT_MS=10000
+HTTP_PROXY=http://127.0.0.1:7897
+HTTPS_PROXY=http://127.0.0.1:7897
+EMBEDDING_PROVIDER=openai-compatible
+EMBEDDING_API_KEY=
+EMBEDDING_BASE_URL=https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
+EMBEDDING_DIMENSION=1024
 ```
+
+`HTTP_PROXY` / `HTTPS_PROXY` 是可选项。只有当浏览器能打开 GitHub、但后端 OAuth callback 报 `fetch failed` 或 `Connect Timeout Error` 时才需要配置，值应与你本机系统代理端口一致。
+
+`EMBEDDING_PROVIDER=local` 只建议用于本地 smoke / 开发验证。生产或真实语义检索仍应使用 OpenAI-compatible embedding provider。
 
 ### 访问地址
 
 - 前端：`http://localhost:5173`
-- 后端健康检查：看 `server/.env` 的 `PORT`，默认是 `http://localhost:3002/health`
+- 后端健康检查：看 `server/.env` 的 `PORT`，默认是 `http://localhost:3000/health`
 - RAG 健康检查：`http://localhost:8000/health`
 - MinIO Console：`http://localhost:9001`
 - Attu / Milvus 管理界面：`http://localhost:3001`
@@ -134,13 +164,16 @@ npm run dev
 - JWT access token + refresh token rotation
 - Project Spaces：按项目组织会话、文件和 RAG 检索上下文
 - ChatGPT 风格流式对话
+- 大历史会话按 cursor 分页加载，避免一次性拉取全部消息
 - 会话创建、重命名、删除
 - 会话可移动到不同 Project Space
 - 消息搜索
 - Markdown 文件分片上传和断点续传
 - 文件处理失败后可重试
+- Usage 页面可查看文档处理队列、失败原因和重试状态
 - MinIO 文档存储
 - RAG 文档解析、切块、embedding、Milvus 检索
+- 本地 RAG smoke 可不依赖外部 embedding 额度完成 ingest / retrieve 闭环
 - 对话回答展示基础引用来源、片段编号、相似度和摘要
 - 个人资料和主题设置
 

@@ -25,9 +25,6 @@ const ragRules = {
     'S3_SECRET_KEY',
     'MILVUS_URI',
     'MILVUS_COLLECTION',
-    'EMBEDDING_API_KEY',
-    'EMBEDDING_BASE_URL',
-    'EMBEDDING_MODEL',
     'EMBEDDING_DIMENSION',
   ],
   forbiddenPrefixes: ['SUPABASE_'],
@@ -92,12 +89,31 @@ export function validateEnvMap(label, env, rules) {
 
 export function validateProjectEnvMaps(envMaps) {
   const serverEnv = envMaps['server/.env'] || {};
+  const ragEnv = envMaps['rag-service/.env'] || {};
 
   return [
     ...validateEnvMap('server/.env', serverEnv, serverRules),
     ...validateServerBackendUrl(serverEnv),
-    ...validateEnvMap('rag-service/.env', envMaps['rag-service/.env'] || {}, ragRules),
+    ...validateRagEnvMap(ragEnv),
   ];
+}
+
+function validateRagEnvMap(env) {
+  const provider = env.EMBEDDING_PROVIDER?.trim().toLowerCase() || 'openai-compatible';
+  const issues = validateEnvMap('rag-service/.env', env, ragRules);
+
+  if (!['openai-compatible', 'local'].includes(provider)) {
+    issues.push('rag-service/.env EMBEDDING_PROVIDER must be either openai-compatible or local');
+    return issues;
+  }
+
+  if (provider !== 'local') {
+    issues.push(...validateEnvMap('rag-service/.env', env, {
+      required: ['EMBEDDING_API_KEY', 'EMBEDDING_BASE_URL', 'EMBEDDING_MODEL'],
+    }));
+  }
+
+  return issues;
 }
 
 function validateServerBackendUrl(env) {

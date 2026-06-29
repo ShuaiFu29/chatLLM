@@ -58,8 +58,8 @@ class ConfigTests(unittest.TestCase):
             "MILVUS_URI": "http://localhost:19530",
             "MILVUS_COLLECTION": "document_chunks",
             "EMBEDDING_API_KEY": "embedding-key",
-            "EMBEDDING_BASE_URL": "https://open.bigmodel.cn/api/paas/v4/",
-            "EMBEDDING_MODEL": "embedding-2",
+            "EMBEDDING_BASE_URL": "https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "EMBEDDING_MODEL": "text-embedding-v4",
             "EMBEDDING_DIMENSION": "zero",
         })
 
@@ -75,8 +75,8 @@ class ConfigTests(unittest.TestCase):
             "MILVUS_URI": "http://localhost:19530",
             "MILVUS_COLLECTION": "document_chunks",
             "EMBEDDING_API_KEY": "embedding-key",
-            "EMBEDDING_BASE_URL": "https://open.bigmodel.cn/api/paas/v4/",
-            "EMBEDDING_MODEL": "embedding-2",
+            "EMBEDDING_BASE_URL": "https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+            "EMBEDDING_MODEL": "text-embedding-v4",
             "EMBEDDING_DIMENSION": "1024",
         })
 

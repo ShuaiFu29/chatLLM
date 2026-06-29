@@ -11,12 +11,38 @@ const weakJwtSecrets = new Set([
   'replace-with-a-long-random-secret',
 ]);
 
-const DEFAULT_SERVER_PORT = 3002;
+const DEFAULT_SERVER_PORT = 3000;
+const DEFAULT_DB_POOL_MAX = 10;
+const DEFAULT_DB_CONNECTION_TIMEOUT_MS = 5000;
+const DEFAULT_DB_IDLE_TIMEOUT_MS = 30000;
+const DEFAULT_DB_QUERY_TIMEOUT_MS = 30000;
+const DEFAULT_DB_SLOW_QUERY_THRESHOLD_MS = 500;
+const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
+const DEFAULT_RATE_LIMIT_MAX = 600;
+const DEFAULT_CHAT_RATE_LIMIT_MAX = 60;
+const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 120;
+const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
+const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
+const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 10000;
+const DEFAULT_FILE_QUEUE_MAX_ATTEMPTS = 3;
+const DEFAULT_FILE_QUEUE_RETRY_BASE_DELAY_MS = 60000;
+const DEFAULT_FILE_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
+const DEFAULT_RAG_HEALTH_TIMEOUT_MS = 2000;
+const DEFAULT_RAG_RETRIEVE_TIMEOUT_MS = 10000;
+const DEFAULT_RAG_CLEANUP_TIMEOUT_MS = 10000;
+const DEFAULT_RAG_CIRCUIT_FAILURE_THRESHOLD = 5;
+const DEFAULT_RAG_CIRCUIT_RESET_MS = 30000;
+const DEFAULT_CHAT_STREAM_MAX_CONCURRENT = 20;
+const DEFAULT_CHAT_STREAM_MAX_CONCURRENT_PER_USER = 3;
+const DEFAULT_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
+const DEFAULT_UPLOAD_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
 
 export interface ServerEnv {
   PORT: number;
   FRONTEND_URL: string;
   BACKEND_URL: string;
+  CORS_ALLOWED_ORIGINS: string[];
   DATABASE_URL: string;
   S3_ENDPOINT: string;
   S3_ACCESS_KEY: string;
@@ -37,6 +63,32 @@ export interface ServerEnv {
   EMBEDDING_API_KEY?: string;
   EMBEDDING_BASE_URL: string;
   EMBEDDING_MODEL: string;
+  EMBEDDING_DEBUG_LOGS: boolean;
+  DB_POOL_MAX: number;
+  DB_CONNECTION_TIMEOUT_MS: number;
+  DB_IDLE_TIMEOUT_MS: number;
+  DB_QUERY_TIMEOUT_MS: number;
+  DB_SLOW_QUERY_THRESHOLD_MS: number;
+  RATE_LIMIT_WINDOW_MS: number;
+  RATE_LIMIT_MAX: number;
+  CHAT_RATE_LIMIT_MAX: number;
+  UPLOAD_RATE_LIMIT_MAX: number;
+  FILE_QUEUE_INTERVAL_MS: number;
+  FILE_QUEUE_CONCURRENCY: number;
+  FILE_QUEUE_INGEST_TIMEOUT_MS: number;
+  FILE_QUEUE_MAX_ATTEMPTS: number;
+  FILE_QUEUE_RETRY_BASE_DELAY_MS: number;
+  FILE_QUEUE_STALE_AFTER_MS: number;
+  RAG_HEALTH_TIMEOUT_MS: number;
+  RAG_RETRIEVE_TIMEOUT_MS: number;
+  RAG_CLEANUP_TIMEOUT_MS: number;
+  RAG_CIRCUIT_FAILURE_THRESHOLD: number;
+  RAG_CIRCUIT_RESET_MS: number;
+  CHAT_STREAM_MAX_CONCURRENT: number;
+  CHAT_STREAM_MAX_CONCURRENT_PER_USER: number;
+  MAINTENANCE_INTERVAL_MS: number;
+  UPLOAD_TEMP_MAX_AGE_MS: number;
+  SHUTDOWN_TIMEOUT_MS: number;
 }
 
 const getRequired = (env: NodeJS.ProcessEnv, key: string) => env[key]?.trim() || '';
@@ -52,6 +104,30 @@ const getPort = (value: string | undefined) => {
     throw new Error('Server configuration invalid:\n- PORT must be a positive integer');
   }
   return parsed;
+};
+
+const getPositiveInteger = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: number,
+  errors: string[]
+) => {
+  const raw = env[key]?.trim();
+  if (!raw) return defaultValue;
+
+  const parsed = Number.parseInt(raw, 10);
+  if (Number.isNaN(parsed) || parsed <= 0) {
+    errors.push(`${key} must be a positive integer`);
+    return defaultValue;
+  }
+
+  return parsed;
+};
+
+const getStringList = (value: string | undefined, defaultValue: string[]) => {
+  const rawValues = value?.split(',').map((item) => item.trim()).filter(Boolean);
+  const values = rawValues && rawValues.length > 0 ? rawValues : defaultValue;
+  return Array.from(new Set(values));
 };
 
 export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv => {
@@ -73,16 +149,45 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     errors.push('JWT_SECRET must be replaced with a long random secret');
   }
 
+  const dbPoolMax = getPositiveInteger(env, 'DB_POOL_MAX', DEFAULT_DB_POOL_MAX, errors);
+  const dbConnectionTimeoutMs = getPositiveInteger(env, 'DB_CONNECTION_TIMEOUT_MS', DEFAULT_DB_CONNECTION_TIMEOUT_MS, errors);
+  const dbIdleTimeoutMs = getPositiveInteger(env, 'DB_IDLE_TIMEOUT_MS', DEFAULT_DB_IDLE_TIMEOUT_MS, errors);
+  const dbQueryTimeoutMs = getPositiveInteger(env, 'DB_QUERY_TIMEOUT_MS', DEFAULT_DB_QUERY_TIMEOUT_MS, errors);
+  const dbSlowQueryThresholdMs = getPositiveInteger(env, 'DB_SLOW_QUERY_THRESHOLD_MS', DEFAULT_DB_SLOW_QUERY_THRESHOLD_MS, errors);
+  const rateLimitWindowMs = getPositiveInteger(env, 'RATE_LIMIT_WINDOW_MS', DEFAULT_RATE_LIMIT_WINDOW_MS, errors);
+  const rateLimitMax = getPositiveInteger(env, 'RATE_LIMIT_MAX', DEFAULT_RATE_LIMIT_MAX, errors);
+  const chatRateLimitMax = getPositiveInteger(env, 'CHAT_RATE_LIMIT_MAX', DEFAULT_CHAT_RATE_LIMIT_MAX, errors);
+  const uploadRateLimitMax = getPositiveInteger(env, 'UPLOAD_RATE_LIMIT_MAX', DEFAULT_UPLOAD_RATE_LIMIT_MAX, errors);
+  const fileQueueIntervalMs = getPositiveInteger(env, 'FILE_QUEUE_INTERVAL_MS', DEFAULT_FILE_QUEUE_INTERVAL_MS, errors);
+  const fileQueueConcurrency = getPositiveInteger(env, 'FILE_QUEUE_CONCURRENCY', DEFAULT_FILE_QUEUE_CONCURRENCY, errors);
+  const fileQueueIngestTimeoutMs = getPositiveInteger(env, 'FILE_QUEUE_INGEST_TIMEOUT_MS', DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS, errors);
+  const fileQueueMaxAttempts = getPositiveInteger(env, 'FILE_QUEUE_MAX_ATTEMPTS', DEFAULT_FILE_QUEUE_MAX_ATTEMPTS, errors);
+  const fileQueueRetryBaseDelayMs = getPositiveInteger(env, 'FILE_QUEUE_RETRY_BASE_DELAY_MS', DEFAULT_FILE_QUEUE_RETRY_BASE_DELAY_MS, errors);
+  const fileQueueStaleAfterMs = getPositiveInteger(env, 'FILE_QUEUE_STALE_AFTER_MS', DEFAULT_FILE_QUEUE_STALE_AFTER_MS, errors);
+  const ragHealthTimeoutMs = getPositiveInteger(env, 'RAG_HEALTH_TIMEOUT_MS', DEFAULT_RAG_HEALTH_TIMEOUT_MS, errors);
+  const ragRetrieveTimeoutMs = getPositiveInteger(env, 'RAG_RETRIEVE_TIMEOUT_MS', DEFAULT_RAG_RETRIEVE_TIMEOUT_MS, errors);
+  const ragCleanupTimeoutMs = getPositiveInteger(env, 'RAG_CLEANUP_TIMEOUT_MS', DEFAULT_RAG_CLEANUP_TIMEOUT_MS, errors);
+  const ragCircuitFailureThreshold = getPositiveInteger(env, 'RAG_CIRCUIT_FAILURE_THRESHOLD', DEFAULT_RAG_CIRCUIT_FAILURE_THRESHOLD, errors);
+  const ragCircuitResetMs = getPositiveInteger(env, 'RAG_CIRCUIT_RESET_MS', DEFAULT_RAG_CIRCUIT_RESET_MS, errors);
+  const chatStreamMaxConcurrent = getPositiveInteger(env, 'CHAT_STREAM_MAX_CONCURRENT', DEFAULT_CHAT_STREAM_MAX_CONCURRENT, errors);
+  const chatStreamMaxConcurrentPerUser = getPositiveInteger(env, 'CHAT_STREAM_MAX_CONCURRENT_PER_USER', DEFAULT_CHAT_STREAM_MAX_CONCURRENT_PER_USER, errors);
+  const maintenanceIntervalMs = getPositiveInteger(env, 'MAINTENANCE_INTERVAL_MS', DEFAULT_MAINTENANCE_INTERVAL_MS, errors);
+  const uploadTempMaxAgeMs = getPositiveInteger(env, 'UPLOAD_TEMP_MAX_AGE_MS', DEFAULT_UPLOAD_TEMP_MAX_AGE_MS, errors);
+  const shutdownTimeoutMs = getPositiveInteger(env, 'SHUTDOWN_TIMEOUT_MS', DEFAULT_SHUTDOWN_TIMEOUT_MS, errors);
+
   if (errors.length > 0) {
     throw new Error(`Server configuration invalid:\n- ${errors.join('\n- ')}`);
   }
 
   const port = getPort(env.PORT);
 
+  const frontendUrl = env.FRONTEND_URL?.trim() || 'http://localhost:5173';
+
   return {
     PORT: port,
-    FRONTEND_URL: env.FRONTEND_URL?.trim() || 'http://localhost:5173',
+    FRONTEND_URL: frontendUrl,
     BACKEND_URL: env.BACKEND_URL?.trim() || `http://localhost:${port}`,
+    CORS_ALLOWED_ORIGINS: getStringList(env.CORS_ALLOWED_ORIGINS, [frontendUrl, 'http://localhost:5174']),
     DATABASE_URL: getRequired(env, 'DATABASE_URL'),
     S3_ENDPOINT: getRequired(env, 'S3_ENDPOINT'),
     S3_ACCESS_KEY: getRequired(env, 'S3_ACCESS_KEY'),
@@ -101,8 +206,34 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     MOONSHOT_API_KEY: env.MOONSHOT_API_KEY?.trim() || undefined,
     OPENAI_API_KEY: env.OPENAI_API_KEY?.trim() || undefined,
     EMBEDDING_API_KEY: env.EMBEDDING_API_KEY?.trim() || undefined,
-    EMBEDDING_BASE_URL: env.EMBEDDING_BASE_URL?.trim() || 'https://open.bigmodel.cn/api/paas/v4/',
-    EMBEDDING_MODEL: env.EMBEDDING_MODEL?.trim() || 'embedding-2',
+    EMBEDDING_BASE_URL: env.EMBEDDING_BASE_URL?.trim() || 'https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+    EMBEDDING_MODEL: env.EMBEDDING_MODEL?.trim() || 'text-embedding-v4',
+    EMBEDDING_DEBUG_LOGS: getBoolean(env.EMBEDDING_DEBUG_LOGS, false),
+    DB_POOL_MAX: dbPoolMax,
+    DB_CONNECTION_TIMEOUT_MS: dbConnectionTimeoutMs,
+    DB_IDLE_TIMEOUT_MS: dbIdleTimeoutMs,
+    DB_QUERY_TIMEOUT_MS: dbQueryTimeoutMs,
+    DB_SLOW_QUERY_THRESHOLD_MS: dbSlowQueryThresholdMs,
+    RATE_LIMIT_WINDOW_MS: rateLimitWindowMs,
+    RATE_LIMIT_MAX: rateLimitMax,
+    CHAT_RATE_LIMIT_MAX: chatRateLimitMax,
+    UPLOAD_RATE_LIMIT_MAX: uploadRateLimitMax,
+    FILE_QUEUE_INTERVAL_MS: fileQueueIntervalMs,
+    FILE_QUEUE_CONCURRENCY: fileQueueConcurrency,
+    FILE_QUEUE_INGEST_TIMEOUT_MS: fileQueueIngestTimeoutMs,
+    FILE_QUEUE_MAX_ATTEMPTS: fileQueueMaxAttempts,
+    FILE_QUEUE_RETRY_BASE_DELAY_MS: fileQueueRetryBaseDelayMs,
+    FILE_QUEUE_STALE_AFTER_MS: fileQueueStaleAfterMs,
+    RAG_HEALTH_TIMEOUT_MS: ragHealthTimeoutMs,
+    RAG_RETRIEVE_TIMEOUT_MS: ragRetrieveTimeoutMs,
+    RAG_CLEANUP_TIMEOUT_MS: ragCleanupTimeoutMs,
+    RAG_CIRCUIT_FAILURE_THRESHOLD: ragCircuitFailureThreshold,
+    RAG_CIRCUIT_RESET_MS: ragCircuitResetMs,
+    CHAT_STREAM_MAX_CONCURRENT: chatStreamMaxConcurrent,
+    CHAT_STREAM_MAX_CONCURRENT_PER_USER: chatStreamMaxConcurrentPerUser,
+    MAINTENANCE_INTERVAL_MS: maintenanceIntervalMs,
+    UPLOAD_TEMP_MAX_AGE_MS: uploadTempMaxAgeMs,
+    SHUTDOWN_TIMEOUT_MS: shutdownTimeoutMs,
   };
 };
 

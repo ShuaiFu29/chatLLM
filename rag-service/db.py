@@ -13,6 +13,14 @@ def get_conn():
         yield conn
 
 
+def check_database_ready() -> bool:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("select 1")
+            cur.fetchone()
+    return True
+
+
 def get_file(file_id: str):
     with get_conn() as conn:
         with conn.cursor() as cur:

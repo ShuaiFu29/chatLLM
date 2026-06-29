@@ -1,18 +1,28 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useChatStore } from '../stores/useChatStore';
 import { X, Save, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import api from '../lib/api';
 
 interface ChatSettingsDialogProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+interface PromptTemplate {
+  id: string;
+  name: string;
+  content: string;
+  description: string;
+}
+
 export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDialogProps) {
   const { t } = useTranslation();
   const { currentConversationId, conversations, updateConversation } = useChatStore();
   const { projectSpaces, currentProjectSpaceId } = useProjectSpaceStore();
+  const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+  const [isLoadingPromptTemplates, setIsLoadingPromptTemplates] = useState(false);
 
   const conversation = conversations.find(c => c.id === currentConversationId);
 
@@ -21,7 +31,10 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     temperature: conversation?.temperature ?? 0.7,
     system_prompt: conversation?.system_prompt || 'You are a helpful AI assistant.',
     enable_rag: conversation?.enable_rag ?? true,
-    project_space_id: conversation?.project_space_id || currentProjectSpaceId || ''
+    project_space_id: conversation?.project_space_id || currentProjectSpaceId || '',
+    tags: conversation?.tags || [],
+    note: conversation?.note || '',
+    promptTemplate: ''
   }), [conversation, currentProjectSpaceId]);
 
   const [draftSettings, setDraftSettings] = useState<typeof initialSettings | null>(null);
@@ -33,7 +46,10 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     temperature: 0.7,
     system_prompt: 'You are a helpful AI assistant.',
     enable_rag: true,
-    project_space_id: currentProjectSpaceId || ''
+    project_space_id: currentProjectSpaceId || '',
+    tags: [],
+    note: '',
+    promptTemplate: ''
   };
 
   const isDirty = draftSettings !== null && (
@@ -41,16 +57,61 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     settings.temperature !== initialSettings.temperature ||
     settings.system_prompt !== initialSettings.system_prompt ||
     settings.enable_rag !== initialSettings.enable_rag ||
-    settings.project_space_id !== initialSettings.project_space_id
+    settings.project_space_id !== initialSettings.project_space_id ||
+    settings.tags.join(',') !== initialSettings.tags.join(',') ||
+    settings.note !== initialSettings.note
   );
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    let isMounted = true;
+    const loadTimer = window.setTimeout(() => {
+      setIsLoadingPromptTemplates(true);
+
+      api.get<PromptTemplate[]>('/prompt-templates')
+        .then((response) => {
+          if (isMounted) setPromptTemplates(response.data);
+        })
+        .catch((error) => {
+          console.error('Failed to load prompt templates:', error);
+          if (isMounted) setPromptTemplates([]);
+        })
+        .finally(() => {
+          if (isMounted) setIsLoadingPromptTemplates(false);
+        });
+    }, 0);
+
+    return () => {
+      isMounted = false;
+      window.clearTimeout(loadTimer);
+    };
+  }, [isOpen]);
 
   const handleChange = (newSettings: typeof settings) => {
     setDraftSettings(newSettings);
   };
 
+  const handleTagsChange = (value: string) => {
+    const tags = value
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean)
+      .slice(0, 12);
+    handleChange({ ...settings, tags });
+  };
+
   const handleSave = async () => {
     if (currentConversationId) {
-      await updateConversation(currentConversationId, settings);
+      await updateConversation(currentConversationId, {
+        model: settings.model,
+        temperature: settings.temperature,
+        system_prompt: settings.system_prompt,
+        enable_rag: settings.enable_rag,
+        project_space_id: settings.project_space_id,
+        tags: settings.tags,
+        note: settings.note,
+      });
     }
     setDraftSettings(null);
     onClose();
@@ -106,7 +167,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
 
           {/* Project Space */}
           <div className="space-y-2">
-            <label className="text-sm font-medium text-text-main">Project Space</label>
+            <label className="text-sm font-medium text-text-main">{t('settings.projectSpace')}</label>
             <select
               value={settings.project_space_id}
               onChange={(e) => handleChange({ ...settings, project_space_id: e.target.value })}
@@ -118,6 +179,31 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
                 </option>
               ))}
             </select>
+          </div>
+
+          {/* Prompt Template */}
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-text-main">{t('settings.promptTemplate')}</label>
+            <select
+              value={settings.promptTemplate}
+              onChange={(e) => {
+                const template = promptTemplates.find((item) => item.id === e.target.value);
+                handleChange({
+                  ...settings,
+                  promptTemplate: e.target.value,
+                  system_prompt: template?.content || settings.system_prompt,
+                });
+              }}
+              className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none"
+            >
+              <option value="">{isLoadingPromptTemplates ? t('common.loading') : t('settings.noPromptTemplate')}</option>
+              {promptTemplates.map((template) => (
+                <option key={template.id} value={template.id}>
+                  {template.name}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-text-muted">{t('settings.promptTemplateHint')}</p>
           </div>
 
           {/* Temperature */}
@@ -150,7 +236,30 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
             />
           </div>
 
-          {/* Knowledge Base (RAG) */}
+          {/* Conversation Metadata */}
+          <div className="grid grid-cols-1 gap-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-text-main">{t('settings.tags')}</label>
+              <input
+                value={settings.tags.join(', ')}
+                onChange={(e) => handleTagsChange(e.target.value)}
+                className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none text-sm"
+                placeholder={t('settings.tagsPlaceholder')}
+              />
+              <p className="text-xs text-text-muted">{t('settings.tagsHint')}</p>
+            </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-text-main">{t('settings.note')}</label>
+              <textarea
+                value={settings.note}
+                onChange={(e) => handleChange({ ...settings, note: e.target.value })}
+                className="w-full h-20 bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none resize-none text-sm"
+                placeholder={t('settings.notePlaceholder')}
+              />
+            </div>
+          </div>
+
+          {/* Workspace Documents (RAG) */}
           <div className="flex items-center justify-between p-3 bg-bg-base rounded-lg border border-border">
             <div>
               <div className="text-sm font-medium text-text-main">{t('settings.enableRag')}</div>

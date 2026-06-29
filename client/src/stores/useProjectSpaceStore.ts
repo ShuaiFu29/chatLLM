@@ -17,6 +17,8 @@ interface ProjectSpaceState {
   loadingProjectSpaces: boolean;
   fetchProjectSpaces: () => Promise<void>;
   createProjectSpace: (name: string) => Promise<string>;
+  renameProjectSpace: (id: string, name: string) => Promise<void>;
+  deleteProjectSpace: (id: string) => Promise<void>;
   selectProjectSpace: (id: string) => void;
 }
 
@@ -59,6 +61,65 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
     }));
     localStorage.setItem(STORAGE_KEY, space.id);
     return space.id;
+  },
+
+  renameProjectSpace: async (id: string, name: string) => {
+    const previousSpaces = get().projectSpaces;
+    set((state) => ({
+      projectSpaces: state.projectSpaces.map((space) =>
+        space.id === id ? { ...space, name } : space
+      ),
+    }));
+
+    try {
+      const res = await api.patch<ProjectSpace>(`/project-spaces/${id}`, { name });
+      const updatedSpace = res.data;
+      set((state) => ({
+        projectSpaces: state.projectSpaces.map((space) =>
+          space.id === id ? updatedSpace : space
+        ),
+      }));
+    } catch (err) {
+      set({ projectSpaces: previousSpaces });
+      console.error('Failed to rename project space:', err);
+      throw err;
+    }
+  },
+
+  deleteProjectSpace: async (id: string) => {
+    const previousSpaces = get().projectSpaces;
+    const previousCurrentId = get().currentProjectSpaceId;
+    const remainingSpaces = previousSpaces.filter((space) => space.id !== id);
+    const nextCurrentId = previousCurrentId === id
+      ? remainingSpaces[0]?.id || null
+      : previousCurrentId;
+
+    set({
+      projectSpaces: remainingSpaces,
+      currentProjectSpaceId: nextCurrentId,
+    });
+
+    if (nextCurrentId) {
+      localStorage.setItem(STORAGE_KEY, nextCurrentId);
+    } else {
+      localStorage.removeItem(STORAGE_KEY);
+    }
+
+    try {
+      await api.delete(`/project-spaces/${id}`);
+    } catch (err) {
+      set({
+        projectSpaces: previousSpaces,
+        currentProjectSpaceId: previousCurrentId,
+      });
+      if (previousCurrentId) {
+        localStorage.setItem(STORAGE_KEY, previousCurrentId);
+      } else {
+        localStorage.removeItem(STORAGE_KEY);
+      }
+      console.error('Failed to delete project space:', err);
+      throw err;
+    }
   },
 
   selectProjectSpace: (id: string) => {

@@ -1,4 +1,4 @@
-import { query } from '../lib/db';
+import { query, withTransaction } from '../lib/db';
 
 export interface ProjectSpaceRow {
   id: string;
@@ -105,11 +105,35 @@ export const updateProjectSpaceForUser = async (
 };
 
 export const deleteProjectSpaceForUser = async (projectSpaceId: string, userId: string) => {
-  const { rows } = await query<Pick<ProjectSpaceRow, 'id'>>(
-    `delete from project_spaces
-     where id = $1 and user_id = $2 and is_default = false
-     returning id`,
-    [projectSpaceId, userId]
-  );
-  return rows.length > 0;
+  return withTransaction(async (client) => {
+    const { rows } = await client.query<Pick<ProjectSpaceRow, 'id'>>(
+      `select id
+       from project_spaces
+       where id = $1 and user_id = $2 and is_default = false
+       for update`,
+      [projectSpaceId, userId]
+    );
+
+    if (!rows[0]) return false;
+
+    await client.query(
+      `delete from conversations
+       where user_id = $1 and project_space_id = $2`,
+      [userId, projectSpaceId]
+    );
+
+    await client.query(
+      `delete from files
+       where user_id = $1 and project_space_id = $2`,
+      [userId, projectSpaceId]
+    );
+
+    await client.query(
+      `delete from project_spaces
+       where id = $1 and user_id = $2 and is_default = false`,
+      [projectSpaceId, userId]
+    );
+
+    return true;
+  });
 };

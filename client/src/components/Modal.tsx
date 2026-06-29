@@ -7,9 +7,18 @@ interface ModalProps {
   title: string;
   children: React.ReactNode;
   footer?: React.ReactNode;
+  maxWidth?: 'md' | 'lg' | 'xl' | '2xl' | '3xl';
 }
 
-export default function Modal({ isOpen, onClose, title, children, footer }: ModalProps) {
+const maxWidthClass = {
+  md: 'max-w-md',
+  lg: 'max-w-lg',
+  xl: 'max-w-xl',
+  '2xl': 'max-w-2xl',
+  '3xl': 'max-w-3xl',
+};
+
+export default function Modal({ isOpen, onClose, title, children, footer, maxWidth = 'md' }: ModalProps) {
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -34,10 +43,10 @@ export default function Modal({ isOpen, onClose, title, children, footer }: Moda
       onClick={onClose}
     >
       <div
-        className="bg-bg-sidebar border border-border rounded-2xl shadow-2xl w-full max-w-md overflow-hidden transform transition-all duration-300 animate-in zoom-in-95 slide-in-from-bottom-2"
+        className={`bg-bg-sidebar border border-border rounded-2xl shadow-2xl w-full ${maxWidthClass[maxWidth]} max-h-[90vh] overflow-hidden transform transition-all duration-300 animate-in zoom-in-95 slide-in-from-bottom-2 flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border/50">
+        <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-border/50">
           <h3 className="text-lg font-semibold text-text-main">{title}</h3>
           <button
             onClick={onClose}
@@ -47,7 +56,7 @@ export default function Modal({ isOpen, onClose, title, children, footer }: Moda
           </button>
         </div>
 
-        <div className="px-6 py-6 text-text-main text-sm leading-relaxed">
+        <div className="min-h-0 overflow-y-auto px-6 py-6 text-text-main text-sm leading-relaxed">
           {children}
         </div>
 

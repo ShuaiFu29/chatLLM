@@ -1,16 +1,19 @@
 import axios from 'axios';
 import { serverEnv } from '../lib/env';
-import { claimNextPendingFile, updateFile } from '../repositories/files';
+import { claimNextPendingFile, FileRow, markFileAttemptFailed } from '../repositories/files';
 
 class FileQueueService {
   private isProcessing = false;
   private interval: NodeJS.Timeout | null = null;
   private ragServiceUrl = serverEnv.RAG_SERVICE_URL;
+  private intervalMs = serverEnv.FILE_QUEUE_INTERVAL_MS;
+  private concurrency = serverEnv.FILE_QUEUE_CONCURRENCY;
+  private ingestTimeoutMs = serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS;
 
   start() {
     if (this.interval) return;
-    this.processNextFile();
-    this.interval = setInterval(() => this.processNextFile(), 5000);
+    this.processPendingBatch();
+    this.interval = setInterval(() => this.processPendingBatch(), this.intervalMs);
   }
 
   stop() {
@@ -21,31 +24,52 @@ class FileQueueService {
   }
 
   trigger() {
-    this.processNextFile();
+    this.processPendingBatch();
   }
 
-  private async processNextFile() {
+  private async processPendingBatch() {
     if (this.isProcessing) return;
     this.isProcessing = true;
 
     try {
-      const file = await claimNextPendingFile();
-      if (!file) return;
+      let shouldContinue = true;
 
-      try {
-        await axios.post(`${this.ragServiceUrl}/ingest`, {
-          file_id: file.id,
-        }, { timeout: 10000 });
-      } catch (err: any) {
-        await updateFile(file.id, {
-          status: 'failed',
-          error_message: `RAG Service unavailable: ${err.message}`,
-        });
+      while (shouldContinue) {
+        const files: FileRow[] = [];
+
+        for (let index = 0; index < this.concurrency; index += 1) {
+          const file = await claimNextPendingFile({
+            maxAttempts: serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
+            retryBaseDelayMs: serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS,
+            staleAfterMs: serverEnv.FILE_QUEUE_STALE_AFTER_MS,
+          });
+          if (!file) break;
+          files.push(file);
+        }
+
+        if (files.length === 0) {
+          shouldContinue = false;
+          continue;
+        }
+
+        await Promise.all(files.map((file) => this.processFile(file)));
+        shouldContinue = files.length === this.concurrency;
       }
     } catch (err) {
       console.error('[FileQueue] Failed to process pending file:', err);
     } finally {
       this.isProcessing = false;
+    }
+  }
+
+  private async processFile(file: FileRow) {
+    try {
+      await axios.post(`${this.ragServiceUrl}/ingest`, {
+        file_id: file.id,
+      }, { timeout: this.ingestTimeoutMs });
+    } catch (err: any) {
+      const message = `RAG Service unavailable: ${err.message}`;
+      await markFileAttemptFailed(file, message);
     }
   }
 }

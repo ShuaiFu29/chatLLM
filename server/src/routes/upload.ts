@@ -5,6 +5,7 @@ import {
   uploadChunk,
   mergeChunks,
   listFiles,
+  getFileContent,
   deleteFile,
   retryFileProcessing,
   uploadAvatar,
@@ -25,6 +26,7 @@ router.post('/merge', mergeChunks);
 router.post('/avatar', avatarUpload.single('file'), uploadAvatar);
 router.get('/avatar/:userId', getAvatar);
 router.get('/files', listFiles);
+router.get('/files/:id/content', getFileContent);
 router.post('/files/:id/retry', retryFileProcessing);
 router.delete('/files/:id', deleteFile);
 router.use(handleUploadError);

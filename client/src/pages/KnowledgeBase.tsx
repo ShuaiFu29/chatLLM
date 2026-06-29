@@ -1,9 +1,10 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { Upload, FileText, Trash2, Loader2, Database, CheckCircle, AlertCircle, RefreshCw, X } from 'lucide-react';
+import { Upload, FileText, Trash2, Loader2, Database, CheckCircle, AlertCircle, RefreshCw, X, BookOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
-import { uploadFile, type UploadProgress } from '../lib/uploadManager';
+import { isSupportedMarkdownDocument, uploadFile, type UploadProgress } from '../lib/uploadManager';
 import Modal from '../components/Modal';
+import DocumentViewerModal, { type DocumentReference } from '../components/DocumentViewerModal';
 import Skeleton from '../components/Skeleton';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
@@ -31,6 +32,7 @@ export default function KnowledgeBase() {
   const [isLoading, setIsLoading] = useState(true);
   const [uploadState, setUploadState] = useState<UploadingFile | null>(null);
   const [deleteFileTarget, setDeleteFileTarget] = useState<{ id: string; filename: string } | null>(null);
+  const [selectedDocument, setSelectedDocument] = useState<DocumentReference | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -144,11 +146,8 @@ export default function KnowledgeBase() {
   };
 
   const processFile = async (file: File) => {
-    // Validate file type
-    const isMarkdown = file.name.toLowerCase().endsWith('.md');
-
-    if (!isMarkdown) {
-      showNotification('error', 'Only .md files are supported');
+    if (!isSupportedMarkdownDocument(file)) {
+      showNotification('error', t('knowledge.unsupportedFileType'));
       return;
     }
 
@@ -190,12 +189,12 @@ export default function KnowledgeBase() {
     try {
       const { data } = await api.post(`/upload/files/${id}/retry`);
       setFiles(prev => prev.map(file => file.id === id ? data : file));
-      showNotification('success', 'File queued for retry');
+      showNotification('success', t('knowledge.retryQueued'));
       startPolling();
       window.dispatchEvent(new Event('knowledge-updated'));
     } catch (error) {
       console.error('Retry failed:', error);
-      showNotification('error', 'Failed to retry file');
+      showNotification('error', t('knowledge.retryFailed'));
     }
   };
 
@@ -217,8 +216,8 @@ export default function KnowledgeBase() {
   };
 
   const formatFilename = (filename: string) => {
-    // Remove extension (e.g. .md, .pdf) and any trailing whitespace
-    return filename.replace(/\.[^/.]+$/, "").trim();
+    // Remove the document extension and trailing whitespace.
+    return filename.replace(/\.(?:md|markdown)$/i, "").trim();
   };
 
   return (
@@ -251,6 +250,11 @@ export default function KnowledgeBase() {
           {t('knowledge.deleteWarning')}
         </p>
       </Modal>
+
+      <DocumentViewerModal
+        document={selectedDocument}
+        onClose={() => setSelectedDocument(null)}
+      />
 
       {/* Header */}
       <div className="hidden md:flex bg-bg-sidebar border-b border-border p-4 items-center gap-4">
@@ -292,7 +296,7 @@ export default function KnowledgeBase() {
           <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg-base/80 backdrop-blur-sm rounded-xl pointer-events-none">
             <div className="flex flex-col items-center gap-4 text-primary animate-bounce">
               <Upload className="w-16 h-16" />
-              <h3 className="text-2xl font-bold">Drop files to upload</h3>
+              <h3 className="text-2xl font-bold">{t('knowledge.dropToUpload')}</h3>
             </div>
           </div>
         )}
@@ -309,7 +313,7 @@ export default function KnowledgeBase() {
               ref={fileInputRef}
               onChange={handleFileUpload}
               className="hidden"
-              accept=".md"
+              accept=".md,.markdown"
             />
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -366,7 +370,13 @@ export default function KnowledgeBase() {
               </button>
             </div>
           ) : (
-            <table className="w-full text-left border-collapse">
+            <table className="w-full table-fixed text-left border-collapse">
+              <colgroup>
+                <col />
+                <col className="w-[160px]" />
+                <col className="w-[180px]" />
+                <col className="w-[128px]" />
+              </colgroup>
               <thead className="bg-bg-surface text-xs uppercase text-text-muted font-semibold">
                 <tr>
                   <th className="px-6 py-4">{t('knowledge.fileName')}</th>
@@ -378,46 +388,58 @@ export default function KnowledgeBase() {
               <tbody className="divide-y divide-border">
                 {files.map((file) => (
                   <tr key={file.id} className="hover:bg-bg-surface/50 transition-colors">
-                    <td className="px-6 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-primary/10 rounded-lg text-primary">
+                    <td className="px-6 py-4 align-middle">
+                      <div className="flex min-w-0 items-center gap-3">
+                        <div className="shrink-0 p-2 bg-primary/10 rounded-lg text-primary">
                           <FileText className="w-5 h-5" />
                         </div>
-                        <div>
-                          <span className="font-medium text-text-main whitespace-nowrap block">{file.filename}</span>
-                          {file.error_message && <span className="text-xs text-red-400">{file.error_message}</span>}
+                        <div className="min-w-0">
+                          <span className="font-medium text-text-main block break-words leading-snug">{formatFilename(file.filename)}</span>
+                          {file.error_message && <span className="text-xs text-red-400 block mt-1 break-words leading-relaxed">{file.error_message}</span>}
                         </div>
                       </div>
                     </td>
-                    <td className="px-6 py-4">
+                    <td className="px-6 py-4 align-middle">
                       <div className="flex items-center gap-2">
                         {getStatusIcon(file.status)}
-                        <span className="text-sm capitalize">
+                        <span className="text-sm capitalize whitespace-nowrap">
                           {file.status}
                           {file.status === 'processing' && ` (${file.progress}%)`}
                         </span>
                       </div>
                     </td>
-                    <td className="px-6 py-4 text-text-muted text-sm whitespace-nowrap">
+                    <td className="px-6 py-4 text-text-muted text-sm whitespace-nowrap align-middle">
                       {new Date(file.created_at).toLocaleString()}
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <button
-                        onClick={() => handleDeleteClick(file.id, file.filename)}
-                        className="p-2 text-text-muted hover:text-red-400 hover:bg-red-900/10 rounded-lg transition-colors"
-                        title="Delete File"
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </button>
-                      {file.status === 'failed' && (
+                    <td className="px-6 py-4 text-right align-middle">
+                      <div className="flex justify-end gap-1">
                         <button
-                          onClick={() => handleRetryFile(file.id)}
-                          className="ml-2 p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                          title="Retry processing"
+                          onClick={() => setSelectedDocument({ id: file.id, filename: file.filename })}
+                          className="p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                          title={t('knowledge.viewFileAction')}
+                          aria-label={t('knowledge.viewFileAction')}
                         >
-                          <RefreshCw className="w-4 h-4" />
+                          <BookOpen className="w-4 h-4" />
                         </button>
-                      )}
+                        <button
+                          onClick={() => handleDeleteClick(file.id, file.filename)}
+                          className="p-2 text-text-muted hover:text-red-400 hover:bg-red-900/10 rounded-lg transition-colors"
+                          title={t('knowledge.deleteFileAction')}
+                          aria-label={t('knowledge.deleteFileAction')}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        {file.status === 'failed' && (
+                          <button
+                            onClick={() => handleRetryFile(file.id)}
+                            className="p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
+                            title={t('knowledge.retryProcessingAction')}
+                            aria-label={t('knowledge.retryProcessingAction')}
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -458,8 +480,8 @@ export default function KnowledgeBase() {
           ) : (
             files.map((file) => (
               <div key={file.id} className="bg-bg-sidebar p-4 rounded-xl border border-border shadow-sm flex flex-col gap-3">
-                <div className="flex justify-between items-start">
-                  <div className="flex items-center gap-3 overflow-hidden">
+                <div className="flex justify-between items-start gap-2">
+                  <div className="flex min-w-0 items-center gap-3 overflow-hidden">
                     <div className="p-2 bg-primary/10 rounded-lg text-primary shrink-0">
                       <FileText className="w-5 h-5" />
                     </div>
@@ -468,20 +490,34 @@ export default function KnowledgeBase() {
                       <span className="text-xs text-text-muted">{new Date(file.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
-                  <button
-                    onClick={() => handleDeleteClick(file.id, file.filename)}
-                    className="p-2 -mr-2 text-text-muted hover:text-red-400 active:bg-red-900/10 rounded-lg transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                  {file.status === 'failed' && (
+                  <div className="flex shrink-0 gap-1">
                     <button
-                      onClick={() => handleRetryFile(file.id)}
+                      onClick={() => setSelectedDocument({ id: file.id, filename: file.filename })}
                       className="p-2 text-text-muted hover:text-primary active:bg-primary/10 rounded-lg transition-colors"
+                      title={t('knowledge.viewFileAction')}
+                      aria-label={t('knowledge.viewFileAction')}
                     >
-                      <RefreshCw className="w-4 h-4" />
+                      <BookOpen className="w-4 h-4" />
                     </button>
-                  )}
+                    <button
+                      onClick={() => handleDeleteClick(file.id, file.filename)}
+                      className="p-2 -mr-1 text-text-muted hover:text-red-400 active:bg-red-900/10 rounded-lg transition-colors"
+                      title={t('knowledge.deleteFileAction')}
+                      aria-label={t('knowledge.deleteFileAction')}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                    {file.status === 'failed' && (
+                      <button
+                        onClick={() => handleRetryFile(file.id)}
+                        className="p-2 text-text-muted hover:text-primary active:bg-primary/10 rounded-lg transition-colors"
+                        title={t('knowledge.retryProcessingAction')}
+                        aria-label={t('knowledge.retryProcessingAction')}
+                      >
+                        <RefreshCw className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex items-center justify-between pt-2 border-t border-border">

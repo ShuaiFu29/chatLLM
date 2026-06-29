@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, memo } from 'react';
-import { Send, Paperclip, Loader2, Square, Play } from 'lucide-react';
+import { Send, Paperclip, Loader2, Square, Play, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 interface ChatInputProps {
@@ -7,12 +7,14 @@ interface ChatInputProps {
   setInput: (value: string) => void;
   onSendMessage: (e: React.FormEvent | React.KeyboardEvent) => void;
   onFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onClearDraft: () => void;
   onStop: () => void;
   onContinue: () => void;
   isSending: boolean;
   isUploading: boolean;
   isStopped: boolean;
   canContinue: boolean;
+  draftStatusLabel?: string;
 }
 
 const ChatInput = memo(({
@@ -20,12 +22,14 @@ const ChatInput = memo(({
   setInput,
   onSendMessage,
   onFileUpload,
+  onClearDraft,
   onStop,
   onContinue,
   isSending,
   isUploading,
   isStopped,
-  canContinue
+  canContinue,
+  draftStatusLabel
 }: ChatInputProps) => {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -57,21 +61,29 @@ const ChatInput = memo(({
   };
 
   return (
-    <div className="p-2 md:p-4 border-t border-border bg-bg-sidebar/50 backdrop-blur">
-      <div className="max-w-4xl mx-auto">
-        <form onSubmit={onSendMessage} className="relative flex items-end gap-2">
+    <div className="shrink-0 border-t border-border/70 bg-bg-base px-3 pb-4 pt-2 md:px-6 md:pb-5">
+      <div className="mx-auto max-w-3xl">
+        {draftStatusLabel && (
+          <div className="mb-1 flex justify-end px-2 text-[11px] text-text-muted">
+            {draftStatusLabel}
+          </div>
+        )}
+        <form
+          onSubmit={onSendMessage}
+          className="flex items-end gap-1.5 rounded-2xl border border-border bg-bg-sidebar p-2 shadow-sm transition-shadow focus-within:border-primary focus-within:shadow-md md:gap-2"
+        >
           <input
             type="file"
             ref={fileInputRef}
             onChange={onFileUpload}
             className="hidden"
-            accept=".md"
+            accept=".md,.markdown"
           />
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
             disabled={isUploading}
-            className="p-3 mb-0.5 text-text-muted hover:text-text-main hover:bg-bg-surface rounded-xl transition-colors disabled:opacity-50 h-[46px]"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-text-muted transition-colors hover:bg-bg-surface hover:text-text-main disabled:opacity-50 md:h-11 md:w-11"
             title={t('chat.uploadContext')}
             aria-label={t('chat.uploadContext')}
           >
@@ -85,18 +97,29 @@ const ChatInput = memo(({
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
               placeholder={t('chat.typeMessage')}
-              className="w-full bg-bg-base text-text-main rounded-xl px-4 py-3 focus:outline-none focus:ring-2 focus:ring-primary border border-border placeholder-text-muted resize-none min-h-[46px] max-h-[200px]"
+              className="block min-h-10 max-h-[180px] w-full resize-none rounded-xl bg-bg-base px-3 py-2.5 text-sm leading-5 text-text-main outline-none placeholder:text-text-muted md:min-h-11 md:px-4 md:py-3 md:text-base"
               disabled={isSending}
               rows={1}
               aria-label={t('chat.typeMessage')}
             />
           </div>
 
+          <button
+            type="button"
+            onClick={onClearDraft}
+            disabled={!input.trim() || isSending}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-text-muted transition-colors hover:bg-bg-surface hover:text-text-main disabled:cursor-not-allowed disabled:opacity-40 md:h-11 md:w-11"
+            title={t('chat.clearDraft')}
+            aria-label={t('chat.clearDraft')}
+          >
+            <X className="w-5 h-5" />
+          </button>
+
           {isSending ? (
             <button
               type="button"
               onClick={onStop}
-              className="p-3 mb-0.5 text-primary-light hover:text-white hover:bg-red-500 rounded-xl transition-all border border-transparent hover:border-red-500 h-[46px]"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-transparent text-primary-light transition-all hover:border-red-500 hover:bg-red-500 hover:text-white md:h-11 md:w-11"
               title={t('chat.stopGenerating')}
               aria-label={t('chat.stopGenerating')}
             >
@@ -106,7 +129,7 @@ const ChatInput = memo(({
             <button
               type="button"
               onClick={onContinue}
-              className="p-3 mb-0.5 text-primary-light hover:text-white hover:bg-primary rounded-xl transition-all border border-transparent hover:border-primary h-[46px]"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-transparent text-primary-light transition-all hover:border-primary hover:bg-primary hover:text-white md:h-11 md:w-11"
               title={t('chat.continueGenerating')}
               aria-label={t('chat.continueGenerating')}
             >
@@ -116,8 +139,8 @@ const ChatInput = memo(({
             <button
               type="submit"
               disabled={!input.trim()}
-              className="p-3 mb-0.5 text-primary-light hover:text-white hover:bg-primary rounded-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed border border-transparent hover:border-primary h-[46px]"
-              aria-label={t('chat.sendMessage') || 'Send Message'}
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-transparent bg-primary text-white transition-all hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-bg-surface disabled:text-text-muted md:h-11 md:w-11"
+              aria-label={t('chat.sendMessage')}
             >
               <Send className="w-5 h-5" />
             </button>

@@ -80,7 +80,7 @@ test('server env loads valid required values', () => {
   assert.match(result.stdout, /postgres:\/\/chatllm:chatllm@localhost:5432\/chatllm/);
 });
 
-test('server env defaults to port 3002 and matching backend URL', () => {
+test('server env defaults to port 3000 and matching backend URL', () => {
   const result = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
     S3_ENDPOINT: 'http://localhost:9000',
@@ -92,8 +92,8 @@ test('server env defaults to port 3002 and matching backend URL', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(parseLastJsonLine(result.stdout), {
-    PORT: 3002,
-    BACKEND_URL: 'http://localhost:3002',
+    PORT: 3000,
+    BACKEND_URL: 'http://localhost:3000',
   });
 });
 
@@ -111,4 +111,105 @@ test('server env derives default backend URL from explicit port', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(parseLastJsonLine(result.stdout), 'http://localhost:3015');
+});
+
+test('server env defaults embedding debug logs off and parses explicit opt-in', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  }, 'serverEnv.EMBEDDING_DEBUG_LOGS');
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), false);
+
+  const enabledResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    EMBEDDING_DEBUG_LOGS: 'true',
+  }, 'serverEnv.EMBEDDING_DEBUG_LOGS');
+
+  assert.equal(enabledResult.status, 0, enabledResult.stderr);
+  assert.equal(parseLastJsonLine(enabledResult.stdout), true);
+});
+
+test('server env parses comma-separated CORS allowed origins', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    FRONTEND_URL: 'http://localhost:5173',
+    CORS_ALLOWED_ORIGINS: 'http://localhost:5173, https://chat.example.com, http://localhost:5174',
+  }, 'serverEnv.CORS_ALLOWED_ORIGINS');
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(parseLastJsonLine(result.stdout), [
+    'http://localhost:5173',
+    'https://chat.example.com',
+    'http://localhost:5174',
+  ]);
+});
+
+test('server env exposes configurable RAG ingest timeout for file queue jobs', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  }, 'serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS');
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), 10000);
+
+  const explicitResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    FILE_QUEUE_INGEST_TIMEOUT_MS: '45000',
+  }, 'serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS');
+
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(parseLastJsonLine(explicitResult.stdout), 45000);
+});
+
+test('server env exposes configurable RAG cleanup timeout for destructive cleanup calls', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  }, 'serverEnv.RAG_CLEANUP_TIMEOUT_MS');
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), 10000);
+
+  const explicitResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_CLEANUP_TIMEOUT_MS: '30000',
+  }, 'serverEnv.RAG_CLEANUP_TIMEOUT_MS');
+
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(parseLastJsonLine(explicitResult.stdout), 30000);
 });

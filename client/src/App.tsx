@@ -13,6 +13,8 @@ const LoginPage = lazy(() => import('./pages/Login'));
 const ChatPage = lazy(() => import('./pages/Chat'));
 const ProfilePage = lazy(() => import('./pages/Profile'));
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase'));
+const UsagePage = lazy(() => import('./pages/Usage'));
+const PromptTemplatesPage = lazy(() => import('./pages/PromptTemplates'));
 
 function App() {
   const checkAuth = useAuthStore((state) => state.checkAuth);
@@ -67,6 +69,8 @@ function App() {
               <Route path="/" element={<ChatPage />} />
               <Route path="/profile" element={<ProfilePage />} />
               <Route path="/knowledge" element={<KnowledgeBase />} />
+              <Route path="/usage" element={<UsagePage />} />
+              <Route path="/prompts" element={<PromptTemplatesPage />} />
             </Route>
           </Route>
 

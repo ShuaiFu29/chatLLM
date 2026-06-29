@@ -1,5 +1,6 @@
 import { query } from '../lib/db';
 import { ChatSource } from '../lib/chatSources';
+import { encodeMessageCursor, MessageCursor } from '../lib/messagePagination';
 
 export interface MessageRow {
   id: string;
@@ -8,6 +9,27 @@ export interface MessageRow {
   content: string;
   sources: ChatSource[];
   created_at: string;
+}
+
+export interface SearchMessageFilters {
+  projectSpaceId?: string;
+  hasSources?: boolean;
+  model?: string;
+  favoriteOnly?: boolean;
+  tag?: string;
+  includeArchived?: boolean;
+  limit?: number;
+}
+
+export interface MessagePageOptions {
+  limit: number;
+  cursor?: MessageCursor | null;
+}
+
+export interface MessagePage {
+  messages: MessageRow[];
+  hasMore: boolean;
+  nextCursor: string | null;
 }
 
 export const insertMessage = async (
@@ -48,7 +70,40 @@ export const listRecentMessages = async (conversationId: string, limit = 10) => 
   return rows;
 };
 
-export const searchMessagesForUser = async (userId: string, search: string) => {
+export const searchMessagesForUser = async (userId: string, search: string, filters: SearchMessageFilters = {}) => {
+  const values: unknown[] = [userId, `%${search}%`];
+  const conditions = ['c.user_id = $1', 'm.content ilike $2'];
+
+  if (filters.projectSpaceId) {
+    values.push(filters.projectSpaceId);
+    conditions.push(`c.project_space_id = $${values.length}`);
+  }
+
+  if (filters.hasSources) {
+    conditions.push(`jsonb_array_length(coalesce(m.sources, '[]'::jsonb)) > 0`);
+  }
+
+  if (filters.model) {
+    values.push(filters.model);
+    conditions.push(`c.model = $${values.length}`);
+  }
+
+  if (filters.favoriteOnly) {
+    conditions.push('c.is_favorite = true');
+  }
+
+  if (filters.tag) {
+    values.push(filters.tag);
+    conditions.push(`$${values.length} = any(c.tags)`);
+  }
+
+  if (!filters.includeArchived) {
+    conditions.push('c.archived_at is null');
+  }
+
+  const boundedLimit = Math.min(Math.max(filters.limit || 20, 1), 50);
+  values.push(boundedLimit);
+
   const { rows } = await query(
     `select
        m.id,
@@ -60,16 +115,54 @@ export const searchMessagesForUser = async (userId: string, search: string) => {
          'id', c.id,
          'title', c.title,
          'user_id', c.user_id,
-         'project_space_id', c.project_space_id
+         'project_space_id', c.project_space_id,
+         'is_favorite', c.is_favorite,
+         'tags', c.tags,
+         'archived_at', c.archived_at
        ) as conversations
      from messages m
      join conversations c on c.id = m.conversation_id
-     where c.user_id = $1 and m.content ilike $2
+     where ${conditions.join(' and ')}
      order by m.created_at desc
-     limit 20`,
-    [userId, `%${search}%`]
+     limit $${values.length}`,
+    values
   );
   return rows;
+};
+
+export const listMessagesForConversationPage = async (
+  conversationId: string,
+  options: MessagePageOptions
+): Promise<MessagePage> => {
+  const values: unknown[] = [conversationId];
+  let cursorFilter = '';
+
+  if (options.cursor) {
+    values.push(options.cursor.createdAt, options.cursor.id);
+    cursorFilter = `and (created_at, id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`;
+  }
+
+  values.push(options.limit + 1);
+
+  const { rows } = await query<MessageRow>(
+    `select id, conversation_id, role, content, sources, created_at
+     from messages
+     where conversation_id = $1
+       ${cursorFilter}
+     order by created_at desc, id desc
+     limit $${values.length}`,
+    values
+  );
+
+  const hasMore = rows.length > options.limit;
+  const messages = rows.slice(0, options.limit).reverse();
+  const oldestMessage = messages[0];
+
+  return {
+    messages,
+    hasMore,
+    nextCursor: hasMore && oldestMessage ? encodeMessageCursor(oldestMessage) : null,
+  };
 };
 
 export const deleteMessageForUser = async (messageId: string, userId: string) => {

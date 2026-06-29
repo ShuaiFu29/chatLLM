@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { serverEnv } from '../lib/env';
 import { generateAccessToken } from '../lib/jwt';
+import { cleanupRagFileVectors } from '../lib/ragClient';
 import { deleteObject } from '../lib/storage';
 import { createSession, deleteSession, deleteSessionsByUser, findSessionWithUser } from '../repositories/sessions';
 import { createUser, deleteUser, findUserByGithubId, findUserById, updateUser } from '../repositories/users';
@@ -98,13 +99,15 @@ const clearAuthCookies = (res: Response) => {
   res.clearCookie('refresh_token', { path: '/api/auth/refresh' });
 };
 
-const cleanupFileVectors = async (fileId: string) => {
-  await axios.post(`${serverEnv.RAG_SERVICE_URL}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
-};
-
 export const githubLogin = (req: Request, res: Response) => {
   const state = crypto.randomBytes(16).toString('hex');
-  res.cookie('github_oauth_state', state, { httpOnly: true, maxAge: 10 * 60 * 1000 });
+  res.cookie('github_oauth_state', state, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    path: '/api/auth',
+    maxAge: 10 * 60 * 1000,
+  });
 
   const params = new URLSearchParams({
     client_id: serverEnv.GITHUB_CLIENT_ID || '',
@@ -131,7 +134,7 @@ export const githubCallback = async (req: Request, res: Response) => {
     return;
   }
 
-  res.clearCookie('github_oauth_state');
+  res.clearCookie('github_oauth_state', { path: '/api/auth' });
 
   try {
     const tokenBody = new URLSearchParams({
@@ -268,7 +271,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
     const files = await listFilesForUserCleanup(userId);
 
     await Promise.allSettled(files.map(async (file) => {
-      await cleanupFileVectors(file.id).catch((error) => {
+      await cleanupRagFileVectors(file.id).catch((error) => {
         console.warn(`[Auth] Failed to cleanup vectors for file ${file.id}:`, stringifyError(error));
       });
       await deleteObject(file.object_key);

@@ -26,7 +26,13 @@ import {
 } from '../repositories/projectSpaces';
 import { findUserById, updateUser } from '../repositories/users';
 import { fileQueue } from '../services/fileQueue';
-import { serverEnv } from '../lib/env';
+import { cleanupRagFileVectors } from '../lib/ragClient';
+import {
+  SUPPORTED_DOCUMENT_ERROR,
+  getSupportedDocumentContentType,
+  parseUploadChunkIndex,
+  parseUploadTotalChunks,
+} from '../lib/uploadInput';
 
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/temp');
 fs.ensureDirSync(UPLOAD_DIR);
@@ -49,15 +55,15 @@ const stringifyError = (error: unknown) => {
   return String(error);
 };
 
-const ensureMarkdownFilename = (filename?: string) => {
-  if (!filename || !filename.toLowerCase().endsWith('.md')) {
-    throw new Error('Only .md files are supported');
+const ensureSupportedDocumentFilename = (filename?: string) => {
+  const contentType = getSupportedDocumentContentType(filename);
+  if (!contentType) {
+    throw new Error(SUPPORTED_DOCUMENT_ERROR);
   }
+  return contentType;
 };
 
-const cleanupFileVectors = async (fileId: string) => {
-  await axios.post(`${serverEnv.RAG_SERVICE_URL}/cleanup-file`, { file_id: fileId }, { timeout: 10000 });
-};
+const isUnsupportedDocumentMessage = (message: string) => message.includes(SUPPORTED_DOCUMENT_ERROR);
 
 const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
@@ -83,7 +89,7 @@ export const checkFile = async (req: Request, res: Response) => {
   if (!hash) return res.status(400).json({ error: 'Hash is required' });
 
   try {
-    ensureMarkdownFilename(filename);
+    ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
@@ -120,7 +126,7 @@ export const checkFile = async (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = stringifyError(err);
-    const status = message.includes('Only .md') ? 400 : 500;
+    const status = isUnsupportedDocumentMessage(message) ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Check failed', details: message });
   }
 };
@@ -130,7 +136,7 @@ export const initUpload = async (req: Request, res: Response) => {
   const { filename, hash, size, type } = req.body;
 
   try {
-    ensureMarkdownFilename(filename);
+    const contentType = ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
@@ -141,13 +147,13 @@ export const initUpload = async (req: Request, res: Response) => {
       filename,
       hash,
       size,
-      type: type || 'text/markdown',
+      type: getSupportedDocumentContentType(filename) || type || contentType,
     });
 
     res.json({ uploadId: file.id, projectSpaceId });
   } catch (err) {
     const message = stringifyError(err);
-    const status = message.includes('Only .md') ? 400 : 500;
+    const status = isUnsupportedDocumentMessage(message) ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Init failed', details: message });
   }
 };
@@ -157,9 +163,9 @@ export const uploadChunk = async (req: Request, res: Response) => {
 
   const { uploadId, chunkIndex } = req.body;
   const file = req.file;
-  const parsedChunkIndex = Number.parseInt(chunkIndex, 10);
+  const parsedChunkIndex = parseUploadChunkIndex(chunkIndex);
 
-  if (!uploadId || Number.isNaN(parsedChunkIndex) || !file) {
+  if (!uploadId || parsedChunkIndex === null || !file) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
 
@@ -184,14 +190,14 @@ export const uploadChunk = async (req: Request, res: Response) => {
 export const mergeChunks = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { uploadId, filename, totalChunks } = req.body;
-  const expectedChunks = Number.parseInt(totalChunks, 10);
+  const expectedChunks = parseUploadTotalChunks(totalChunks);
 
-  if (!uploadId || !filename || Number.isNaN(expectedChunks)) {
+  if (!uploadId || !filename || expectedChunks === null) {
     return res.status(400).json({ error: 'Missing parameters' });
   }
 
   try {
-    ensureMarkdownFilename(filename);
+    const contentType = ensureSupportedDocumentFilename(filename);
 
     const upload = await findFileForUser(uploadId, req.user.id);
     if (!upload || upload.status !== 'uploading') {
@@ -232,7 +238,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
     });
 
     const objectKey = buildDocumentKey(req.user.id, uploadId, filename);
-    await uploadFilePath(objectKey, mergedFilePath, upload.file_type || 'text/markdown');
+    await uploadFilePath(objectKey, mergedFilePath, upload.file_type || contentType);
 
     await updateFile(uploadId, {
       status: 'pending',
@@ -248,7 +254,9 @@ export const mergeChunks = async (req: Request, res: Response) => {
 
     res.json({ success: true, message: 'File merged and queued for processing' });
   } catch (err) {
-    res.status(500).json({ error: 'Merge failed', details: stringifyError(err) });
+    const message = stringifyError(err);
+    const status = isUnsupportedDocumentMessage(message) ? 400 : 500;
+    res.status(status).json({ error: status === 400 ? message : 'Merge failed', details: message });
   }
 };
 
@@ -266,6 +274,37 @@ export const listFiles = async (req: Request, res: Response) => {
     res.json(files);
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch files', details: stringifyError(err) });
+  }
+};
+
+export const getFileContent = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { id } = req.params;
+
+  try {
+    const file = await findFileForUser(id, req.user.id);
+    if (!file || !file.object_key) {
+      return res.status(404).json({ error: 'File content not found' });
+    }
+
+    const { stream } = await getObjectStream(file.object_key);
+
+    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
+    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+
+    stream.on('error', (error) => {
+      console.error('Failed to stream file content:', error);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Failed to read file content' });
+      } else {
+        res.end();
+      }
+    });
+
+    stream.pipe(res);
+  } catch (err) {
+    res.status(404).json({ error: 'File content not found', details: stringifyError(err) });
   }
 };
 
@@ -293,7 +332,7 @@ export const deleteFile = async (req: Request, res: Response) => {
     if (!file) return res.status(404).json({ error: 'File not found' });
 
     try {
-      await cleanupFileVectors(file.id);
+      await cleanupRagFileVectors(file.id);
     } catch (err) {
       return res.status(502).json({
         error: 'Vector cleanup failed; file was not deleted',
