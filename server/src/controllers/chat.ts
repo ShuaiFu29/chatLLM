@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { openai } from '../lib/openai';
+import { createChatClientForModel, ModelProviderConfigurationError, openai } from '../lib/openai';
 import { buildChatSources, ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { normalizeChatMessageContent } from '../lib/chatInput';
 import { normalizeMessagePageQuery } from '../lib/messagePagination';
@@ -307,6 +307,8 @@ export const sendMessage = async (req: Request, res: Response) => {
   let failed = false;
 
   try {
+    const model = conversation.model || 'deepseek-chat';
+    const { client: chatClient, resolvedModel } = createChatClientForModel(model);
     const userMessage = await insertMessage(conversationId, 'user', content);
 
     if (conversation.title === 'New Chat') {
@@ -324,7 +326,6 @@ export const sendMessage = async (req: Request, res: Response) => {
     });
     streamStarted = true;
 
-    const model = conversation.model || 'deepseek-chat';
     const temperature = conversation.temperature !== undefined && conversation.temperature !== null
       ? conversation.temperature
       : 0.7;
@@ -408,8 +409,8 @@ ${originalContent}`;
       }
     }
 
-    const stream = await openai.chat.completions.create({
-      model,
+    const stream = await chatClient.chat.completions.create({
+      model: resolvedModel,
       messages: [
         { role: 'system', content: systemPrompt },
         ...messages,
@@ -461,7 +462,8 @@ ${originalContent}`;
       res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
       res.end();
     } else {
-      res.status(500).json({ error: 'Failed to generate response' });
+      const statusCode = error instanceof ModelProviderConfigurationError ? error.statusCode : 500;
+      res.status(statusCode).json({ error: 'Failed to generate response' });
     }
   } finally {
     chatSlot.release(failed);

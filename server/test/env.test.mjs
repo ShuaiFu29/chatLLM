@@ -42,12 +42,13 @@ test('server env fails fast when required keys are missing', () => {
     JWT_SECRET: '',
     DEEPSEEK_API_KEY: '',
     MOONSHOT_API_KEY: '',
+    QWEN_API_KEY: '',
     OPENAI_API_KEY: '',
   });
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Missing required server environment variables: DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, JWT_SECRET/);
-  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, OPENAI_API_KEY/);
+  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY, OPENAI_API_KEY/);
 });
 
 test('server env rejects weak JWT placeholder secrets', () => {

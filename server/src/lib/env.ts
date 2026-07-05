@@ -66,6 +66,10 @@ export interface ServerEnv {
   DEEPSEEK_API_KEY?: string;
   DEEPSEEK_BASE_URL: string;
   MOONSHOT_API_KEY?: string;
+  MOONSHOT_BASE_URL: string;
+  QWEN_API_KEY?: string;
+  QWEN_BASE_URL: string;
+  QWEN_CHAT_MODEL: string;
   OPENAI_API_KEY?: string;
   EMBEDDING_API_KEY?: string;
   EMBEDDING_BASE_URL: string;
@@ -153,7 +157,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     errors.push(`Missing required server environment variables: ${missing.join(', ')}`);
   }
 
-  const chatKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'OPENAI_API_KEY'];
+  const chatKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY', 'OPENAI_API_KEY'];
   if (!chatKeys.some((key) => getRequired(env, key))) {
     errors.push(`At least one chat provider key is required: ${chatKeys.join(', ')}`);
   }
@@ -225,6 +229,10 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY?.trim() || undefined,
     DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com',
     MOONSHOT_API_KEY: env.MOONSHOT_API_KEY?.trim() || undefined,
+    MOONSHOT_BASE_URL: env.MOONSHOT_BASE_URL?.trim() || 'https://api.moonshot.cn/v1',
+    QWEN_API_KEY: env.QWEN_API_KEY?.trim() || undefined,
+    QWEN_BASE_URL: env.QWEN_BASE_URL?.trim() || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    QWEN_CHAT_MODEL: env.QWEN_CHAT_MODEL?.trim() || 'qwen-plus',
     OPENAI_API_KEY: env.OPENAI_API_KEY?.trim() || undefined,
     EMBEDDING_API_KEY: env.EMBEDDING_API_KEY?.trim() || undefined,
     EMBEDDING_BASE_URL: env.EMBEDDING_BASE_URL?.trim() || 'https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',

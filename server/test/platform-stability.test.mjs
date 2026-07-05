@@ -262,9 +262,11 @@ test('RAG retrieval uses a circuit-breaker client instead of inline axios calls'
 test('RAG evaluation uses the shared circuit breaker and metrics', () => {
   const ragEvalControllerSource = readSource('src/controllers/ragEval.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
+  const ragEvalQueueSource = readOptionalSource('src/services/ragEvalQueue.ts');
 
   assert.doesNotMatch(ragEvalControllerSource, /axios\.post/);
-  assert.match(ragEvalControllerSource, /runRagEvaluation/);
+  assert.doesNotMatch(ragEvalQueueSource, /axios\.post/);
+  assert.match(ragEvalQueueSource, /runRagEvaluation/);
   assert.match(
     ragClientSource,
     /const postRagService = async <T>[\s\S]*?if \(isCircuitOpen\(\)\) \{[\s\S]*?metrics\.recordRagCircuitOpen\(\);[\s\S]*?throw new Error\('RAG circuit is open'\);[\s\S]*?axios\.post/
@@ -303,6 +305,31 @@ test('embedding client debug logging is opt-in rather than unconditional', () =>
   assert.match(envSource, /EMBEDDING_DEBUG_LOGS/);
   assert.match(openAiSource, /EMBEDDING_DEBUG_LOGS/);
   assert.doesNotMatch(openAiSource, /console\.log/);
+});
+
+test('model provider health exposes configured chat providers without leaking keys', () => {
+  const envSource = readSource('src/lib/env.ts');
+  const openAiSource = readSource('src/lib/openai.ts');
+  const usageRoutesSource = readSource('src/routes/usage.ts');
+  const usageControllerSource = readSource('src/controllers/usage.ts');
+  const chatSource = readSource('src/controllers/chat.ts');
+
+  assert.match(envSource, /MOONSHOT_BASE_URL/);
+  assert.match(envSource, /QWEN_API_KEY/);
+  assert.match(envSource, /QWEN_BASE_URL/);
+  assert.match(envSource, /QWEN_CHAT_MODEL/);
+
+  assert.match(openAiSource, /getModelProviderHealth/);
+  assert.match(openAiSource, /createChatClientForModel/);
+  assert.match(openAiSource, /resolveChatModelProvider/);
+  assert.match(openAiSource, /quota_status/);
+  assert.match(openAiSource, /has_api_key/);
+  assert.doesNotMatch(openAiSource, /api_key:/);
+
+  assert.match(usageRoutesSource, /\/provider-health/);
+  assert.match(usageControllerSource, /getProviderHealth/);
+  assert.match(chatSource, /createChatClientForModel\(model\)/);
+  assert.match(chatSource, /resolvedModel/);
 });
 
 test('root package includes a no-dependency load smoke script', () => {
