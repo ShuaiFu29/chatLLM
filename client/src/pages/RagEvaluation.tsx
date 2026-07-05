@@ -53,7 +53,7 @@ interface RagEvalResult {
 
 interface RagEvalRun {
   id: string;
-  status: 'completed' | 'failed' | 'partial';
+  status: 'completed' | 'failed' | 'partial' | 'running';
   case_count: number;
   failed_count: number;
   average_overall_score: number;
@@ -219,11 +219,16 @@ export default function RagEvaluationPage() {
     () => datasets.find((dataset) => dataset.id === selectedDatasetId) || datasets[0] || null,
     [datasets, selectedDatasetId]
   );
+  const hasRunningRuns = useMemo(
+    () => datasets.some((dataset) => (dataset.runs || []).some((run) => run.status === 'running')),
+    [datasets]
+  );
   const selectedDatasetCaseCount = selectedDataset?.cases.length || 0;
   const isSelectedDatasetAtCaseLimit = selectedDatasetCaseCount >= MAX_RAG_EVAL_CASES_PER_DATASET;
+  const isSelectedDatasetRunning = !!selectedDataset?.runs?.some((run) => run.status === 'running');
 
-  const fetchDatasets = useCallback(async () => {
-    setIsLoading(true);
+  const fetchDatasets = useCallback(async (showLoading = true) => {
+    if (showLoading) setIsLoading(true);
     setError(null);
 
     try {
@@ -234,7 +239,7 @@ export default function RagEvaluationPage() {
       console.error('Failed to load RAG eval datasets:', fetchError);
       setError(t('ragEval.loadFailed'));
     } finally {
-      setIsLoading(false);
+      if (showLoading) setIsLoading(false);
     }
   }, [t]);
 
@@ -243,9 +248,33 @@ export default function RagEvaluationPage() {
     void fetchDatasets();
   }, [fetchDatasets, fetchProjectSpaces]);
 
+  useEffect(() => {
+    if (!hasRunningRuns) return undefined;
+
+    const intervalId = window.setInterval(() => {
+      void fetchDatasets(false);
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, [fetchDatasets, hasRunningRuns]);
+
   const getWorkspaceName = (projectSpaceId?: string | null) => {
     if (!projectSpaceId) return t('ragEval.allWorkspaces');
     return projectSpaces.find((space) => space.id === projectSpaceId)?.name || t('workspace.fallbackName');
+  };
+
+  const getRunStatusLabel = (status: RagEvalRun['status']) => {
+    if (status === 'running') return t('ragEval.runningStatus');
+    if (status === 'completed') return t('ragEval.completedStatus');
+    if (status === 'partial') return t('ragEval.partialStatus');
+    return t('ragEval.failedStatus');
+  };
+
+  const mergeRunIntoDatasets = (runToMerge: RagEvalRun) => {
+    setDatasets((current) => current.map((dataset) => ({
+      ...dataset,
+      runs: (dataset.runs || []).map((run) => (run.id === runToMerge.id ? runToMerge : run)),
+    })));
   };
 
   const openCreateDataset = () => {
@@ -395,6 +424,7 @@ export default function RagEvaluationPage() {
           ? { ...dataset, runs: [data, ...(dataset.runs || [])] }
           : dataset
       )));
+      toast.success(t('ragEval.runQueued'));
     } catch (runError) {
       console.error('Failed to run RAG eval:', runError);
       setError(t('ragEval.runFailed'));
@@ -421,10 +451,7 @@ export default function RagEvaluationPage() {
     try {
       const { data } = await api.get<RagEvalRun>(`/rag-eval/runs/${runId}`);
       setSelectedRun(data);
-      setDatasets((current) => current.map((dataset) => ({
-        ...dataset,
-        runs: (dataset.runs || []).map((run) => (run.id === runId ? data : run)),
-      })));
+      mergeRunIntoDatasets(data);
     } catch (loadError) {
       console.error('Failed to load RAG eval run:', loadError);
       setError(t('ragEval.loadRunFailed'));
@@ -433,6 +460,23 @@ export default function RagEvaluationPage() {
       setIsLoadingRun(false);
     }
   };
+
+  useEffect(() => {
+    if (!isRunModalOpen || !selectedRun || selectedRun.status !== 'running') return undefined;
+
+    const intervalId = window.setInterval(() => {
+      api.get<RagEvalRun>(`/rag-eval/runs/${selectedRun.id}`)
+        .then(({ data }) => {
+          setSelectedRun(data);
+          mergeRunIntoDatasets(data);
+        })
+        .catch((loadError) => {
+          console.error('Failed to refresh RAG eval run:', loadError);
+        });
+    }, 3000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isRunModalOpen, selectedRun]);
 
   const handleExportRunReport = () => {
     if (!selectedRun) return;
@@ -584,11 +628,15 @@ export default function RagEvaluationPage() {
                     </button>
                     <button
                       onClick={() => handleRunEval(selectedDataset.id)}
-                      disabled={runningDatasetId === selectedDataset.id || selectedDataset.cases.length === 0}
+                      disabled={runningDatasetId === selectedDataset.id || isSelectedDatasetRunning || selectedDataset.cases.length === 0}
                       className="flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      {runningDatasetId === selectedDataset.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-                      {t('ragEval.runEval')}
+                      {runningDatasetId === selectedDataset.id || isSelectedDatasetRunning
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Play className="h-4 w-4" />}
+                      {runningDatasetId === selectedDataset.id || isSelectedDatasetRunning
+                        ? t('ragEval.runningStatus')
+                        : t('ragEval.runEval')}
                     </button>
                   </div>
                 </div>
@@ -684,7 +732,7 @@ export default function RagEvaluationPage() {
                             <td className="truncate px-3 py-2 text-xs text-text-muted">{formatDate(run.created_at)}</td>
                             <td className="px-3 py-2">{formatScore(run.average_overall_score)}</td>
                             <td className="px-3 py-2">{run.failed_count}/{run.case_count}</td>
-                            <td className="px-3 py-2">{run.status}</td>
+                            <td className="px-3 py-2">{getRunStatusLabel(run.status)}</td>
                             <td className="px-3 py-2 text-right">
                               <button
                                 onClick={() => handleViewRunDetails(run.id)}
@@ -899,7 +947,7 @@ export default function RagEvaluationPage() {
           <>
             <button
               onClick={handleExportRunReport}
-              disabled={!selectedRun || isLoadingRun}
+              disabled={!selectedRun || isLoadingRun || selectedRun.status === 'running'}
               className="flex items-center justify-center gap-2 rounded-lg border border-border px-4 py-2 text-sm text-text-muted transition-colors hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Download className="h-4 w-4" />
@@ -951,7 +999,12 @@ export default function RagEvaluationPage() {
               </div>
             </div>
 
-            {selectedRun.results && selectedRun.results.length > 0 ? (
+            {selectedRun.status === 'running' ? (
+              <div className="flex min-h-32 items-center justify-center gap-2 rounded-lg border border-border bg-bg-base p-4 text-sm text-text-muted">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                {t('ragEval.runningStatus')}
+              </div>
+            ) : selectedRun.results && selectedRun.results.length > 0 ? (
               <div className="space-y-3">
                 {selectedRun.results.map((result) => {
                   const matchedSources = result.matched_sources || [];

@@ -4,8 +4,10 @@ type RagStatus = 'ok' | 'error';
 type DatabaseStatus = 'ok' | 'error';
 type ChatStreamStatus = 'completed' | 'failed' | 'rejected';
 type HttpStatusFamily = '1xx' | '2xx' | '3xx' | '4xx' | '5xx' | 'other';
+type RagEvalCompletionStatus = 'completed' | 'partial' | 'failed';
 
 const HTTP_STATUS_FAMILIES: HttpStatusFamily[] = ['1xx', '2xx', '3xx', '4xx', '5xx', 'other'];
+const RAG_EVAL_COMPLETION_STATUSES: RagEvalCompletionStatus[] = ['completed', 'partial', 'failed'];
 
 interface RequestContext {
   startedAt: number;
@@ -48,6 +50,12 @@ class MetricsRegistry {
   private ragRetrieveFailuresTotal = 0;
   private ragRetrieveDurationMsTotal = 0;
   private ragCircuitOpenTotal = 0;
+  private ragEvalRunsStartedTotal = 0;
+  private ragEvalRunsReusedTotal = 0;
+  private ragEvalRunsCompletedByStatus = new Map<RagEvalCompletionStatus, number>(
+    RAG_EVAL_COMPLETION_STATUSES.map((status) => [status, 0])
+  );
+  private ragEvalRunsStaleFailedTotal = 0;
 
   recordHttpRequestStart(): RequestContext {
     this.httpActiveRequests += 1;
@@ -99,6 +107,25 @@ class MetricsRegistry {
 
   recordRagCircuitOpen() {
     this.ragCircuitOpenTotal += 1;
+  }
+
+  recordRagEvalRunStarted() {
+    this.ragEvalRunsStartedTotal += 1;
+  }
+
+  recordRagEvalRunReused() {
+    this.ragEvalRunsReusedTotal += 1;
+  }
+
+  recordRagEvalRunCompleted(status: RagEvalCompletionStatus) {
+    this.ragEvalRunsCompletedByStatus.set(
+      status,
+      (this.ragEvalRunsCompletedByStatus.get(status) || 0) + 1
+    );
+  }
+
+  recordRagEvalRunsStaleFailed(count: number) {
+    this.ragEvalRunsStaleFailedTotal += Math.max(count, 0);
   }
 
   recordRateLimitRejected(scope: string) {
@@ -184,6 +211,20 @@ class MetricsRegistry {
       '# HELP chatllm_rag_circuit_open_total RAG circuit-open short circuits.',
       '# TYPE chatllm_rag_circuit_open_total counter',
       `chatllm_rag_circuit_open_total ${this.ragCircuitOpenTotal}`,
+      '# HELP chatllm_rag_eval_runs_started_total Newly started RAG evaluation background runs.',
+      '# TYPE chatllm_rag_eval_runs_started_total counter',
+      `chatllm_rag_eval_runs_started_total ${this.ragEvalRunsStartedTotal}`,
+      '# HELP chatllm_rag_eval_runs_reused_total Duplicate RAG evaluation run requests served by an existing running run.',
+      '# TYPE chatllm_rag_eval_runs_reused_total counter',
+      `chatllm_rag_eval_runs_reused_total ${this.ragEvalRunsReusedTotal}`,
+      '# HELP chatllm_rag_eval_runs_completed_total RAG evaluation background runs completed by status.',
+      '# TYPE chatllm_rag_eval_runs_completed_total counter',
+      ...RAG_EVAL_COMPLETION_STATUSES.map((status) => (
+        `chatllm_rag_eval_runs_completed_total{status="${status}"} ${this.ragEvalRunsCompletedByStatus.get(status) || 0}`
+      )),
+      '# HELP chatllm_rag_eval_runs_stale_failed_total Stale RAG evaluation runs marked failed by maintenance.',
+      '# TYPE chatllm_rag_eval_runs_stale_failed_total counter',
+      `chatllm_rag_eval_runs_stale_failed_total ${this.ragEvalRunsStaleFailedTotal}`,
       '',
     ];
 

@@ -1,5 +1,7 @@
 import { query, withTransaction } from '../lib/db';
 
+type RagEvalRunStatus = 'running' | 'completed' | 'failed' | 'partial';
+
 export interface RagEvalDatasetRow {
   id: string;
   user_id: string;
@@ -28,7 +30,7 @@ export interface RagEvalRunRow {
   id: string;
   dataset_id: string;
   user_id: string;
-  status: 'completed' | 'failed' | 'partial';
+  status: RagEvalRunStatus;
   case_count: number;
   failed_count: number;
   average_overall_score: number;
@@ -41,6 +43,10 @@ export interface RagEvalRunRow {
   completed_at?: string | null;
   results?: RagEvalResultRow[];
 }
+
+export type CreatedRagEvalRunRow = RagEvalRunRow & {
+  created: boolean;
+};
 
 export interface RagEvalResultRow {
   id: string;
@@ -98,6 +104,37 @@ const runColumns = `
   created_at,
   completed_at
 `;
+
+interface RagEvalRunOutput {
+  case_count: number;
+  failed_count: number;
+  duration_ms: number;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  results: Array<{
+    case_id: string;
+    question: string;
+    status: 'success' | 'failed';
+    overall_score: number;
+    retrieval_score: number;
+    answer_score: number;
+    source_score: number;
+    keyword_score: number;
+    evidence_label: string;
+    matched_sources: unknown[];
+    trace_summary: Record<string, unknown>;
+    error_message: string;
+  }>;
+}
+
+const getRunStatusFromOutput = (output: RagEvalRunOutput): RagEvalRunStatus => {
+  if (output.failed_count === 0) return 'completed';
+  if (output.failed_count === output.case_count) return 'failed';
+  return 'partial';
+};
 
 export const listRagEvalDatasetsForUser = async (userId: string): Promise<RagEvalDatasetRow[]> => {
   const [{ rows: datasets }, { rows: cases }, { rows: runs }] = await Promise.all([
@@ -285,40 +322,189 @@ export const getRagEvalRunForUser = async (runId: string, userId: string) => {
   return { ...run, results };
 };
 
+export const createRunningRagEvalRunForUser = async (input: {
+  userId: string;
+  datasetId: string;
+  caseCount: number;
+}): Promise<CreatedRagEvalRunRow> => {
+  const { rows } = await query<RagEvalRunRow>(
+    `insert into rag_eval_runs (
+       dataset_id,
+       user_id,
+       status,
+       case_count
+     )
+     values ($1, $2, 'running', $3)
+     on conflict (dataset_id) where status = 'running' do nothing
+     returning ${runColumns}`,
+    [input.datasetId, input.userId, input.caseCount]
+  );
+
+  if (rows[0]) {
+    await query(
+      `update rag_eval_datasets
+       set updated_at = now()
+       where id = $1 and user_id = $2`,
+      [input.datasetId, input.userId]
+    );
+
+    return { ...rows[0], results: [], created: true };
+  }
+
+  const { rows: runningRows } = await query<RagEvalRunRow>(
+    `select ${runColumns}
+     from rag_eval_runs
+     where dataset_id = $1 and user_id = $2 and status = 'running'
+     order by created_at desc
+     limit 1`,
+    [input.datasetId, input.userId]
+  );
+
+  if (!runningRows[0]) {
+    throw new Error('Unable to create or locate running RAG eval run');
+  }
+
+  return { ...runningRows[0], results: [], created: false };
+};
+
+export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
+  const { rowCount } = await query(
+    `update rag_eval_runs
+     set status = 'failed',
+         failed_count = case_count,
+         completed_at = now()
+     where status = 'running'
+       and created_at < now() - ($1::text || ' milliseconds')::interval`,
+    [staleAfterMs]
+  );
+
+  return rowCount ?? 0;
+};
+
+export const completeRagEvalRunWithResults = async (input: {
+  userId: string;
+  runId: string;
+  output: RagEvalRunOutput;
+}) => {
+  return withTransaction(async (client) => {
+    const runStatus = getRunStatusFromOutput(input.output);
+
+    const { rows: runRows } = await client.query<RagEvalRunRow>(
+      `update rag_eval_runs
+       set status = $3,
+           case_count = $4,
+           failed_count = $5,
+           average_overall_score = $6,
+           average_retrieval_score = $7,
+           average_answer_score = $8,
+           average_source_score = $9,
+           average_keyword_score = $10,
+           duration_ms = $11,
+           completed_at = now()
+       where id = $1 and user_id = $2 and status in ('running')
+       returning ${runColumns}`,
+      [
+        input.runId,
+        input.userId,
+        runStatus,
+        input.output.case_count,
+        input.output.failed_count,
+        input.output.average_overall_score,
+        input.output.average_retrieval_score,
+        input.output.average_answer_score,
+        input.output.average_source_score,
+        input.output.average_keyword_score,
+        input.output.duration_ms,
+      ]
+    );
+
+    const run = runRows[0];
+    if (!run) return null;
+
+    const resultRows: RagEvalResultRow[] = [];
+    for (const result of input.output.results) {
+      const { rows } = await client.query<RagEvalResultRow>(
+        `insert into rag_eval_results (
+           run_id,
+           case_id,
+           question,
+           status,
+           overall_score,
+           retrieval_score,
+           answer_score,
+           source_score,
+           keyword_score,
+           evidence_label,
+           matched_sources,
+           trace_summary,
+           error_message
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         returning *`,
+        [
+          run.id,
+          result.case_id || null,
+          result.question,
+          result.status,
+          result.overall_score,
+          result.retrieval_score,
+          result.answer_score,
+          result.source_score,
+          result.keyword_score,
+          result.evidence_label,
+          JSON.stringify(result.matched_sources || []),
+          JSON.stringify(result.trace_summary || {}),
+          result.error_message || '',
+        ]
+      );
+      resultRows.push(rows[0]);
+    }
+
+    await client.query(
+      `update rag_eval_datasets
+       set updated_at = now()
+       where id = $1 and user_id = $2`,
+      [run.dataset_id, input.userId]
+    );
+
+    return { ...run, results: resultRows };
+  });
+};
+
+export const failRagEvalRunForUser = async (input: {
+  userId: string;
+  runId: string;
+  errorMessage: string;
+  durationMs?: number;
+}) => {
+  const { rows } = await query<RagEvalRunRow>(
+    `update rag_eval_runs
+     set status = 'failed',
+         failed_count = case_count,
+         duration_ms = $3,
+         completed_at = now()
+     where id = $1 and user_id = $2 and status in ('running')
+     returning ${runColumns}`,
+    [input.runId, input.userId, input.durationMs || 0]
+  );
+
+  if (!rows[0]) return null;
+
+  console.error('RAG eval run failed:', {
+    run_id: input.runId,
+    error: input.errorMessage,
+  });
+
+  return { ...rows[0], results: [] };
+};
+
 export const insertRagEvalRunWithResults = async (input: {
   userId: string;
   datasetId: string;
-  output: {
-    case_count: number;
-    failed_count: number;
-    duration_ms: number;
-    average_overall_score: number;
-    average_retrieval_score: number;
-    average_answer_score: number;
-    average_source_score: number;
-    average_keyword_score: number;
-    results: Array<{
-      case_id: string;
-      question: string;
-      status: 'success' | 'failed';
-      overall_score: number;
-      retrieval_score: number;
-      answer_score: number;
-      source_score: number;
-      keyword_score: number;
-      evidence_label: string;
-      matched_sources: unknown[];
-      trace_summary: Record<string, unknown>;
-      error_message: string;
-    }>;
-  };
+  output: RagEvalRunOutput;
 }) => {
   return withTransaction(async (client) => {
-    const runStatus = input.output.failed_count === 0
-      ? 'completed'
-      : input.output.failed_count === input.output.case_count
-        ? 'failed'
-        : 'partial';
+    const runStatus = getRunStatusFromOutput(input.output);
 
     const { rows: runRows } = await client.query<RagEvalRunRow>(
       `insert into rag_eval_runs (

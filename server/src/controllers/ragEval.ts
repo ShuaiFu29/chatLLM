@@ -1,14 +1,18 @@
 import { Request, Response } from 'express';
+import { metrics } from '../lib/metrics';
 import { runRagEvaluation } from '../lib/ragClient';
 import {
+  completeRagEvalRunWithResults,
   createRagEvalCaseForUser,
   createRagEvalDatasetForUser,
+  createRunningRagEvalRunForUser,
   deleteRagEvalCaseForUser,
   deleteRagEvalDatasetForUser,
+  failRagEvalRunForUser,
   getRagEvalDatasetWithCasesForUser,
   getRagEvalRunForUser,
-  insertRagEvalRunWithResults,
   listRagEvalDatasetsForUser,
+  RagEvalDatasetRow,
   updateRagEvalDatasetForUser,
 } from '../repositories/ragEval';
 
@@ -33,6 +37,49 @@ const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed || null;
+};
+
+const toRagEvalCases = (dataset: RagEvalDatasetRow) => (dataset.cases || []).map((testCase) => ({
+  id: testCase.id,
+  question: testCase.question,
+  expected_answer: testCase.expected_answer,
+  expected_keywords: testCase.expected_keywords,
+  expected_source_files: testCase.expected_source_files,
+}));
+
+const executeRagEvalRunInBackground = async (input: {
+  runId: string;
+  userId: string;
+  dataset: RagEvalDatasetRow;
+}) => {
+  const startedAt = Date.now();
+
+  try {
+    const output = await runRagEvaluation({
+      user_id: input.userId,
+      project_space_id: input.dataset.project_space_id,
+      cases: toRagEvalCases(input.dataset),
+      limit: 10,
+      threshold: 0.1,
+    });
+
+    const completedRun = await completeRagEvalRunWithResults({
+      userId: input.userId,
+      runId: input.runId,
+      output,
+    });
+    if (completedRun && completedRun.status !== 'running') {
+      metrics.recordRagEvalRunCompleted(completedRun.status);
+    }
+  } catch (error) {
+    const failedRun = await failRagEvalRunForUser({
+      userId: input.userId,
+      runId: input.runId,
+      errorMessage: error instanceof Error ? error.message : 'Unknown RAG eval failure',
+      durationMs: Date.now() - startedAt,
+    });
+    if (failedRun) metrics.recordRagEvalRunCompleted('failed');
+  }
 };
 
 export const listRagEvalDatasets = async (req: Request, res: Response) => {
@@ -175,27 +222,24 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Dataset has too many eval cases for one run' });
     }
 
-    const output = await runRagEvaluation({
-      user_id: req.user.id,
-      project_space_id: dataset.project_space_id,
-      cases: dataset.cases.map((testCase) => ({
-        id: testCase.id,
-        question: testCase.question,
-        expected_answer: testCase.expected_answer,
-        expected_keywords: testCase.expected_keywords,
-        expected_source_files: testCase.expected_source_files,
-      })),
-      limit: 10,
-      threshold: 0.1,
-    });
-
-    const run = await insertRagEvalRunWithResults({
+    const run = await createRunningRagEvalRunForUser({
       userId: req.user.id,
       datasetId: dataset.id,
-      output,
+      caseCount: dataset.cases.length,
     });
 
-    res.status(201).json(run);
+    if (run.created) {
+      metrics.recordRagEvalRunStarted();
+      void executeRagEvalRunInBackground({
+        runId: run.id,
+        userId: req.user.id,
+        dataset,
+      });
+    } else {
+      metrics.recordRagEvalRunReused();
+    }
+
+    res.status(202).json(run);
   } catch (error) {
     console.error('Error running RAG eval dataset:', error);
     res.status(500).json({ error: 'Failed to run RAG eval dataset' });
