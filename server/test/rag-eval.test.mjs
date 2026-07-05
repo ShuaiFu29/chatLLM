@@ -16,6 +16,7 @@ const readOptionalSource = (relativePath) => {
 test('RAG eval migration creates datasets cases runs and results', () => {
   const migrationSource = readOptionalSource('migrations/0007_rag_eval.sql');
   const answerScoreMigrationSource = readOptionalSource('migrations/0008_rag_eval_answer_score.sql');
+  const asyncRunMigrationSource = readOptionalSource('migrations/0009_rag_eval_async_runs.sql');
 
   assert.match(migrationSource, /create table if not exists rag_eval_datasets/i);
   assert.match(migrationSource, /create table if not exists rag_eval_cases/i);
@@ -25,6 +26,9 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   assert.match(migrationSource, /rag_eval_runs_dataset_created_idx/i);
   assert.match(answerScoreMigrationSource, /add column if not exists average_answer_score/i);
   assert.match(answerScoreMigrationSource, /add column if not exists answer_score/i);
+  assert.match(asyncRunMigrationSource, /constraint rag_eval_runs_status_check/i);
+  assert.match(asyncRunMigrationSource, /'running'/i);
+  assert.match(asyncRunMigrationSource, /rag_eval_runs_running_user_idx/i);
 });
 
 test('RAG eval API exposes authenticated dataset case and run endpoints', () => {
@@ -53,7 +57,11 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(controllerSource, /deleteRagEvalDataset/);
   assert.match(controllerSource, /getRagEvalRun/);
   assert.match(controllerSource, /runRagEvaluation/);
-  assert.match(controllerSource, /insertRagEvalRunWithResults/);
+  assert.match(controllerSource, /createRunningRagEvalRunForUser/);
+  assert.match(controllerSource, /completeRagEvalRunWithResults/);
+  assert.match(controllerSource, /failRagEvalRunForUser/);
+  assert.match(controllerSource, /void executeRagEvalRunInBackground/);
+  assert.match(controllerSource, /res\.status\(202\)\.json\(run\)/);
 
   assert.match(repositorySource, /listRagEvalDatasetsForUser/);
   assert.match(repositorySource, /createRagEvalDatasetForUser/);
@@ -61,7 +69,11 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(repositorySource, /deleteRagEvalDatasetForUser/);
   assert.match(repositorySource, /createRagEvalCaseForUser/);
   assert.match(repositorySource, /getRagEvalRunForUser/);
-  assert.match(repositorySource, /insertRagEvalRunWithResults/);
+  assert.match(repositorySource, /createRunningRagEvalRunForUser/);
+  assert.match(repositorySource, /completeRagEvalRunWithResults/);
+  assert.match(repositorySource, /failRagEvalRunForUser/);
+  assert.match(repositorySource, /RagEvalRunStatus = 'running'/);
+  assert.match(repositorySource, /status in \('running'\)/i);
   assert.match(repositorySource, /delete from rag_eval_datasets/i);
   assert.match(repositorySource, /where id = \$1 and user_id = \$2/i);
   assert.match(repositorySource, /from rag_eval_results/);

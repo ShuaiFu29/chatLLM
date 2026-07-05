@@ -243,6 +243,11 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /isSelectedDatasetAtCaseLimit/);
   assert.match(ragEvaluationPageSource, /ragEval\.maxCasesHint/);
   assert.match(ragEvaluationPageSource, /disabled=\{isSaving \|\| isSelectedDatasetAtCaseLimit\}/);
+  assert.match(ragEvaluationPageSource, /status: 'completed' \| 'failed' \| 'partial' \| 'running'/);
+  assert.match(ragEvaluationPageSource, /hasRunningRuns/);
+  assert.match(ragEvaluationPageSource, /setInterval\(\(\) => \{/);
+  assert.match(ragEvaluationPageSource, /ragEval\.runQueued/);
+  assert.match(ragEvaluationPageSource, /ragEval\.runningStatus/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -265,6 +270,8 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
     assert.ok(locale.ragEval?.traceSteps, `${localeFile.locale}.json needs ragEval.traceSteps`);
     assert.ok(locale.ragEval?.matchedSources, `${localeFile.locale}.json needs ragEval.matchedSources`);
     assert.ok(locale.ragEval?.maxCasesHint, `${localeFile.locale}.json needs ragEval.maxCasesHint`);
+    assert.ok(locale.ragEval?.runQueued, `${localeFile.locale}.json needs ragEval.runQueued`);
+    assert.ok(locale.ragEval?.runningStatus, `${localeFile.locale}.json needs ragEval.runningStatus`);
   }
 });
 
