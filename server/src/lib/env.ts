@@ -23,6 +23,11 @@ const DEFAULT_CHAT_RATE_LIMIT_MAX = 60;
 const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 120;
 const DEFAULT_RAG_EVAL_RATE_LIMIT_MAX = 30;
 const DEFAULT_RAG_EVAL_STALE_RUN_MS = 30 * 60 * 1000;
+const DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS = 5000;
+const DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY = 1;
+const DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS = 3;
+const DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS = 60000;
+const DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
 const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 10000;
@@ -77,6 +82,11 @@ export interface ServerEnv {
   UPLOAD_RATE_LIMIT_MAX: number;
   RAG_EVAL_RATE_LIMIT_MAX: number;
   RAG_EVAL_STALE_RUN_MS: number;
+  RAG_EVAL_QUEUE_INTERVAL_MS: number;
+  RAG_EVAL_QUEUE_CONCURRENCY: number;
+  RAG_EVAL_QUEUE_MAX_ATTEMPTS: number;
+  RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: number;
+  RAG_EVAL_QUEUE_STALE_AFTER_MS: number;
   FILE_QUEUE_INTERVAL_MS: number;
   FILE_QUEUE_CONCURRENCY: number;
   FILE_QUEUE_INGEST_TIMEOUT_MS: number;
@@ -164,6 +174,11 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const uploadRateLimitMax = getPositiveInteger(env, 'UPLOAD_RATE_LIMIT_MAX', DEFAULT_UPLOAD_RATE_LIMIT_MAX, errors);
   const ragEvalRateLimitMax = getPositiveInteger(env, 'RAG_EVAL_RATE_LIMIT_MAX', DEFAULT_RAG_EVAL_RATE_LIMIT_MAX, errors);
   const ragEvalStaleRunMs = getPositiveInteger(env, 'RAG_EVAL_STALE_RUN_MS', DEFAULT_RAG_EVAL_STALE_RUN_MS, errors);
+  const ragEvalQueueIntervalMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_INTERVAL_MS', DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS, errors);
+  const ragEvalQueueConcurrency = getPositiveInteger(env, 'RAG_EVAL_QUEUE_CONCURRENCY', DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY, errors);
+  const ragEvalQueueMaxAttempts = getPositiveInteger(env, 'RAG_EVAL_QUEUE_MAX_ATTEMPTS', DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS, errors);
+  const ragEvalQueueRetryBaseDelayMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS', DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS, errors);
+  const ragEvalQueueStaleAfterMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_STALE_AFTER_MS', DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS, errors);
   const fileQueueIntervalMs = getPositiveInteger(env, 'FILE_QUEUE_INTERVAL_MS', DEFAULT_FILE_QUEUE_INTERVAL_MS, errors);
   const fileQueueConcurrency = getPositiveInteger(env, 'FILE_QUEUE_CONCURRENCY', DEFAULT_FILE_QUEUE_CONCURRENCY, errors);
   const fileQueueIngestTimeoutMs = getPositiveInteger(env, 'FILE_QUEUE_INGEST_TIMEOUT_MS', DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS, errors);
@@ -226,6 +241,11 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     UPLOAD_RATE_LIMIT_MAX: uploadRateLimitMax,
     RAG_EVAL_RATE_LIMIT_MAX: ragEvalRateLimitMax,
     RAG_EVAL_STALE_RUN_MS: ragEvalStaleRunMs,
+    RAG_EVAL_QUEUE_INTERVAL_MS: ragEvalQueueIntervalMs,
+    RAG_EVAL_QUEUE_CONCURRENCY: ragEvalQueueConcurrency,
+    RAG_EVAL_QUEUE_MAX_ATTEMPTS: ragEvalQueueMaxAttempts,
+    RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: ragEvalQueueRetryBaseDelayMs,
+    RAG_EVAL_QUEUE_STALE_AFTER_MS: ragEvalQueueStaleAfterMs,
     FILE_QUEUE_INTERVAL_MS: fileQueueIntervalMs,
     FILE_QUEUE_CONCURRENCY: fileQueueConcurrency,
     FILE_QUEUE_INGEST_TIMEOUT_MS: fileQueueIngestTimeoutMs,

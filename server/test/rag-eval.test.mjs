@@ -19,6 +19,7 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   const asyncRunMigrationSource = readOptionalSource('migrations/0009_rag_eval_async_runs.sql');
   const asyncSafetyMigrationSource = readOptionalSource('migrations/0010_rag_eval_async_safety.sql');
   const cancelMigrationSource = readOptionalSource('migrations/0011_rag_eval_cancelled_runs.sql');
+  const queueMigrationSource = readOptionalSource('migrations/0012_rag_eval_job_queue.sql');
 
   assert.match(migrationSource, /create table if not exists rag_eval_datasets/i);
   assert.match(migrationSource, /create table if not exists rag_eval_cases/i);
@@ -35,10 +36,20 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   assert.match(asyncSafetyMigrationSource, /where status = 'running'/i);
   assert.match(cancelMigrationSource, /constraint rag_eval_runs_status_check/i);
   assert.match(cancelMigrationSource, /'cancelled'/i);
+  assert.match(queueMigrationSource, /add column if not exists queued_at/i);
+  assert.match(queueMigrationSource, /add column if not exists claimed_at/i);
+  assert.match(queueMigrationSource, /add column if not exists worker_id/i);
+  assert.match(queueMigrationSource, /add column if not exists attempts/i);
+  assert.match(queueMigrationSource, /add column if not exists max_attempts/i);
+  assert.match(queueMigrationSource, /add column if not exists next_attempt_at/i);
+  assert.match(queueMigrationSource, /add column if not exists last_error/i);
+  assert.match(queueMigrationSource, /rag_eval_runs_queue_ready_idx/i);
+  assert.match(queueMigrationSource, /rag_eval_runs_claimed_idx/i);
 });
 
 test('RAG eval API exposes authenticated dataset case and run endpoints', () => {
   const indexSource = readSource('src/index.ts');
+  const shutdownSource = readSource('src/lib/gracefulShutdown.ts');
   const routesSource = readOptionalSource('src/routes/ragEval.ts');
   const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
@@ -49,6 +60,10 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(indexSource, /keyPrefix:\s*'rag-eval'/);
   assert.match(indexSource, /max:\s*serverEnv\.RAG_EVAL_RATE_LIMIT_MAX/);
   assert.match(indexSource, /\), ragEvalRoutes\)/);
+  assert.match(indexSource, /ragEvalQueue/);
+  assert.match(indexSource, /ragEvalQueue\.start\(\)/);
+  assert.match(shutdownSource, /ragEvalQueue/);
+  assert.match(shutdownSource, /ragEvalQueue\.stop\(\)/);
 
   assert.match(routesSource, /router\.get\('\/datasets', requireAuth, listRagEvalDatasets\)/);
   assert.match(routesSource, /router\.post\('\/datasets', requireAuth, createRagEvalDataset\)/);
@@ -63,17 +78,16 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(controllerSource, /updateRagEvalDataset/);
   assert.match(controllerSource, /deleteRagEvalDataset/);
   assert.match(controllerSource, /getRagEvalRun/);
-  assert.match(controllerSource, /runRagEvaluation/);
   assert.match(controllerSource, /createRunningRagEvalRunForUser/);
-  assert.match(controllerSource, /completeRagEvalRunWithResults/);
-  assert.match(controllerSource, /failRagEvalRunForUser/);
   assert.match(controllerSource, /cancelRagEvalRunForUser/);
   assert.match(controllerSource, /cancelRagEvalRun/);
   assert.match(controllerSource, /if \(run\.created\) \{/);
   assert.match(controllerSource, /recordRagEvalRunStarted/);
   assert.match(controllerSource, /recordRagEvalRunReused/);
   assert.match(controllerSource, /recordRagEvalRunCompleted/);
-  assert.match(controllerSource, /void executeRagEvalRunInBackground/);
+  assert.doesNotMatch(controllerSource, /executeRagEvalRunInBackground/);
+  assert.doesNotMatch(controllerSource, /void\s+executeRagEvalRunInBackground/);
+  assert.doesNotMatch(controllerSource, /runRagEvaluation/);
   assert.match(controllerSource, /res\.status\(202\)\.json\(run\)/);
 
   assert.match(repositorySource, /listRagEvalDatasetsForUser/);
@@ -85,6 +99,9 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(repositorySource, /createRunningRagEvalRunForUser/);
   assert.match(repositorySource, /completeRagEvalRunWithResults/);
   assert.match(repositorySource, /failRagEvalRunForUser/);
+  assert.match(repositorySource, /claimNextRagEvalRunJob/);
+  assert.match(repositorySource, /markRagEvalRunAttemptFailed/);
+  assert.match(repositorySource, /resetStaleRagEvalRunJobs/);
   assert.match(repositorySource, /cancelRagEvalRunForUser/);
   assert.match(repositorySource, /status = 'cancelled'/);
   assert.match(repositorySource, /RagEvalRunStatus = 'running'/);
@@ -105,9 +122,42 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(ragClientSource, /expected_answer\?: string/);
 });
 
+test('RAG eval queue worker claims persisted jobs and retries safely', () => {
+  const queueSource = readOptionalSource('src/services/ragEvalQueue.ts');
+  const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
+  const maintenanceSource = readOptionalSource('src/services/maintenance.ts');
+  const metricsSource = readOptionalSource('src/lib/metrics.ts');
+
+  assert.match(queueSource, /class RagEvalQueueService/);
+  assert.match(queueSource, /claimNextRagEvalRunJob/);
+  assert.match(queueSource, /runRagEvaluation/);
+  assert.match(queueSource, /completeRagEvalRunWithResults/);
+  assert.match(queueSource, /markRagEvalRunAttemptFailed/);
+  assert.match(queueSource, /workerId:\s*job\.worker_id \|\| this\.workerId/);
+  assert.match(queueSource, /RAG_EVAL_QUEUE_CONCURRENCY/);
+  assert.match(queueSource, /RAG_EVAL_QUEUE_INTERVAL_MS/);
+  assert.match(queueSource, /RAG_EVAL_QUEUE_MAX_ATTEMPTS/);
+  assert.match(queueSource, /RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS/);
+  assert.match(queueSource, /RAG_EVAL_QUEUE_STALE_AFTER_MS/);
+
+  assert.match(repositorySource, /for update skip locked/i);
+  assert.match(repositorySource, /worker_id/);
+  assert.match(repositorySource, /claimed_at/);
+  assert.match(repositorySource, /next_attempt_at/);
+  assert.match(repositorySource, /last_error/);
+  assert.match(repositorySource, /status = 'running'/);
+  assert.match(repositorySource, /worker_id = \$12/);
+  assert.match(repositorySource, /worker_id = \$8/);
+
+  assert.match(maintenanceSource, /resetStaleRagEvalRunJobs/);
+  assert.match(metricsSource, /recordRagEvalRunRetried/);
+  assert.match(metricsSource, /recordRagEvalRunQueueClaimed/);
+});
+
 test('RAG eval runs are bounded before calling the RAG service', () => {
   const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
+  const queueSource = readOptionalSource('src/services/ragEvalQueue.ts');
 
   assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_RUN = 50/);
   assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_DATASET = 50/);
@@ -122,7 +172,7 @@ test('RAG eval runs are bounded before calling the RAG service', () => {
     /return res\.status\(400\)\.json\(\{ error: 'Dataset has too many eval cases for one run' \}\)/
   );
   assert.match(controllerSource, /maxCases: MAX_RAG_EVAL_CASES_PER_DATASET/);
-  assert.match(controllerSource, /expected_answer: testCase\.expected_answer/);
+  assert.match(queueSource, /expected_answer: testCase\.expected_answer/);
   assert.match(repositorySource, /count\(\*\)::int from rag_eval_cases/i);
   assert.match(repositorySource, /case_count < \$7/i);
 });

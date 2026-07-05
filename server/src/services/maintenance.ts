@@ -2,7 +2,7 @@ import path from 'path';
 import fs from 'fs-extra';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
-import { failStaleRunningRagEvalRuns } from '../repositories/ragEval';
+import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
@@ -47,6 +47,7 @@ class MaintenanceService {
   private async runOnce() {
     const results = await Promise.allSettled([
       deleteExpiredSessions(),
+      this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),
     ]);
@@ -61,6 +62,13 @@ class MaintenanceService {
   private async failStaleRunningRagEvalRuns() {
     const count = await failStaleRunningRagEvalRuns(serverEnv.RAG_EVAL_STALE_RUN_MS);
     metrics.recordRagEvalRunsStaleFailed(count);
+  }
+
+  private async resetStaleRagEvalRunJobs() {
+    const count = await resetStaleRagEvalRunJobs(serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS);
+    if (count > 0) {
+      console.warn(`[Maintenance] Reset ${count} stale RAG eval queue jobs`);
+    }
   }
 }
 
