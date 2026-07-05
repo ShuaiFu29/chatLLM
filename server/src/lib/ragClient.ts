@@ -18,6 +18,8 @@ export interface AgenticRagResponse {
   results: RagDocument[];
   trace_steps: RagTraceStep[];
   quality: RagQualitySummary;
+  insufficient_evidence?: boolean;
+  answer_guidance?: string;
 }
 
 export interface RagEvalCaseInput {

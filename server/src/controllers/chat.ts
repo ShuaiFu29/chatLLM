@@ -335,6 +335,8 @@ export const sendMessage = async (req: Request, res: Response) => {
     let assistantSources: ChatSource[] = [];
     let agenticRagRun: AgenticRagResponse | null = null;
     let traceSummary: RagTraceSummary | null = null;
+    let insufficientEvidence = false;
+    let answerGuidance = '';
 
     if (enableRag) {
       try {
@@ -351,7 +353,11 @@ export const sendMessage = async (req: Request, res: Response) => {
           planned_queries: agenticRagRun.planned_queries || [],
           trace_steps: agenticRagRun.trace_steps || [],
           quality: agenticRagRun.quality,
+          insufficient_evidence: agenticRagRun.insufficient_evidence,
+          answer_guidance: agenticRagRun.answer_guidance,
         };
+        insufficientEvidence = Boolean(agenticRagRun.insufficient_evidence);
+        answerGuidance = agenticRagRun.answer_guidance || '';
 
         if (documents && documents.length > 0) {
           contextText = documents.map((doc) => doc.content || '').join('\n---\n');
@@ -363,6 +369,8 @@ export const sendMessage = async (req: Request, res: Response) => {
           sources: assistantSources,
           traceSummary,
           qualitySummary: agenticRagRun.quality,
+          insufficientEvidence,
+          answer_guidance: answerGuidance,
         })}\n\n`);
       } catch (error) {
         console.warn('[Chat] RAG retrieval failed; continuing without context:', error);
@@ -385,7 +393,10 @@ export const sendMessage = async (req: Request, res: Response) => {
       const lastMsgIndex = messages.length - 1;
       if (lastMsgIndex >= 0 && messages[lastMsgIndex].role === 'user') {
         const originalContent = messages[lastMsgIndex].content;
-        messages[lastMsgIndex].content = `Based on the following context, please answer the user's question.
+        const evidenceGuidance = insufficientEvidence && answerGuidance
+          ? `${answerGuidance}\n\n`
+          : '';
+        messages[lastMsgIndex].content = `${evidenceGuidance}Based on the following context, please answer the user's question.
 If the answer is not in the context, say so, but you can still use your general knowledge.
 Do not mention "Based on the provided context" or similar phrases in your answer unless necessary to clarify sources.
 
