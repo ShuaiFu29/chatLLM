@@ -1,9 +1,11 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agentic_retrieval import agentic_retrieve
 from evaluation import evaluate_retrieval_quality
 from query_planner import plan_queries
+from retrieval import retrieve_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -72,6 +74,48 @@ class AgenticRetrievalTests(unittest.TestCase):
         self.assertGreater(quality["citation_score"], 0)
         self.assertIn(quality["evidence_label"], {"strong", "partial", "weak"})
 
+    def test_agentic_retrieve_accepts_reranker_and_flags_insufficient_evidence(self):
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return [
+                {
+                    "id": "chunk-weak",
+                    "content": "Billing settings and account avatars live on the profile page.",
+                    "metadata": {"filename": "profile.md", "file_id": "file-profile", "chunk_index": 1},
+                    "similarity": 0.12,
+                },
+                {
+                    "id": "chunk-better",
+                    "content": "OAuth refresh token rotation is described in the authentication operations guide.",
+                    "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 4},
+                    "similarity": 0.52,
+                },
+            ]
+
+        def fake_rerank(query, documents):
+            reranked = list(reversed(documents))
+            for index, document in enumerate(reranked):
+                document["rerank_score"] = 1 - index * 0.1
+            return reranked
+
+        result = agentic_retrieve(
+            query="How does OAuth refresh token rotation work?",
+            user_id="user-1",
+            project_space_id="space-1",
+            limit=1,
+            threshold=0.1,
+            retrieve_fn=fake_retrieve,
+            rerank_fn=fake_rerank,
+        )
+
+        self.assertEqual(result["results"][0]["id"], "chunk-better")
+        self.assertIn("insufficient_evidence", result)
+        self.assertIn("answer_guidance", result)
+        self.assertIsInstance(result["insufficient_evidence"], bool)
+        self.assertIn("rerank_score", result["results"][0])
+
+        rerank_steps = [step for step in result["trace_steps"] if step["step_type"] == "rerank"]
+        self.assertEqual(rerank_steps[-1]["output"]["reranker"], "custom")
+
     def test_evaluate_retrieval_quality_is_bounded_for_empty_results(self):
         quality = evaluate_retrieval_quality("missing deployment notes", [])
 
@@ -88,6 +132,49 @@ class AgenticRetrievalTests(unittest.TestCase):
         self.assertIn('@app.post("/agentic-retrieve")', source)
         self.assertIn("agentic_retrieve(", source)
         self.assertIn("return agentic_retrieve", source)
+
+    def test_retrieval_module_uses_hybrid_text_and_vector_scoring(self):
+        retrieval_source = (ROOT / "retrieval.py").read_text(encoding="utf-8")
+        db_source = (ROOT / "db.py").read_text(encoding="utf-8")
+        migration_source = (ROOT.parent / "server" / "migrations" / "0013_file_chunks_text_search.sql").read_text(encoding="utf-8")
+
+        self.assertIn("search_chunks_by_text", retrieval_source)
+        self.assertIn("retrieval_score", retrieval_source)
+        self.assertIn("vector_similarity", retrieval_source)
+        self.assertIn("lexical_score", retrieval_source)
+        self.assertIn("retrieval_mode", retrieval_source)
+        self.assertIn("def search_chunks_by_text", db_source)
+        self.assertIn("websearch_to_tsquery", db_source)
+        self.assertIn("to_tsvector('simple', content)", migration_source)
+        self.assertIn("file_chunks_content_search_idx", migration_source)
+
+    def test_hybrid_retrieval_falls_back_to_lexical_when_embedding_fails(self):
+        lexical_chunk = {
+            "id": "chunk-lexical",
+            "file_id": "file-auth",
+            "user_id": "user-1",
+            "chunk_index": 1,
+            "content": "OAuth refresh token rotation keeps sessions secure.",
+            "metadata": {"filename": "auth.md"},
+            "project_space_id": "space-1",
+            "filename": "auth.md",
+            "lexical_score": 0.8,
+        }
+
+        with patch("retrieval.get_embedding", side_effect=RuntimeError("embedding quota exhausted")):
+            with patch("retrieval.search_chunks_by_text", return_value=[lexical_chunk]):
+                documents = retrieve_documents(
+                    query="OAuth refresh token rotation",
+                    user_id="user-1",
+                    project_space_id="space-1",
+                    limit=1,
+                    threshold=0.1,
+                )
+
+        self.assertEqual(documents[0]["id"], "chunk-lexical")
+        self.assertEqual(documents[0]["metadata"]["retrieval_mode"], "lexical")
+        self.assertEqual(documents[0]["vector_similarity"], 0)
+        self.assertGreater(documents[0]["lexical_score"], 0)
 
 
 if __name__ == "__main__":

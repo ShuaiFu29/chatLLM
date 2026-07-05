@@ -23,6 +23,11 @@ const DEFAULT_CHAT_RATE_LIMIT_MAX = 60;
 const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 120;
 const DEFAULT_RAG_EVAL_RATE_LIMIT_MAX = 30;
 const DEFAULT_RAG_EVAL_STALE_RUN_MS = 30 * 60 * 1000;
+const DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS = 5000;
+const DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY = 1;
+const DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS = 3;
+const DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS = 60000;
+const DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
 const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 10000;
@@ -61,6 +66,10 @@ export interface ServerEnv {
   DEEPSEEK_API_KEY?: string;
   DEEPSEEK_BASE_URL: string;
   MOONSHOT_API_KEY?: string;
+  MOONSHOT_BASE_URL: string;
+  QWEN_API_KEY?: string;
+  QWEN_BASE_URL: string;
+  QWEN_CHAT_MODEL: string;
   OPENAI_API_KEY?: string;
   EMBEDDING_API_KEY?: string;
   EMBEDDING_BASE_URL: string;
@@ -77,6 +86,11 @@ export interface ServerEnv {
   UPLOAD_RATE_LIMIT_MAX: number;
   RAG_EVAL_RATE_LIMIT_MAX: number;
   RAG_EVAL_STALE_RUN_MS: number;
+  RAG_EVAL_QUEUE_INTERVAL_MS: number;
+  RAG_EVAL_QUEUE_CONCURRENCY: number;
+  RAG_EVAL_QUEUE_MAX_ATTEMPTS: number;
+  RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: number;
+  RAG_EVAL_QUEUE_STALE_AFTER_MS: number;
   FILE_QUEUE_INTERVAL_MS: number;
   FILE_QUEUE_CONCURRENCY: number;
   FILE_QUEUE_INGEST_TIMEOUT_MS: number;
@@ -143,7 +157,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     errors.push(`Missing required server environment variables: ${missing.join(', ')}`);
   }
 
-  const chatKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'OPENAI_API_KEY'];
+  const chatKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY', 'OPENAI_API_KEY'];
   if (!chatKeys.some((key) => getRequired(env, key))) {
     errors.push(`At least one chat provider key is required: ${chatKeys.join(', ')}`);
   }
@@ -164,6 +178,11 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const uploadRateLimitMax = getPositiveInteger(env, 'UPLOAD_RATE_LIMIT_MAX', DEFAULT_UPLOAD_RATE_LIMIT_MAX, errors);
   const ragEvalRateLimitMax = getPositiveInteger(env, 'RAG_EVAL_RATE_LIMIT_MAX', DEFAULT_RAG_EVAL_RATE_LIMIT_MAX, errors);
   const ragEvalStaleRunMs = getPositiveInteger(env, 'RAG_EVAL_STALE_RUN_MS', DEFAULT_RAG_EVAL_STALE_RUN_MS, errors);
+  const ragEvalQueueIntervalMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_INTERVAL_MS', DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS, errors);
+  const ragEvalQueueConcurrency = getPositiveInteger(env, 'RAG_EVAL_QUEUE_CONCURRENCY', DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY, errors);
+  const ragEvalQueueMaxAttempts = getPositiveInteger(env, 'RAG_EVAL_QUEUE_MAX_ATTEMPTS', DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS, errors);
+  const ragEvalQueueRetryBaseDelayMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS', DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS, errors);
+  const ragEvalQueueStaleAfterMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_STALE_AFTER_MS', DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS, errors);
   const fileQueueIntervalMs = getPositiveInteger(env, 'FILE_QUEUE_INTERVAL_MS', DEFAULT_FILE_QUEUE_INTERVAL_MS, errors);
   const fileQueueConcurrency = getPositiveInteger(env, 'FILE_QUEUE_CONCURRENCY', DEFAULT_FILE_QUEUE_CONCURRENCY, errors);
   const fileQueueIngestTimeoutMs = getPositiveInteger(env, 'FILE_QUEUE_INGEST_TIMEOUT_MS', DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS, errors);
@@ -210,6 +229,10 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     DEEPSEEK_API_KEY: env.DEEPSEEK_API_KEY?.trim() || undefined,
     DEEPSEEK_BASE_URL: env.DEEPSEEK_BASE_URL?.trim() || 'https://api.deepseek.com',
     MOONSHOT_API_KEY: env.MOONSHOT_API_KEY?.trim() || undefined,
+    MOONSHOT_BASE_URL: env.MOONSHOT_BASE_URL?.trim() || 'https://api.moonshot.cn/v1',
+    QWEN_API_KEY: env.QWEN_API_KEY?.trim() || undefined,
+    QWEN_BASE_URL: env.QWEN_BASE_URL?.trim() || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+    QWEN_CHAT_MODEL: env.QWEN_CHAT_MODEL?.trim() || 'qwen-plus',
     OPENAI_API_KEY: env.OPENAI_API_KEY?.trim() || undefined,
     EMBEDDING_API_KEY: env.EMBEDDING_API_KEY?.trim() || undefined,
     EMBEDDING_BASE_URL: env.EMBEDDING_BASE_URL?.trim() || 'https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
@@ -226,6 +249,11 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     UPLOAD_RATE_LIMIT_MAX: uploadRateLimitMax,
     RAG_EVAL_RATE_LIMIT_MAX: ragEvalRateLimitMax,
     RAG_EVAL_STALE_RUN_MS: ragEvalStaleRunMs,
+    RAG_EVAL_QUEUE_INTERVAL_MS: ragEvalQueueIntervalMs,
+    RAG_EVAL_QUEUE_CONCURRENCY: ragEvalQueueConcurrency,
+    RAG_EVAL_QUEUE_MAX_ATTEMPTS: ragEvalQueueMaxAttempts,
+    RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: ragEvalQueueRetryBaseDelayMs,
+    RAG_EVAL_QUEUE_STALE_AFTER_MS: ragEvalQueueStaleAfterMs,
     FILE_QUEUE_INTERVAL_MS: fileQueueIntervalMs,
     FILE_QUEUE_CONCURRENCY: fileQueueConcurrency,
     FILE_QUEUE_INGEST_TIMEOUT_MS: fileQueueIngestTimeoutMs,

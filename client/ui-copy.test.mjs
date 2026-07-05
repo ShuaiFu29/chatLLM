@@ -187,12 +187,16 @@ test('usage tracking page is routed, reachable from navigation, and localized', 
   assert.match(appSource, /<Route path="\/usage" element=\{<UsagePage \/>\} \/>/);
   assert.match(mainLayoutSource, /sidebar\.usage/);
   assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage'\)/);
+  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage\/provider-health'\)/);
   assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\(`\/usage\/conversations\/\$\{conversationId\}`\)/);
   assert.match(usagePageSource, /ragRuns/);
   assert.match(usagePageSource, /usage\.ragRuns/);
   assert.match(usagePageSource, /usage\.ragRunTrace/);
   assert.match(usagePageSource, /usage\.plannedQueries/);
   assert.match(usagePageSource, /usage\.traceSteps/);
+  assert.match(usagePageSource, /providerHealth/);
+  assert.match(usagePageSource, /usage\.providerHealth/);
+  assert.match(usagePageSource, /usage\.quotaStatus/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -207,6 +211,11 @@ test('usage tracking page is routed, reachable from navigation, and localized', 
     assert.ok(locale.usage?.ragRunTrace, `${localeFile.locale}.json needs usage.ragRunTrace`);
     assert.ok(locale.usage?.plannedQueries, `${localeFile.locale}.json needs usage.plannedQueries`);
     assert.ok(locale.usage?.traceSteps, `${localeFile.locale}.json needs usage.traceSteps`);
+    assert.ok(locale.usage?.providerHealth, `${localeFile.locale}.json needs usage.providerHealth`);
+    assert.ok(locale.usage?.providerHealthHint, `${localeFile.locale}.json needs usage.providerHealthHint`);
+    assert.ok(locale.usage?.quotaStatus, `${localeFile.locale}.json needs usage.quotaStatus`);
+    assert.ok(locale.usage?.configured, `${localeFile.locale}.json needs usage.configured`);
+    assert.ok(locale.usage?.notConfigured, `${localeFile.locale}.json needs usage.notConfigured`);
   }
 });
 
@@ -219,6 +228,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
   assert.match(ragEvaluationPageSource, /api\.patch(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}`/);
   assert.match(ragEvaluationPageSource, /api\.delete\(`\/rag-eval\/datasets\/\$\{datasetToDelete\.id\}`/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedQualityDatasetId\}\/quality`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}\/cases`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{datasetId\}\/runs`/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/runs\/\$\{runId\}`/);
@@ -252,6 +262,12 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /ragEval\.cancelRun/);
   assert.match(ragEvaluationPageSource, /ragEval\.cancelledStatus/);
   assert.match(ragEvaluationPageSource, /ragEval\.cancelSuccess/);
+  assert.match(ragEvaluationPageSource, /RagEvalQualitySummary/);
+  assert.match(ragEvaluationPageSource, /qualitySummary/);
+  assert.match(ragEvaluationPageSource, /ragEval\.qualityDashboard/);
+  assert.match(ragEvaluationPageSource, /ragEval\.trendDelta/);
+  assert.match(ragEvaluationPageSource, /ragEval\.lowScoreCases/);
+  assert.match(ragEvaluationPageSource, /qualitySummary\.low_score_cases/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -280,6 +296,12 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
     assert.ok(locale.ragEval?.cancelledStatus, `${localeFile.locale}.json needs ragEval.cancelledStatus`);
     assert.ok(locale.ragEval?.cancelSuccess, `${localeFile.locale}.json needs ragEval.cancelSuccess`);
     assert.ok(locale.ragEval?.cancelFailed, `${localeFile.locale}.json needs ragEval.cancelFailed`);
+    assert.ok(locale.ragEval?.qualityDashboard, `${localeFile.locale}.json needs ragEval.qualityDashboard`);
+    assert.ok(locale.ragEval?.qualityDashboardHint, `${localeFile.locale}.json needs ragEval.qualityDashboardHint`);
+    assert.ok(locale.ragEval?.trendDelta, `${localeFile.locale}.json needs ragEval.trendDelta`);
+    assert.ok(locale.ragEval?.lowScoreCases, `${localeFile.locale}.json needs ragEval.lowScoreCases`);
+    assert.ok(locale.ragEval?.noLowScoreCases, `${localeFile.locale}.json needs ragEval.noLowScoreCases`);
+    assert.ok(locale.ragEval?.qualityLoadFailed, `${localeFile.locale}.json needs ragEval.qualityLoadFailed`);
   }
 });
 
@@ -325,6 +347,10 @@ test('chat workbench upgrades expose prompt templates, branches, metadata, and s
   assert.match(chatSettingsSource, /settings\.tags/);
   assert.match(chatSettingsSource, /settings\.note/);
   assert.match(chatSettingsSource, /settings\.promptTemplate/);
+  assert.match(chatSettingsSource, /api\.get(?:<[^>]+>)?<ProviderHealthResponse>\('\/usage\/provider-health'\)/);
+  assert.match(chatSettingsSource, /providerHealth/);
+  assert.match(chatSettingsSource, /settings\.providerHealth/);
+  assert.match(chatSettingsSource, /settings\.providerUnavailable/);
   assert.match(searchDialogSource, /search\.filters/);
   assert.match(searchDialogSource, /favoriteOnly/);
   assert.match(searchDialogSource, /hasSources/);
@@ -339,6 +365,9 @@ test('chat workbench upgrades expose prompt templates, branches, metadata, and s
     assert.ok(locale.settings?.tags, `${localeFile.locale}.json needs settings.tags`);
     assert.ok(locale.settings?.note, `${localeFile.locale}.json needs settings.note`);
     assert.ok(locale.settings?.promptTemplate, `${localeFile.locale}.json needs settings.promptTemplate`);
+    assert.ok(locale.settings?.providerHealth, `${localeFile.locale}.json needs settings.providerHealth`);
+    assert.ok(locale.settings?.providerUnavailable, `${localeFile.locale}.json needs settings.providerUnavailable`);
+    assert.ok(locale.settings?.providerHealthLoadFailed, `${localeFile.locale}.json needs settings.providerHealthLoadFailed`);
     assert.ok(locale.search?.filters, `${localeFile.locale}.json needs search.filters`);
     assert.ok(locale.usage?.estimatedTokens, `${localeFile.locale}.json needs usage.estimatedTokens`);
     assert.ok(locale.usage?.modelUsage, `${localeFile.locale}.json needs usage.modelUsage`);

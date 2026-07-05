@@ -32,11 +32,15 @@ test('server has an agentic RAG client and persists trace runs for assistant mes
   assert.match(ragClientSource, /retrieveAgenticRagDocuments/);
   assert.match(ragClientSource, /\/agentic-retrieve/);
   assert.match(ragClientSource, /AgenticRagResponse/);
+  assert.match(ragClientSource, /insufficient_evidence/);
+  assert.match(ragClientSource, /answer_guidance/);
 
   assert.match(chatSource, /retrieveAgenticRagDocuments/);
   assert.match(chatSource, /ragRunId/);
   assert.match(chatSource, /traceSummary/);
   assert.match(chatSource, /qualitySummary/);
+  assert.match(chatSource, /insufficientEvidence/);
+  assert.match(chatSource, /answer_guidance/);
   assert.match(chatSource, /insertRagRunForMessage/);
 
   assert.match(ragRunsRepositorySource, /insertRagRunForMessage/);

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useChatStore } from '../stores/useChatStore';
-import { X, Save, RotateCcw } from 'lucide-react';
+import { AlertCircle, Save, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import api from '../lib/api';
@@ -17,12 +17,31 @@ interface PromptTemplate {
   description: string;
 }
 
+interface ProviderHealthItem {
+  id: string;
+  name: string;
+  base_url: string;
+  default_model: string;
+  models: string[];
+  'has_api_key': boolean;
+  quota_status: 'unknown' | 'missing_key';
+}
+
+interface ProviderHealthResponse {
+  default_provider: string;
+  default_model: string;
+  providers: ProviderHealthItem[];
+}
+
 export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDialogProps) {
   const { t } = useTranslation();
   const { currentConversationId, conversations, updateConversation } = useChatStore();
   const { projectSpaces, currentProjectSpaceId } = useProjectSpaceStore();
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
+  const [providerHealth, setProviderHealth] = useState<ProviderHealthResponse | null>(null);
   const [isLoadingPromptTemplates, setIsLoadingPromptTemplates] = useState(false);
+  const [isLoadingProviderHealth, setIsLoadingProviderHealth] = useState(false);
+  const [providerHealthError, setProviderHealthError] = useState<string | null>(null);
 
   const conversation = conversations.find(c => c.id === currentConversationId);
 
@@ -80,13 +99,59 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
         .finally(() => {
           if (isMounted) setIsLoadingPromptTemplates(false);
         });
+
+      setIsLoadingProviderHealth(true);
+      setProviderHealthError(null);
+      api.get<ProviderHealthResponse>('/usage/provider-health')
+        .then((response) => {
+          if (isMounted) setProviderHealth(response.data);
+        })
+        .catch((error) => {
+          console.error('Failed to load model provider health:', error);
+          if (isMounted) {
+            setProviderHealth(null);
+            setProviderHealthError(t('settings.providerHealthLoadFailed'));
+          }
+        })
+        .finally(() => {
+          if (isMounted) setIsLoadingProviderHealth(false);
+        });
     }, 0);
 
     return () => {
       isMounted = false;
       window.clearTimeout(loadTimer);
     };
-  }, [isOpen]);
+  }, [isOpen, t]);
+
+  const modelOptions = useMemo(() => {
+    const options = providerHealth?.providers.flatMap((provider) => (
+      provider.models.map((model) => ({
+        model,
+        provider,
+        label: `${provider.name} · ${model}`,
+      }))
+    )) || [
+      { model: 'deepseek-chat', provider: null, label: 'DeepSeek · deepseek-chat' },
+      { model: 'deepseek-reasoner', provider: null, label: 'DeepSeek · deepseek-reasoner' },
+      { model: 'qwen-plus', provider: null, label: 'Qwen · qwen-plus' },
+    ];
+
+    if (!options.some((option) => option.model === settings.model)) {
+      return [
+        { model: settings.model, provider: null, label: settings.model },
+        ...options,
+      ];
+    }
+
+    return options;
+  }, [providerHealth, settings.model]);
+
+  const selectedProviderHealth = useMemo(() => {
+    return providerHealth?.providers.find((provider) => provider.models.includes(settings.model)) || null;
+  }, [providerHealth, settings.model]);
+
+  const isSelectedProviderUnavailable = Boolean(selectedProviderHealth && !selectedProviderHealth['has_api_key']);
 
   const handleChange = (newSettings: typeof settings) => {
     setDraftSettings(newSettings);
@@ -151,8 +216,15 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
                 onChange={(e) => handleChange({ ...settings, model: e.target.value })}
                 className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 pr-8 focus:ring-2 focus:ring-primary focus:outline-none appearance-none"
               >
-                <option value="deepseek-chat">DeepSeek-V3 (Fast & General)</option>
-                <option value="deepseek-reasoner">DeepSeek-R1 (Reasoning & Coding)</option>
+                {modelOptions.map((option) => (
+                  <option
+                    key={`${option.provider?.id || 'custom'}-${option.model}`}
+                    value={option.model}
+                    disabled={option.provider ? !option.provider['has_api_key'] : false}
+                  >
+                    {option.label}
+                  </option>
+                ))}
               </select>
               <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-text-muted">
                 <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
@@ -163,6 +235,38 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
             <p className="text-xs text-text-muted">
               {t('settings.selectModel')}
             </p>
+            <div className="rounded-lg border border-border bg-bg-base p-3 text-xs">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="font-medium text-text-main">{t('settings.providerHealth')}</span>
+                <span className="text-text-muted">
+                  {isLoadingProviderHealth ? t('common.loading') : t('usage.quotaStatus')}
+                </span>
+              </div>
+              {providerHealthError ? (
+                <div className="flex items-start gap-2 text-red-300">
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{providerHealthError}</span>
+                </div>
+              ) : selectedProviderHealth ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="rounded border border-border px-2 py-0.5 text-text-muted">
+                    {selectedProviderHealth.name}
+                  </span>
+                  <span className={`rounded border px-2 py-0.5 ${
+                    selectedProviderHealth['has_api_key']
+                      ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                      : 'border-red-500/30 bg-red-500/10 text-red-300'
+                  }`}>
+                    {selectedProviderHealth['has_api_key'] ? t('usage.configured') : t('usage.notConfigured')}
+                  </span>
+                  {isSelectedProviderUnavailable && (
+                    <span className="text-red-300">{t('settings.providerUnavailable')}</span>
+                  )}
+                </div>
+              ) : (
+                <p className="text-text-muted">{t('settings.providerHealthLoadFailed')}</p>
+              )}
+            </div>
           </div>
 
           {/* Project Space */}
@@ -296,8 +400,8 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
             </button>
             <button
               onClick={handleSave}
-              disabled={!isDirty}
-              className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors ${isDirty
+              disabled={!isDirty || isSelectedProviderUnavailable}
+              className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors ${isDirty && !isSelectedProviderUnavailable
                 ? 'bg-primary hover:bg-primary-hover text-white'
                 : 'bg-bg-surface text-text-muted cursor-not-allowed border border-border'
                 }`}

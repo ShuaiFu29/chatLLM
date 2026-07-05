@@ -129,6 +129,22 @@ interface UsageFileQueueResponse {
   files: UsageFileQueueItem[];
 }
 
+interface ProviderHealthItem {
+  id: string;
+  name: string;
+  base_url: string;
+  default_model: string;
+  models: string[];
+  'has_api_key': boolean;
+  quota_status: 'unknown' | 'missing_key';
+}
+
+interface ProviderHealthResponse {
+  default_provider: string;
+  default_model: string;
+  providers: ProviderHealthItem[];
+}
+
 const emptySummary: UsageSummary = {
   totalWorkspaces: 0,
   totalConversations: 0,
@@ -149,15 +165,18 @@ export default function UsagePage() {
   const { t, i18n } = useTranslation();
   const [overview, setOverview] = useState<UsageOverviewResponse | null>(null);
   const [fileQueue, setFileQueue] = useState<UsageFileQueueResponse | null>(null);
+  const [providerHealth, setProviderHealth] = useState<ProviderHealthResponse | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [conversationTrace, setConversationTrace] = useState<UsageConversationResponse | null>(null);
   const [selectedFileJob, setSelectedFileJob] = useState<UsageFileQueueItem | null>(null);
   const [isTraceModalOpen, setIsTraceModalOpen] = useState(false);
   const [isLoadingOverview, setIsLoadingOverview] = useState(true);
   const [isLoadingFileQueue, setIsLoadingFileQueue] = useState(true);
+  const [isLoadingProviderHealth, setIsLoadingProviderHealth] = useState(true);
   const [isLoadingTrace, setIsLoadingTrace] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
+  const [providerHealthError, setProviderHealthError] = useState<string | null>(null);
   const [traceError, setTraceError] = useState<string | null>(null);
 
   const dateFormatter = useMemo(
@@ -226,6 +245,22 @@ export default function UsagePage() {
     }
   }, [t]);
 
+  const fetchProviderHealth = useCallback(async () => {
+    setIsLoadingProviderHealth(true);
+    setProviderHealthError(null);
+
+    try {
+      const { data } = await api.get<ProviderHealthResponse>('/usage/provider-health');
+      setProviderHealth(data);
+    } catch (fetchError) {
+      console.error('Failed to fetch model provider health:', fetchError);
+      setProviderHealth(null);
+      setProviderHealthError(t('usage.loadFailed'));
+    } finally {
+      setIsLoadingProviderHealth(false);
+    }
+  }, [t]);
+
   const fetchConversationTrace = useCallback(async (conversationId: string) => {
     setSelectedConversationId(conversationId);
     setConversationTrace(null);
@@ -247,7 +282,8 @@ export default function UsagePage() {
   useEffect(() => {
     void fetchOverview();
     void fetchFileQueue();
-  }, [fetchFileQueue, fetchOverview]);
+    void fetchProviderHealth();
+  }, [fetchFileQueue, fetchOverview, fetchProviderHealth]);
 
   const summary = overview?.summary || emptySummary;
   const conversations = overview?.conversations || [];
@@ -287,7 +323,8 @@ export default function UsagePage() {
   const handleRefresh = useCallback(() => {
     void fetchOverview();
     void fetchFileQueue();
-  }, [fetchFileQueue, fetchOverview]);
+    void fetchProviderHealth();
+  }, [fetchFileQueue, fetchOverview, fetchProviderHealth]);
 
   return (
     <div className="flex h-full flex-col bg-bg-base text-text-main transition-colors duration-300">
@@ -375,6 +412,45 @@ export default function UsagePage() {
                 <p className="mt-1 text-xs text-text-muted">{t('usage.citationsHint')}</p>
               </div>
             </div>
+            <div className="mt-3 rounded-lg border border-border bg-bg-sidebar p-4">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-sm font-semibold">{t('usage.providerHealth')}</h3>
+                  <p className="text-xs text-text-muted">{t('usage.providerHealthHint')}</p>
+                </div>
+                <Bot className="h-4 w-4 text-primary" />
+              </div>
+              {isLoadingProviderHealth ? (
+                <Skeleton className="h-16 w-full rounded-lg" />
+              ) : providerHealthError ? (
+                <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {providerHealthError}
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+                  {providerHealth?.providers.map((provider) => (
+                    <div key={provider.id} className="rounded-lg border border-border bg-bg-base p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-medium text-text-main">{provider.name}</p>
+                        <span className={`shrink-0 rounded border px-2 py-0.5 text-[11px] ${
+                          provider['has_api_key']
+                            ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                            : 'border-red-500/30 bg-red-500/10 text-red-300'
+                        }`}>
+                          {provider['has_api_key'] ? t('usage.configured') : t('usage.notConfigured')}
+                        </span>
+                      </div>
+                      <p className="truncate text-xs text-text-muted">{provider.default_model}</p>
+                      <p className="mt-2 text-xs text-text-muted">
+                        {t('usage.quotaStatus')}: {provider.quota_status === 'missing_key' ? t('usage.notConfigured') : t('usage.quotaUnknown')}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
             <div className="mt-3 rounded-lg border border-border bg-bg-sidebar p-4">
               <div className="mb-3 flex items-center justify-between gap-3">
                 <div>

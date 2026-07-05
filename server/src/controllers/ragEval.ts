@@ -1,19 +1,17 @@
 import { Request, Response } from 'express';
 import { metrics } from '../lib/metrics';
-import { runRagEvaluation } from '../lib/ragClient';
+import { ragEvalQueue } from '../services/ragEvalQueue';
 import {
   cancelRagEvalRunForUser,
-  completeRagEvalRunWithResults,
   createRagEvalCaseForUser,
   createRagEvalDatasetForUser,
   createRunningRagEvalRunForUser,
   deleteRagEvalCaseForUser,
   deleteRagEvalDatasetForUser,
-  failRagEvalRunForUser,
   getRagEvalDatasetWithCasesForUser,
+  getRagEvalQualitySummaryForUser,
   getRagEvalRunForUser,
   listRagEvalDatasetsForUser,
-  RagEvalDatasetRow,
   updateRagEvalDatasetForUser,
 } from '../repositories/ragEval';
 
@@ -38,49 +36,6 @@ const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   return trimmed || null;
-};
-
-const toRagEvalCases = (dataset: RagEvalDatasetRow) => (dataset.cases || []).map((testCase) => ({
-  id: testCase.id,
-  question: testCase.question,
-  expected_answer: testCase.expected_answer,
-  expected_keywords: testCase.expected_keywords,
-  expected_source_files: testCase.expected_source_files,
-}));
-
-const executeRagEvalRunInBackground = async (input: {
-  runId: string;
-  userId: string;
-  dataset: RagEvalDatasetRow;
-}) => {
-  const startedAt = Date.now();
-
-  try {
-    const output = await runRagEvaluation({
-      user_id: input.userId,
-      project_space_id: input.dataset.project_space_id,
-      cases: toRagEvalCases(input.dataset),
-      limit: 10,
-      threshold: 0.1,
-    });
-
-    const completedRun = await completeRagEvalRunWithResults({
-      userId: input.userId,
-      runId: input.runId,
-      output,
-    });
-    if (completedRun && completedRun.status !== 'running') {
-      metrics.recordRagEvalRunCompleted(completedRun.status);
-    }
-  } catch (error) {
-    const failedRun = await failRagEvalRunForUser({
-      userId: input.userId,
-      runId: input.runId,
-      errorMessage: error instanceof Error ? error.message : 'Unknown RAG eval failure',
-      durationMs: Date.now() - startedAt,
-    });
-    if (failedRun) metrics.recordRagEvalRunCompleted('failed');
-  }
 };
 
 export const listRagEvalDatasets = async (req: Request, res: Response) => {
@@ -210,6 +165,19 @@ export const getRagEvalRun = async (req: Request, res: Response) => {
   }
 };
 
+export const getRagEvalQualitySummary = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const summary = await getRagEvalQualitySummaryForUser(req.params.datasetId, req.user.id);
+    if (!summary) return res.status(404).json({ error: 'Dataset not found' });
+    res.json(summary);
+  } catch (error) {
+    console.error('Error loading RAG eval quality summary:', error);
+    res.status(500).json({ error: 'Failed to load RAG eval quality summary' });
+  }
+};
+
 export const runRagEvalDataset = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -231,11 +199,7 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
 
     if (run.created) {
       metrics.recordRagEvalRunStarted();
-      void executeRagEvalRunInBackground({
-        runId: run.id,
-        userId: req.user.id,
-        dataset,
-      });
+      ragEvalQueue.trigger();
     } else {
       metrics.recordRagEvalRunReused();
     }

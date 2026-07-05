@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Ban, ClipboardCheck, Download, Eye, Loader2, Pencil, Play, Plus, Save, Trash2 } from 'lucide-react';
+import { AlertCircle, Ban, BarChart3, ClipboardCheck, Download, Eye, Loader2, Pencil, Play, Plus, Save, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../lib/api';
@@ -64,6 +64,48 @@ interface RagEvalRun {
   duration_ms: number;
   created_at: string;
   results?: RagEvalResult[];
+}
+
+interface RagEvalQualityTrendRun {
+  id: string;
+  status: RagEvalRun['status'];
+  case_count: number;
+  failed_count: number;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  duration_ms: number;
+  created_at: string;
+}
+
+interface RagEvalLowScoreCase {
+  result_id: string;
+  run_id: string;
+  question: string;
+  status: 'success' | 'failed';
+  overall_score: number;
+  retrieval_score: number;
+  answer_score: number;
+  source_score: number;
+  keyword_score: number;
+  evidence_label: string;
+  error_message: string;
+}
+
+interface RagEvalQualitySummary {
+  dataset_id: string;
+  run_count: number;
+  latest_run_id?: string | null;
+  trend_delta?: number | null;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  trend: RagEvalQualityTrendRun[];
+  low_score_cases: RagEvalLowScoreCase[];
 }
 
 interface RagEvalDataset {
@@ -214,6 +256,8 @@ export default function RagEvaluationPage() {
   const [selectedRun, setSelectedRun] = useState<RagEvalRun | null>(null);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
+  const [qualitySummary, setQualitySummary] = useState<RagEvalQualitySummary | null>(null);
+  const [isQualityLoading, setIsQualityLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedDataset = useMemo(
@@ -227,6 +271,9 @@ export default function RagEvaluationPage() {
   const selectedDatasetCaseCount = selectedDataset?.cases.length || 0;
   const isSelectedDatasetAtCaseLimit = selectedDatasetCaseCount >= MAX_RAG_EVAL_CASES_PER_DATASET;
   const isSelectedDatasetRunning = !!selectedDataset?.runs?.some((run) => run.status === 'running');
+  const latestRun = selectedDataset?.runs?.[0];
+  const selectedQualityDatasetId = selectedDataset?.id || null;
+  const latestRunRefreshKey = latestRun ? `${latestRun.id}:${latestRun.status}` : '';
 
   const fetchDatasets = useCallback(async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
@@ -258,6 +305,35 @@ export default function RagEvaluationPage() {
 
     return () => window.clearInterval(intervalId);
   }, [fetchDatasets, hasRunningRuns]);
+
+  useEffect(() => {
+    if (!selectedQualityDatasetId) {
+      setQualitySummary(null);
+      return undefined;
+    }
+
+    let isCancelled = false;
+    setIsQualityLoading(true);
+
+    api.get<RagEvalQualitySummary>(`/rag-eval/datasets/${selectedQualityDatasetId}/quality`)
+      .then(({ data }) => {
+        if (!isCancelled) setQualitySummary(data);
+      })
+      .catch((qualityError) => {
+        console.error('Failed to load RAG eval quality summary:', qualityError);
+        if (!isCancelled) {
+          setQualitySummary(null);
+          setError(t('ragEval.qualityLoadFailed'));
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) setIsQualityLoading(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedQualityDatasetId, latestRunRefreshKey, t]);
 
   const getWorkspaceName = (projectSpaceId?: string | null) => {
     if (!projectSpaceId) return t('ragEval.allWorkspaces');
@@ -514,7 +590,10 @@ export default function RagEvaluationPage() {
     }
   };
 
-  const latestRun = selectedDataset?.runs?.[0];
+  const qualityTrendDelta = qualitySummary?.trend_delta ?? null;
+  const qualityTrendDeltaLabel = qualityTrendDelta === null
+    ? t('ragEval.notEnoughRuns')
+    : `${qualityTrendDelta >= 0 ? '+' : ''}${formatScore(qualityTrendDelta)}`;
 
   return (
     <div className="flex h-full flex-col bg-bg-base text-text-main">
@@ -665,6 +744,117 @@ export default function RagEvaluationPage() {
                     {t('ragEval.maxCasesHint', { count: MAX_RAG_EVAL_CASES_PER_DATASET })}
                   </p>
                 )}
+              </section>
+
+              <section className="rounded-lg border border-border bg-bg-sidebar p-4">
+                <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h3 className="flex items-center gap-2 font-semibold">
+                      <BarChart3 className="h-4 w-4 text-primary" />
+                      {t('ragEval.qualityDashboard')}
+                    </h3>
+                    <p className="mt-1 text-xs text-text-muted">{t('ragEval.qualityDashboardHint')}</p>
+                  </div>
+                  {isQualityLoading && (
+                    <div className="flex items-center gap-2 text-xs text-text-muted">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      {t('common.loading')}
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_360px]">
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <div className="rounded-lg border border-border bg-bg-base p-3">
+                        <p className="text-xs text-text-muted">{t('ragEval.evaluatedRuns')}</p>
+                        <p className="mt-1 text-lg font-semibold">{qualitySummary?.run_count || 0}</p>
+                      </div>
+                      <div className="rounded-lg border border-border bg-bg-base p-3">
+                        <p className="text-xs text-text-muted">{t('ragEval.latestOverall')}</p>
+                        <p className="mt-1 text-lg font-semibold">{formatScore(qualitySummary?.average_overall_score)}</p>
+                      </div>
+                      <div className="rounded-lg border border-border bg-bg-base p-3">
+                        <p className="text-xs text-text-muted">{t('ragEval.retrievalScore')}</p>
+                        <p className="mt-1 text-lg font-semibold">{formatScore(qualitySummary?.average_retrieval_score)}</p>
+                      </div>
+                      <div className="rounded-lg border border-border bg-bg-base p-3">
+                        <p className="text-xs text-text-muted">{t('ragEval.trendDelta')}</p>
+                        <p className={`mt-1 text-lg font-semibold ${
+                          qualityTrendDelta === null
+                            ? 'text-text-muted'
+                            : qualityTrendDelta >= 0
+                              ? 'text-emerald-300'
+                              : 'text-red-300'
+                        }`}
+                        >
+                          {qualityTrendDeltaLabel}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-border bg-bg-base p-3">
+                      <div className="mb-3 flex items-center justify-between gap-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                          {t('ragEval.trendChart')}
+                        </p>
+                        <span className="text-xs text-text-muted">{t('ragEval.overallScore')}</span>
+                      </div>
+                      {qualitySummary?.trend?.length ? (
+                        <div className="space-y-2">
+                          {qualitySummary.trend.map((run, index) => (
+                            <div key={run.id} className="grid grid-cols-[64px_minmax(0,1fr)_48px] items-center gap-2 text-xs">
+                              <span className="text-text-muted">#{index + 1}</span>
+                              <div className="h-2 overflow-hidden rounded-full bg-bg-surface">
+                                <div
+                                  className="h-full rounded-full bg-primary"
+                                  style={{ width: `${Math.max(Math.round(run.average_overall_score * 100), 4)}%` }}
+                                />
+                              </div>
+                              <span className="text-right text-text-muted">{formatScore(run.average_overall_score)}</span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-text-muted">{t('ragEval.noRunResults')}</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="rounded-lg border border-border bg-bg-base p-3">
+                    <div className="mb-3 flex items-center justify-between gap-3">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                        {t('ragEval.lowScoreCases')}
+                      </p>
+                    </div>
+                    {qualitySummary?.low_score_cases?.length ? (
+                      <div className="space-y-3">
+                        {qualitySummary.low_score_cases.map((testCase) => (
+                          <button
+                            key={testCase.result_id}
+                            onClick={() => handleViewRunDetails(testCase.run_id)}
+                            className="w-full rounded-lg border border-border p-3 text-left transition-colors hover:border-primary/50 hover:bg-bg-sidebar"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <p className="line-clamp-2 text-sm font-medium">{testCase.question}</p>
+                              <span className="shrink-0 rounded-full border border-border px-2 py-1 text-xs text-text-muted">
+                                {formatScore(testCase.overall_score)}
+                              </span>
+                            </div>
+                            <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-text-muted">
+                              <span>{t('ragEval.retrievalScore')}: {formatScore(testCase.retrieval_score)}</span>
+                              <span>{t('ragEval.answerScore')}: {formatScore(testCase.answer_score)}</span>
+                              <span>{t('ragEval.sourceScore')}: {formatScore(testCase.source_score)}</span>
+                              <span>{t('ragEval.keywordScore')}: {formatScore(testCase.keyword_score)}</span>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-text-muted">{t('ragEval.noLowScoreCases')}</p>
+                    )}
+                  </div>
+                </div>
               </section>
 
               {latestRun && (

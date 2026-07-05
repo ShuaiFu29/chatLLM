@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../lib/db';
+import { serverEnv } from '../lib/env';
 
 type RagEvalRunStatus = 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
 
@@ -39,6 +40,13 @@ export interface RagEvalRunRow {
   average_source_score: number;
   average_keyword_score: number;
   duration_ms: number;
+  queued_at: string;
+  claimed_at?: string | null;
+  worker_id?: string | null;
+  attempts: number;
+  max_attempts: number;
+  next_attempt_at?: string | null;
+  last_error: string;
   created_at: string;
   completed_at?: string | null;
   results?: RagEvalResultRow[];
@@ -46,6 +54,12 @@ export interface RagEvalRunRow {
 
 export type CreatedRagEvalRunRow = RagEvalRunRow & {
   created: boolean;
+};
+
+export type ClaimedRagEvalRunJob = RagEvalRunRow & {
+  dataset: RagEvalDatasetRow & {
+    cases: RagEvalCaseRow[];
+  };
 };
 
 export interface RagEvalResultRow {
@@ -64,6 +78,49 @@ export interface RagEvalResultRow {
   trace_summary: Record<string, unknown>;
   error_message: string;
   created_at: string;
+}
+
+export interface RagEvalQualityTrendRun {
+  id: string;
+  status: RagEvalRunStatus;
+  case_count: number;
+  failed_count: number;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  duration_ms: number;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface RagEvalLowScoreCase {
+  result_id: string;
+  run_id: string;
+  question: string;
+  status: 'success' | 'failed';
+  overall_score: number;
+  retrieval_score: number;
+  answer_score: number;
+  source_score: number;
+  keyword_score: number;
+  evidence_label: string;
+  error_message: string;
+}
+
+export interface RagEvalQualitySummary {
+  dataset_id: string;
+  run_count: number;
+  latest_run_id?: string | null;
+  trend_delta?: number | null;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  trend: RagEvalQualityTrendRun[];
+  low_score_cases: RagEvalLowScoreCase[];
 }
 
 const datasetColumns = `
@@ -101,6 +158,13 @@ const runColumns = `
   average_source_score,
   average_keyword_score,
   duration_ms,
+  queued_at,
+  claimed_at,
+  worker_id,
+  attempts,
+  max_attempts,
+  next_attempt_at,
+  last_error,
   created_at,
   completed_at
 `;
@@ -322,6 +386,89 @@ export const getRagEvalRunForUser = async (runId: string, userId: string) => {
   return { ...run, results };
 };
 
+export const getRagEvalQualitySummaryForUser = async (
+  datasetId: string,
+  userId: string
+): Promise<RagEvalQualitySummary | null> => {
+  const { rows: datasets } = await query<Pick<RagEvalDatasetRow, 'id'>>(
+    `select id
+     from rag_eval_datasets
+     where id = $1 and user_id = $2`,
+    [datasetId, userId]
+  );
+
+  if (!datasets[0]) return null;
+
+  const { rows: recentRuns } = await query<RagEvalRunRow>(
+    `select ${runColumns}
+     from rag_eval_runs
+     where dataset_id = $1
+       and user_id = $2
+       and status in ('completed', 'partial', 'failed')
+     order by created_at desc
+     limit 10`,
+    [datasetId, userId]
+  );
+
+  const latestRun = recentRuns[0];
+  const previousRun = recentRuns[1];
+  const trend = recentRuns
+    .slice()
+    .reverse()
+    .map((run) => ({
+      id: run.id,
+      status: run.status,
+      case_count: run.case_count,
+      failed_count: run.failed_count,
+      average_overall_score: run.average_overall_score,
+      average_retrieval_score: run.average_retrieval_score,
+      average_answer_score: run.average_answer_score,
+      average_source_score: run.average_source_score,
+      average_keyword_score: run.average_keyword_score,
+      duration_ms: run.duration_ms,
+      created_at: run.created_at,
+      completed_at: run.completed_at,
+    }));
+
+  const lowScoreCases = latestRun
+    ? (await query<RagEvalLowScoreCase>(
+      `select
+         id as result_id,
+         run_id,
+         question,
+         status,
+         overall_score,
+         retrieval_score,
+         answer_score,
+         source_score,
+         keyword_score,
+         evidence_label,
+         error_message
+       from rag_eval_results
+       where run_id = $1
+       order by overall_score asc, retrieval_score asc, answer_score asc, created_at asc
+       limit 5`,
+      [latestRun.id]
+    )).rows
+    : [];
+
+  return {
+    dataset_id: datasetId,
+    run_count: recentRuns.length,
+    latest_run_id: latestRun?.id || null,
+    trend_delta: latestRun && previousRun
+      ? latestRun.average_overall_score - previousRun.average_overall_score
+      : null,
+    average_overall_score: latestRun?.average_overall_score || 0,
+    average_retrieval_score: latestRun?.average_retrieval_score || 0,
+    average_answer_score: latestRun?.average_answer_score || 0,
+    average_source_score: latestRun?.average_source_score || 0,
+    average_keyword_score: latestRun?.average_keyword_score || 0,
+    trend,
+    low_score_cases: lowScoreCases,
+  };
+};
+
 export const createRunningRagEvalRunForUser = async (input: {
   userId: string;
   datasetId: string;
@@ -332,12 +479,13 @@ export const createRunningRagEvalRunForUser = async (input: {
        dataset_id,
        user_id,
        status,
-       case_count
+       case_count,
+       max_attempts
      )
-     values ($1, $2, 'running', $3)
+     values ($1, $2, 'running', $3, $4)
      on conflict (dataset_id) where status = 'running' do nothing
      returning ${runColumns}`,
-    [input.datasetId, input.userId, input.caseCount]
+    [input.datasetId, input.userId, input.caseCount, serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS]
   );
 
   if (rows[0]) {
@@ -367,14 +515,129 @@ export const createRunningRagEvalRunForUser = async (input: {
   return { ...runningRows[0], results: [], created: false };
 };
 
+export const claimNextRagEvalRunJob = async (input: {
+  workerId: string;
+  retryBaseDelayMs?: number;
+  staleAfterMs?: number;
+  maxAttempts?: number;
+}): Promise<ClaimedRagEvalRunJob | null> => {
+  const retryBaseDelayMs = input.retryBaseDelayMs ?? serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS;
+  const staleAfterMs = input.staleAfterMs ?? serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS;
+  const maxAttempts = input.maxAttempts ?? serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS;
+
+  return withTransaction(async (client) => {
+    const { rows: runRows } = await client.query<RagEvalRunRow>(
+      `with next_run as (
+         select id
+         from rag_eval_runs
+         where status = 'running'
+           and attempts < greatest(max_attempts, $3)
+           and (
+             (
+               claimed_at is null
+               and (
+                 next_attempt_at is null
+                 or next_attempt_at <= now()
+               )
+             )
+             or (
+               claimed_at is not null
+               and claimed_at <= now() - ($2::double precision * interval '1 millisecond')
+             )
+             or (
+               claimed_at is null
+               and next_attempt_at is null
+               and attempts > 0
+               and queued_at + (
+                 least(3600000::double precision, $1::double precision * power(2, greatest(attempts - 1, 0)))
+                 * interval '1 millisecond'
+               ) <= now()
+             )
+           )
+         order by coalesce(next_attempt_at, queued_at, created_at) asc, created_at asc
+         limit 1
+         for update skip locked
+       )
+       update rag_eval_runs
+       set claimed_at = now(),
+           worker_id = $4,
+           attempts = least(greatest(max_attempts, $3), attempts + 1),
+           max_attempts = greatest(max_attempts, $3),
+           next_attempt_at = null,
+           last_error = '',
+           queued_at = coalesce(queued_at, created_at)
+       where id in (select id from next_run)
+       returning ${runColumns}`,
+      [retryBaseDelayMs, staleAfterMs, maxAttempts, input.workerId]
+    );
+
+    const run = runRows[0];
+    if (!run) return null;
+
+    const { rows: datasetRows } = await client.query<RagEvalDatasetRow>(
+      `select ${datasetColumns}
+       from rag_eval_datasets
+       where id = $1 and user_id = $2`,
+      [run.dataset_id, run.user_id]
+    );
+
+    const dataset = datasetRows[0];
+    if (!dataset) return null;
+
+    const { rows: cases } = await client.query<RagEvalCaseRow>(
+      `select ${caseColumns}
+       from rag_eval_cases
+       where dataset_id = $1 and user_id = $2
+       order by created_at asc`,
+      [run.dataset_id, run.user_id]
+    );
+
+    return {
+      ...run,
+      dataset: {
+        ...dataset,
+        cases,
+      },
+    };
+  });
+};
+
+export const resetStaleRagEvalRunJobs = async (staleAfterMs: number) => {
+  const { rowCount } = await query(
+    `update rag_eval_runs
+     set claimed_at = null,
+         worker_id = null,
+         next_attempt_at = now(),
+         last_error = case
+           when last_error = '' then 'RAG eval worker claim expired'
+           else last_error
+         end
+     where status = 'running'
+       and claimed_at is not null
+       and claimed_at <= now() - ($1::double precision * interval '1 millisecond')
+       and attempts < max_attempts`,
+    [staleAfterMs]
+  );
+
+  return rowCount ?? 0;
+};
+
 export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
   const { rowCount } = await query(
     `update rag_eval_runs
      set status = 'failed',
          failed_count = case_count,
+         claimed_at = null,
+         worker_id = null,
+         next_attempt_at = null,
+         last_error = case
+           when last_error = '' then 'RAG eval run exceeded stale timeout'
+           else last_error
+         end,
          completed_at = now()
      where status = 'running'
-       and created_at < now() - ($1::text || ' milliseconds')::interval`,
+       and created_at < now() - ($1::text || ' milliseconds')::interval
+       and attempts >= max_attempts`,
     [staleAfterMs]
   );
 
@@ -384,6 +647,7 @@ export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
 export const completeRagEvalRunWithResults = async (input: {
   userId: string;
   runId: string;
+  workerId?: string | null;
   output: RagEvalRunOutput;
 }) => {
   return withTransaction(async (client) => {
@@ -400,8 +664,15 @@ export const completeRagEvalRunWithResults = async (input: {
            average_source_score = $9,
            average_keyword_score = $10,
            duration_ms = $11,
+           claimed_at = null,
+           worker_id = null,
+           next_attempt_at = null,
+           last_error = '',
            completed_at = now()
-       where id = $1 and user_id = $2 and status in ('running')
+       where id = $1
+         and user_id = $2
+         and status in ('running')
+         and ($12::text is null or worker_id = $12)
        returning ${runColumns}`,
       [
         input.runId,
@@ -415,6 +686,7 @@ export const completeRagEvalRunWithResults = async (input: {
         input.output.average_source_score,
         input.output.average_keyword_score,
         input.output.duration_ms,
+        input.workerId || null,
       ]
     );
 
@@ -482,10 +754,14 @@ export const failRagEvalRunForUser = async (input: {
      set status = 'failed',
          failed_count = case_count,
          duration_ms = $3,
+         claimed_at = null,
+         worker_id = null,
+         next_attempt_at = null,
+         last_error = $4,
          completed_at = now()
      where id = $1 and user_id = $2 and status in ('running')
      returning ${runColumns}`,
-    [input.runId, input.userId, input.durationMs || 0]
+    [input.runId, input.userId, input.durationMs || 0, input.errorMessage]
   );
 
   if (!rows[0]) return null;
@@ -498,11 +774,67 @@ export const failRagEvalRunForUser = async (input: {
   return { ...rows[0], results: [] };
 };
 
+export const markRagEvalRunAttemptFailed = async (input: {
+  run: Pick<RagEvalRunRow, 'id' | 'user_id' | 'attempts' | 'max_attempts'>;
+  errorMessage: string;
+  durationMs?: number;
+  workerId?: string | null;
+}) => {
+  const maxAttempts = Math.max(
+    input.run.max_attempts || 0,
+    serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS
+  );
+  const attempts = input.run.attempts || 1;
+  const exhausted = attempts >= maxAttempts;
+  const retryDelayMs = Math.min(
+    60 * 60 * 1000,
+    serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS * 2 ** Math.max(attempts - 1, 0)
+  );
+
+  const { rows } = await query<RagEvalRunRow>(
+    `update rag_eval_runs
+     set status = case when $5 then 'failed' else status end,
+         failed_count = case when $5 then case_count else failed_count end,
+         duration_ms = $6,
+         claimed_at = null,
+         worker_id = null,
+         max_attempts = $4,
+         next_attempt_at = case
+           when $5 then null
+           else now() + ($7::double precision * interval '1 millisecond')
+         end,
+         last_error = $3,
+         completed_at = case when $5 then now() else completed_at end
+     where id = $1
+       and user_id = $2
+       and status = 'running'
+       and ($8::text is null or worker_id = $8)
+     returning ${runColumns}`,
+    [
+      input.run.id,
+      input.run.user_id,
+      exhausted
+        ? `Max attempts reached after ${attempts} attempts: ${input.errorMessage}`
+        : input.errorMessage,
+      maxAttempts,
+      exhausted,
+      input.durationMs || 0,
+      retryDelayMs,
+      input.workerId || null,
+    ]
+  );
+
+  return rows[0] || null;
+};
+
 export const cancelRagEvalRunForUser = async (runId: string, userId: string) => {
   const { rows } = await query<RagEvalRunRow>(
     `update rag_eval_runs
      set status = 'cancelled',
          duration_ms = greatest(duration_ms, floor(extract(epoch from (now() - created_at)) * 1000)::int),
+         claimed_at = null,
+         worker_id = null,
+         next_attempt_at = null,
          completed_at = now()
      where id = $1 and user_id = $2 and status = 'running'
      returning ${runColumns}`,

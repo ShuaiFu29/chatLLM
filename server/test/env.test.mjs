@@ -42,12 +42,13 @@ test('server env fails fast when required keys are missing', () => {
     JWT_SECRET: '',
     DEEPSEEK_API_KEY: '',
     MOONSHOT_API_KEY: '',
+    QWEN_API_KEY: '',
     OPENAI_API_KEY: '',
   });
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Missing required server environment variables: DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, JWT_SECRET/);
-  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, OPENAI_API_KEY/);
+  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY, OPENAI_API_KEY/);
 });
 
 test('server env rejects weak JWT placeholder secrets', () => {
@@ -266,4 +267,59 @@ test('server env exposes configurable stale RAG evaluation run timeout', () => {
 
   assert.equal(explicitResult.status, 0, explicitResult.stderr);
   assert.equal(parseLastJsonLine(explicitResult.stdout), 900000);
+});
+
+test('server env exposes configurable RAG evaluation queue controls', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  }, `({
+    interval: serverEnv.RAG_EVAL_QUEUE_INTERVAL_MS,
+    concurrency: serverEnv.RAG_EVAL_QUEUE_CONCURRENCY,
+    maxAttempts: serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
+    retryBaseDelayMs: serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS,
+    staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS
+  })`);
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.deepEqual(parseLastJsonLine(defaultResult.stdout), {
+    interval: 5000,
+    concurrency: 1,
+    maxAttempts: 3,
+    retryBaseDelayMs: 60000,
+    staleAfterMs: 15 * 60 * 1000,
+  });
+
+  const explicitResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_EVAL_QUEUE_INTERVAL_MS: '2500',
+    RAG_EVAL_QUEUE_CONCURRENCY: '2',
+    RAG_EVAL_QUEUE_MAX_ATTEMPTS: '5',
+    RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: '30000',
+    RAG_EVAL_QUEUE_STALE_AFTER_MS: '120000',
+  }, `({
+    interval: serverEnv.RAG_EVAL_QUEUE_INTERVAL_MS,
+    concurrency: serverEnv.RAG_EVAL_QUEUE_CONCURRENCY,
+    maxAttempts: serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
+    retryBaseDelayMs: serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS,
+    staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS
+  })`);
+
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.deepEqual(parseLastJsonLine(explicitResult.stdout), {
+    interval: 2500,
+    concurrency: 2,
+    maxAttempts: 5,
+    retryBaseDelayMs: 30000,
+    staleAfterMs: 120000,
+  });
 });

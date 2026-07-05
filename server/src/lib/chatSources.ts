@@ -41,6 +41,8 @@ export interface RagTraceSummary {
   planned_queries: string[];
   trace_steps: RagTraceStep[];
   quality: RagQualitySummary;
+  insufficient_evidence?: boolean;
+  answer_guidance?: string;
 }
 
 const MAX_SOURCE_SNIPPET_LENGTH = 500;

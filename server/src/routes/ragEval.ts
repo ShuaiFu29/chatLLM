@@ -5,6 +5,7 @@ import {
   createRagEvalDataset,
   deleteRagEvalCase,
   deleteRagEvalDataset,
+  getRagEvalQualitySummary,
   getRagEvalRun,
   listRagEvalDatasets,
   runRagEvalDataset,
@@ -18,6 +19,7 @@ router.get('/datasets', requireAuth, listRagEvalDatasets);
 router.post('/datasets', requireAuth, createRagEvalDataset);
 router.patch('/datasets/:datasetId', requireAuth, updateRagEvalDataset);
 router.delete('/datasets/:datasetId', requireAuth, deleteRagEvalDataset);
+router.get('/datasets/:datasetId/quality', requireAuth, getRagEvalQualitySummary);
 router.post('/datasets/:datasetId/cases', requireAuth, createRagEvalCase);
 router.post('/datasets/:datasetId/runs', requireAuth, runRagEvalDataset);
 router.get('/runs/:runId', requireAuth, getRagEvalRun);

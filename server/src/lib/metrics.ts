@@ -52,6 +52,8 @@ class MetricsRegistry {
   private ragCircuitOpenTotal = 0;
   private ragEvalRunsStartedTotal = 0;
   private ragEvalRunsReusedTotal = 0;
+  private ragEvalRunsQueueClaimedTotal = 0;
+  private ragEvalRunsRetriedTotal = 0;
   private ragEvalRunsCompletedByStatus = new Map<RagEvalCompletionStatus, number>(
     RAG_EVAL_COMPLETION_STATUSES.map((status) => [status, 0])
   );
@@ -115,6 +117,14 @@ class MetricsRegistry {
 
   recordRagEvalRunReused() {
     this.ragEvalRunsReusedTotal += 1;
+  }
+
+  recordRagEvalRunQueueClaimed() {
+    this.ragEvalRunsQueueClaimedTotal += 1;
+  }
+
+  recordRagEvalRunRetried() {
+    this.ragEvalRunsRetriedTotal += 1;
   }
 
   recordRagEvalRunCompleted(status: RagEvalCompletionStatus) {
@@ -217,6 +227,12 @@ class MetricsRegistry {
       '# HELP chatllm_rag_eval_runs_reused_total Duplicate RAG evaluation run requests served by an existing running run.',
       '# TYPE chatllm_rag_eval_runs_reused_total counter',
       `chatllm_rag_eval_runs_reused_total ${this.ragEvalRunsReusedTotal}`,
+      '# HELP chatllm_rag_eval_runs_queue_claimed_total Queued RAG evaluation runs claimed by workers.',
+      '# TYPE chatllm_rag_eval_runs_queue_claimed_total counter',
+      `chatllm_rag_eval_runs_queue_claimed_total ${this.ragEvalRunsQueueClaimedTotal}`,
+      '# HELP chatllm_rag_eval_runs_retried_total RAG evaluation runs scheduled for retry after a failed attempt.',
+      '# TYPE chatllm_rag_eval_runs_retried_total counter',
+      `chatllm_rag_eval_runs_retried_total ${this.ragEvalRunsRetriedTotal}`,
       '# HELP chatllm_rag_eval_runs_completed_total RAG evaluation background runs completed by status.',
       '# TYPE chatllm_rag_eval_runs_completed_total counter',
       ...RAG_EVAL_COMPLETION_STATUSES.map((status) => (

@@ -11,6 +11,7 @@ import usageRoutes from './routes/usage';
 import promptTemplateRoutes from './routes/promptTemplates';
 import ragEvalRoutes from './routes/ragEval';
 import { fileQueue } from './services/fileQueue';
+import { ragEvalQueue } from './services/ragEvalQueue';
 import { maintenanceService } from './services/maintenance';
 import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
 import { runMigrations } from './lib/migrations';
@@ -99,6 +100,7 @@ export const startServer = async () => {
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     fileQueue.start();
+    ragEvalQueue.start();
     maintenanceService.start();
   });
 

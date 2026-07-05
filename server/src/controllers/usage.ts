@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { getModelProviderHealth } from '../lib/openai';
 import {
   findUsageConversationForUser,
   getFileQueueSummaryForUser,
@@ -25,6 +26,12 @@ const parseBoundedLimit = (value: unknown, defaultValue: number, maxValue: numbe
   if (!Number.isInteger(parsed) || parsed <= 0) return defaultValue;
 
   return Math.min(parsed, maxValue);
+};
+
+export const getProviderHealth = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  res.json(getModelProviderHealth());
 };
 
 export const getUsageOverview = async (req: Request, res: Response) => {

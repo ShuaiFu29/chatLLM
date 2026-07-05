@@ -122,3 +122,37 @@ def get_chunks_by_ids(chunk_ids: Iterable[str]) -> list[dict]:
 
     by_id = {str(row["id"]): row for row in rows}
     return [by_id[str(chunk_id)] for chunk_id in ids if str(chunk_id) in by_id]
+
+
+def search_chunks_by_text(query: str, user_id: str, project_space_id: str | None = None, limit: int = 20) -> list[dict]:
+    if not query.strip():
+        return []
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select
+                  file_chunks.id,
+                  file_chunks.file_id,
+                  file_chunks.user_id,
+                  file_chunks.chunk_index,
+                  file_chunks.content,
+                  file_chunks.metadata,
+                  files.project_space_id,
+                  files.filename,
+                  ts_rank_cd(
+                    to_tsvector('simple', file_chunks.content),
+                    websearch_to_tsquery('simple', %s)
+                  ) as lexical_score
+                from file_chunks
+                join files on files.id = file_chunks.file_id
+                where file_chunks.user_id::text = %s
+                  and (%s is null or files.project_space_id::text = %s)
+                  and to_tsvector('simple', file_chunks.content) @@ websearch_to_tsquery('simple', %s)
+                order by lexical_score desc, file_chunks.created_at desc
+                limit %s
+                """,
+                (query, user_id, project_space_id, project_space_id, query, limit),
+            )
+            return cur.fetchall()
