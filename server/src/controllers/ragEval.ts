@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { metrics } from '../lib/metrics';
 import { runRagEvaluation } from '../lib/ragClient';
 import {
+  cancelRagEvalRunForUser,
   completeRagEvalRunWithResults,
   createRagEvalCaseForUser,
   createRagEvalDatasetForUser,
@@ -243,5 +244,20 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error running RAG eval dataset:', error);
     res.status(500).json({ error: 'Failed to run RAG eval dataset' });
+  }
+};
+
+export const cancelRagEvalRun = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const run = await cancelRagEvalRunForUser(req.params.runId, req.user.id);
+    if (!run) return res.status(404).json({ error: 'Running eval run not found' });
+
+    metrics.recordRagEvalRunCompleted('cancelled');
+    res.json(run);
+  } catch (error) {
+    console.error('Error cancelling RAG eval run:', error);
+    res.status(500).json({ error: 'Failed to cancel RAG eval run' });
   }
 };

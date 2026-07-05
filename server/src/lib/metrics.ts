@@ -4,10 +4,10 @@ type RagStatus = 'ok' | 'error';
 type DatabaseStatus = 'ok' | 'error';
 type ChatStreamStatus = 'completed' | 'failed' | 'rejected';
 type HttpStatusFamily = '1xx' | '2xx' | '3xx' | '4xx' | '5xx' | 'other';
-type RagEvalCompletionStatus = 'completed' | 'partial' | 'failed';
+type RagEvalCompletionStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 
 const HTTP_STATUS_FAMILIES: HttpStatusFamily[] = ['1xx', '2xx', '3xx', '4xx', '5xx', 'other'];
-const RAG_EVAL_COMPLETION_STATUSES: RagEvalCompletionStatus[] = ['completed', 'partial', 'failed'];
+const RAG_EVAL_COMPLETION_STATUSES: RagEvalCompletionStatus[] = ['completed', 'partial', 'failed', 'cancelled'];
 
 interface RequestContext {
   startedAt: number;

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, ClipboardCheck, Download, Eye, Loader2, Pencil, Play, Plus, Save, Trash2 } from 'lucide-react';
+import { AlertCircle, Ban, ClipboardCheck, Download, Eye, Loader2, Pencil, Play, Plus, Save, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../lib/api';
@@ -53,7 +53,7 @@ interface RagEvalResult {
 
 interface RagEvalRun {
   id: string;
-  status: 'completed' | 'failed' | 'partial' | 'running';
+  status: 'completed' | 'failed' | 'partial' | 'running' | 'cancelled';
   case_count: number;
   failed_count: number;
   average_overall_score: number;
@@ -210,6 +210,7 @@ export default function RagEvaluationPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [runningDatasetId, setRunningDatasetId] = useState<string | null>(null);
+  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [selectedRun, setSelectedRun] = useState<RagEvalRun | null>(null);
   const [isRunModalOpen, setIsRunModalOpen] = useState(false);
   const [isLoadingRun, setIsLoadingRun] = useState(false);
@@ -267,6 +268,7 @@ export default function RagEvaluationPage() {
     if (status === 'running') return t('ragEval.runningStatus');
     if (status === 'completed') return t('ragEval.completedStatus');
     if (status === 'partial') return t('ragEval.partialStatus');
+    if (status === 'cancelled') return t('ragEval.cancelledStatus');
     return t('ragEval.failedStatus');
   };
 
@@ -430,6 +432,24 @@ export default function RagEvaluationPage() {
       setError(t('ragEval.runFailed'));
     } finally {
       setRunningDatasetId(null);
+    }
+  };
+
+  const handleCancelRun = async (runId: string) => {
+    setCancellingRunId(runId);
+    setError(null);
+
+    try {
+      const { data } = await api.post<RagEvalRun>(`/rag-eval/runs/${runId}/cancel`);
+      mergeRunIntoDatasets(data);
+      setSelectedRun((current) => (current?.id === data.id ? data : current));
+      toast.success(t('ragEval.cancelSuccess'));
+    } catch (cancelError) {
+      console.error('Failed to cancel RAG eval run:', cancelError);
+      setError(t('ragEval.cancelFailed'));
+      toast.error(t('ragEval.cancelFailed'));
+    } finally {
+      setCancellingRunId(null);
     }
   };
 
@@ -651,13 +671,27 @@ export default function RagEvaluationPage() {
                 <section className="rounded-lg border border-border bg-bg-sidebar p-4">
                   <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                     <h3 className="font-semibold">{t('ragEval.latestRuns')}</h3>
-                    <button
-                      onClick={() => handleViewRunDetails(latestRun.id)}
-                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main"
-                    >
-                      <Eye className="h-4 w-4" />
-                      {t('ragEval.viewRunDetails')}
-                    </button>
+                    <div className="flex flex-wrap gap-2">
+                      {latestRun.status === 'running' && (
+                        <button
+                          onClick={() => handleCancelRun(latestRun.id)}
+                          disabled={cancellingRunId === latestRun.id}
+                          className="inline-flex items-center justify-center gap-2 rounded-lg border border-red-500/30 px-3 py-2 text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {cancellingRunId === latestRun.id
+                            ? <Loader2 className="h-4 w-4 animate-spin" />
+                            : <Ban className="h-4 w-4" />}
+                          {t('ragEval.cancelRun')}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => handleViewRunDetails(latestRun.id)}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main"
+                      >
+                        <Eye className="h-4 w-4" />
+                        {t('ragEval.viewRunDetails')}
+                      </button>
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
                     <div className="rounded-lg border border-border bg-bg-base p-3">
@@ -723,7 +757,7 @@ export default function RagEvaluationPage() {
                           <th className="px-3 py-2 text-left">{t('ragEval.overallScore')}</th>
                           <th className="px-3 py-2 text-left">{t('ragEval.failedCases')}</th>
                           <th className="px-3 py-2 text-left">{t('ragEval.status')}</th>
-                          <th className="w-[104px] px-3 py-2 text-right">{t('common.actions')}</th>
+                          <th className="w-[132px] px-3 py-2 text-right">{t('common.actions')}</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-border">
@@ -734,6 +768,19 @@ export default function RagEvaluationPage() {
                             <td className="px-3 py-2">{run.failed_count}/{run.case_count}</td>
                             <td className="px-3 py-2">{getRunStatusLabel(run.status)}</td>
                             <td className="px-3 py-2 text-right">
+                              {run.status === 'running' && (
+                                <button
+                                  onClick={() => handleCancelRun(run.id)}
+                                  disabled={cancellingRunId === run.id}
+                                  className="mr-1 inline-flex items-center justify-center rounded-lg p-2 text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                                  aria-label={t('ragEval.cancelRun')}
+                                  title={t('ragEval.cancelRun')}
+                                >
+                                  {cancellingRunId === run.id
+                                    ? <Loader2 className="h-4 w-4 animate-spin" />
+                                    : <Ban className="h-4 w-4" />}
+                                </button>
+                              )}
                               <button
                                 onClick={() => handleViewRunDetails(run.id)}
                                 className="inline-flex items-center justify-center rounded-lg p-2 text-text-muted transition-colors hover:bg-bg-base hover:text-text-main"
@@ -945,6 +992,18 @@ export default function RagEvaluationPage() {
         maxWidth="3xl"
         footer={
           <>
+            {selectedRun?.status === 'running' && (
+              <button
+                onClick={() => handleCancelRun(selectedRun.id)}
+                disabled={cancellingRunId === selectedRun.id}
+                className="flex items-center justify-center gap-2 rounded-lg border border-red-500/30 px-4 py-2 text-sm text-red-300 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {cancellingRunId === selectedRun.id
+                  ? <Loader2 className="h-4 w-4 animate-spin" />
+                  : <Ban className="h-4 w-4" />}
+                {t('ragEval.cancelRun')}
+              </button>
+            )}
             <button
               onClick={handleExportRunReport}
               disabled={!selectedRun || isLoadingRun || selectedRun.status === 'running'}
@@ -1004,6 +1063,10 @@ export default function RagEvaluationPage() {
                 <Loader2 className="h-4 w-4 animate-spin" />
                 {t('ragEval.runningStatus')}
               </div>
+            ) : selectedRun.status === 'cancelled' ? (
+              <p className="rounded-lg border border-border bg-bg-base p-4 text-sm text-text-muted">
+                {t('ragEval.cancelledStatus')}
+              </p>
             ) : selectedRun.results && selectedRun.results.length > 0 ? (
               <div className="space-y-3">
                 {selectedRun.results.map((result) => {

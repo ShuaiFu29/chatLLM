@@ -222,6 +222,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}\/cases`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{datasetId\}\/runs`/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/runs\/\$\{runId\}`/);
+  assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/runs\/\$\{runId\}\/cancel`/);
   assert.match(ragEvaluationPageSource, /datasetModalMode/);
   assert.match(ragEvaluationPageSource, /openEditDataset/);
   assert.match(ragEvaluationPageSource, /datasetToDelete/);
@@ -248,6 +249,9 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /setInterval\(\(\) => \{/);
   assert.match(ragEvaluationPageSource, /ragEval\.runQueued/);
   assert.match(ragEvaluationPageSource, /ragEval\.runningStatus/);
+  assert.match(ragEvaluationPageSource, /ragEval\.cancelRun/);
+  assert.match(ragEvaluationPageSource, /ragEval\.cancelledStatus/);
+  assert.match(ragEvaluationPageSource, /ragEval\.cancelSuccess/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -272,6 +276,10 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
     assert.ok(locale.ragEval?.maxCasesHint, `${localeFile.locale}.json needs ragEval.maxCasesHint`);
     assert.ok(locale.ragEval?.runQueued, `${localeFile.locale}.json needs ragEval.runQueued`);
     assert.ok(locale.ragEval?.runningStatus, `${localeFile.locale}.json needs ragEval.runningStatus`);
+    assert.ok(locale.ragEval?.cancelRun, `${localeFile.locale}.json needs ragEval.cancelRun`);
+    assert.ok(locale.ragEval?.cancelledStatus, `${localeFile.locale}.json needs ragEval.cancelledStatus`);
+    assert.ok(locale.ragEval?.cancelSuccess, `${localeFile.locale}.json needs ragEval.cancelSuccess`);
+    assert.ok(locale.ragEval?.cancelFailed, `${localeFile.locale}.json needs ragEval.cancelFailed`);
   }
 });
 
