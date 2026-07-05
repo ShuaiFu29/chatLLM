@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import {
+  cancelRagEvalRun,
   createRagEvalCase,
   createRagEvalDataset,
   deleteRagEvalCase,
@@ -20,6 +21,7 @@ router.delete('/datasets/:datasetId', requireAuth, deleteRagEvalDataset);
 router.post('/datasets/:datasetId/cases', requireAuth, createRagEvalCase);
 router.post('/datasets/:datasetId/runs', requireAuth, runRagEvalDataset);
 router.get('/runs/:runId', requireAuth, getRagEvalRun);
+router.post('/runs/:runId/cancel', requireAuth, cancelRagEvalRun);
 router.delete('/cases/:caseId', requireAuth, deleteRagEvalCase);
 
 export default router;

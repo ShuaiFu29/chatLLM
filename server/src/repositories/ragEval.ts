@@ -1,6 +1,6 @@
 import { query, withTransaction } from '../lib/db';
 
-type RagEvalRunStatus = 'running' | 'completed' | 'failed' | 'partial';
+type RagEvalRunStatus = 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
 
 export interface RagEvalDatasetRow {
   id: string;
@@ -496,6 +496,20 @@ export const failRagEvalRunForUser = async (input: {
   });
 
   return { ...rows[0], results: [] };
+};
+
+export const cancelRagEvalRunForUser = async (runId: string, userId: string) => {
+  const { rows } = await query<RagEvalRunRow>(
+    `update rag_eval_runs
+     set status = 'cancelled',
+         duration_ms = greatest(duration_ms, floor(extract(epoch from (now() - created_at)) * 1000)::int),
+         completed_at = now()
+     where id = $1 and user_id = $2 and status = 'running'
+     returning ${runColumns}`,
+    [runId, userId]
+  );
+
+  return rows[0] ? { ...rows[0], results: [] } : null;
 };
 
 export const insertRagEvalRunWithResults = async (input: {

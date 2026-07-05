@@ -228,6 +228,7 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
   assert.match(metricsSource, /chatllm_rag_eval_runs_reused_total/);
   assert.match(metricsSource, /chatllm_rag_eval_runs_completed_total/);
   assert.match(metricsSource, /chatllm_rag_eval_runs_stale_failed_total/);
+  assert.match(metricsSource, /RAG_EVAL_COMPLETION_STATUSES: RagEvalCompletionStatus\[\] = \['completed', 'partial', 'failed', 'cancelled'\]/);
   assert.match(metricsSource, /status="\$\{status\}"/);
   assert.match(metricsSource, /text\/plain/);
 });
