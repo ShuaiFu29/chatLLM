@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { metrics } from '../lib/metrics';
 import { runRagEvaluation } from '../lib/ragClient';
 import {
   completeRagEvalRunWithResults,
@@ -62,18 +63,22 @@ const executeRagEvalRunInBackground = async (input: {
       threshold: 0.1,
     });
 
-    await completeRagEvalRunWithResults({
+    const completedRun = await completeRagEvalRunWithResults({
       userId: input.userId,
       runId: input.runId,
       output,
     });
+    if (completedRun && completedRun.status !== 'running') {
+      metrics.recordRagEvalRunCompleted(completedRun.status);
+    }
   } catch (error) {
-    await failRagEvalRunForUser({
+    const failedRun = await failRagEvalRunForUser({
       userId: input.userId,
       runId: input.runId,
       errorMessage: error instanceof Error ? error.message : 'Unknown RAG eval failure',
       durationMs: Date.now() - startedAt,
     });
+    if (failedRun) metrics.recordRagEvalRunCompleted('failed');
   }
 };
 
@@ -224,11 +229,14 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
     });
 
     if (run.created) {
+      metrics.recordRagEvalRunStarted();
       void executeRagEvalRunInBackground({
         runId: run.id,
         userId: req.user.id,
         dataset,
       });
+    } else {
+      metrics.recordRagEvalRunReused();
     }
 
     res.status(202).json(run);

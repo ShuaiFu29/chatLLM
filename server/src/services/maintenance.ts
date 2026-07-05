@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs-extra';
 import { serverEnv } from '../lib/env';
+import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
 
@@ -46,7 +47,7 @@ class MaintenanceService {
   private async runOnce() {
     const results = await Promise.allSettled([
       deleteExpiredSessions(),
-      failStaleRunningRagEvalRuns(serverEnv.RAG_EVAL_STALE_RUN_MS),
+      this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),
     ]);
 
@@ -55,6 +56,11 @@ class MaintenanceService {
         console.warn('[Maintenance] Cleanup task failed:', result.reason);
       }
     });
+  }
+
+  private async failStaleRunningRagEvalRuns() {
+    const count = await failStaleRunningRagEvalRuns(serverEnv.RAG_EVAL_STALE_RUN_MS);
+    metrics.recordRagEvalRunsStaleFailed(count);
   }
 }
 

@@ -224,6 +224,11 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
   assert.match(metricsSource, /chatllm_database_pool_waiting/);
   assert.match(metricsSource, /chatllm_chat_streams_active/);
   assert.match(metricsSource, /chatllm_rag_retrieve_failures_total/);
+  assert.match(metricsSource, /chatllm_rag_eval_runs_started_total/);
+  assert.match(metricsSource, /chatllm_rag_eval_runs_reused_total/);
+  assert.match(metricsSource, /chatllm_rag_eval_runs_completed_total/);
+  assert.match(metricsSource, /chatllm_rag_eval_runs_stale_failed_total/);
+  assert.match(metricsSource, /status="\$\{status\}"/);
   assert.match(metricsSource, /text\/plain/);
 });
 
@@ -350,6 +355,7 @@ test('maintenance service cleans expired sessions and stale upload temp files', 
   assert.match(ragEvalRepositorySource, /created_at < now\(\) - \(\$1::text \|\| ' milliseconds'\)::interval/i);
   assert.match(maintenanceSource, /cleanupUploadTempDirectory/);
   assert.match(maintenanceSource, /failStaleRunningRagEvalRuns/);
+  assert.match(maintenanceSource, /recordRagEvalRunsStaleFailed/);
   assert.match(maintenanceSource, /RAG_EVAL_STALE_RUN_MS/);
   assert.match(maintenanceSource, /UPLOAD_TEMP_MAX_AGE_MS/);
   assert.match(maintenanceSource, /setInterval/);

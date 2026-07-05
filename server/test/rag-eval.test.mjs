@@ -64,6 +64,9 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(controllerSource, /completeRagEvalRunWithResults/);
   assert.match(controllerSource, /failRagEvalRunForUser/);
   assert.match(controllerSource, /if \(run\.created\) \{/);
+  assert.match(controllerSource, /recordRagEvalRunStarted/);
+  assert.match(controllerSource, /recordRagEvalRunReused/);
+  assert.match(controllerSource, /recordRagEvalRunCompleted/);
   assert.match(controllerSource, /void executeRagEvalRunInBackground/);
   assert.match(controllerSource, /res\.status\(202\)\.json\(run\)/);
 
