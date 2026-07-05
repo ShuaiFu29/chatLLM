@@ -69,6 +69,7 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(routesSource, /router\.post\('\/datasets', requireAuth, createRagEvalDataset\)/);
   assert.match(routesSource, /router\.patch\('\/datasets\/:datasetId', requireAuth, updateRagEvalDataset\)/);
   assert.match(routesSource, /router\.delete\('\/datasets\/:datasetId', requireAuth, deleteRagEvalDataset\)/);
+  assert.match(routesSource, /router\.get\('\/datasets\/:datasetId\/quality', requireAuth, getRagEvalQualitySummary\)/);
   assert.match(routesSource, /router\.post\('\/datasets\/:datasetId\/cases', requireAuth, createRagEvalCase\)/);
   assert.match(routesSource, /router\.post\('\/datasets\/:datasetId\/runs', requireAuth, runRagEvalDataset\)/);
   assert.match(routesSource, /router\.get\('\/runs\/:runId', requireAuth, getRagEvalRun\)/);
@@ -77,6 +78,7 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(controllerSource, /listRagEvalDatasets/);
   assert.match(controllerSource, /updateRagEvalDataset/);
   assert.match(controllerSource, /deleteRagEvalDataset/);
+  assert.match(controllerSource, /getRagEvalQualitySummary/);
   assert.match(controllerSource, /getRagEvalRun/);
   assert.match(controllerSource, /createRunningRagEvalRunForUser/);
   assert.match(controllerSource, /cancelRagEvalRunForUser/);
@@ -94,6 +96,7 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(repositorySource, /createRagEvalDatasetForUser/);
   assert.match(repositorySource, /updateRagEvalDatasetForUser/);
   assert.match(repositorySource, /deleteRagEvalDatasetForUser/);
+  assert.match(repositorySource, /getRagEvalQualitySummaryForUser/);
   assert.match(repositorySource, /createRagEvalCaseForUser/);
   assert.match(repositorySource, /getRagEvalRunForUser/);
   assert.match(repositorySource, /createRunningRagEvalRunForUser/);
@@ -120,6 +123,23 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(ragClientSource, /runRagEvaluation/);
   assert.match(ragClientSource, /\/eval\/run/);
   assert.match(ragClientSource, /expected_answer\?: string/);
+});
+
+test('RAG eval exposes dataset quality trend and low-score case summaries', () => {
+  const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
+  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+
+  assert.match(repositorySource, /interface RagEvalQualitySummary/);
+  assert.match(repositorySource, /trend_delta/);
+  assert.match(repositorySource, /low_score_cases/);
+  assert.match(repositorySource, /average_overall_score/);
+  assert.match(repositorySource, /from rag_eval_runs/);
+  assert.match(repositorySource, /from rag_eval_results/);
+  assert.match(repositorySource, /order by overall_score asc/i);
+  assert.match(repositorySource, /limit 5/i);
+
+  assert.match(controllerSource, /getRagEvalQualitySummaryForUser/);
+  assert.match(controllerSource, /res\.json\(summary\)/);
 });
 
 test('RAG eval queue worker claims persisted jobs and retries safely', () => {

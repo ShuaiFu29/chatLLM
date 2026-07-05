@@ -336,7 +336,17 @@
     "unknownSource": "未知来源",
     "noMatchedSources": "没有命中来源",
     "noTraceSteps": "没有 Trace 步骤",
-    "noRunResults": "没有运行结果"
+    "noRunResults": "没有运行结果",
+    "qualityDashboard": "质量看板",
+    "qualityDashboardHint": "跟踪最近评测趋势，并优先定位低分问题。",
+    "qualityLoadFailed": "质量看板加载失败。",
+    "evaluatedRuns": "已评分运行",
+    "latestOverall": "最新综合分",
+    "trendDelta": "趋势变化",
+    "trendChart": "最近趋势",
+    "notEnoughRuns": "暂无对比",
+    "lowScoreCases": "低分用例",
+    "noLowScoreCases": "暂无低分用例"
   },
   "prompts": {
     "title": "提示词模板",

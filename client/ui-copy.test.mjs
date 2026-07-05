@@ -219,6 +219,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
   assert.match(ragEvaluationPageSource, /api\.patch(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}`/);
   assert.match(ragEvaluationPageSource, /api\.delete\(`\/rag-eval\/datasets\/\$\{datasetToDelete\.id\}`/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDataset\.id\}\/quality`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}\/cases`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{datasetId\}\/runs`/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/runs\/\$\{runId\}`/);
@@ -252,6 +253,12 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /ragEval\.cancelRun/);
   assert.match(ragEvaluationPageSource, /ragEval\.cancelledStatus/);
   assert.match(ragEvaluationPageSource, /ragEval\.cancelSuccess/);
+  assert.match(ragEvaluationPageSource, /RagEvalQualitySummary/);
+  assert.match(ragEvaluationPageSource, /qualitySummary/);
+  assert.match(ragEvaluationPageSource, /ragEval\.qualityDashboard/);
+  assert.match(ragEvaluationPageSource, /ragEval\.trendDelta/);
+  assert.match(ragEvaluationPageSource, /ragEval\.lowScoreCases/);
+  assert.match(ragEvaluationPageSource, /qualitySummary\.low_score_cases/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -280,6 +287,12 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
     assert.ok(locale.ragEval?.cancelledStatus, `${localeFile.locale}.json needs ragEval.cancelledStatus`);
     assert.ok(locale.ragEval?.cancelSuccess, `${localeFile.locale}.json needs ragEval.cancelSuccess`);
     assert.ok(locale.ragEval?.cancelFailed, `${localeFile.locale}.json needs ragEval.cancelFailed`);
+    assert.ok(locale.ragEval?.qualityDashboard, `${localeFile.locale}.json needs ragEval.qualityDashboard`);
+    assert.ok(locale.ragEval?.qualityDashboardHint, `${localeFile.locale}.json needs ragEval.qualityDashboardHint`);
+    assert.ok(locale.ragEval?.trendDelta, `${localeFile.locale}.json needs ragEval.trendDelta`);
+    assert.ok(locale.ragEval?.lowScoreCases, `${localeFile.locale}.json needs ragEval.lowScoreCases`);
+    assert.ok(locale.ragEval?.noLowScoreCases, `${localeFile.locale}.json needs ragEval.noLowScoreCases`);
+    assert.ok(locale.ragEval?.qualityLoadFailed, `${localeFile.locale}.json needs ragEval.qualityLoadFailed`);
   }
 });
 

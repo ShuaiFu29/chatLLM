@@ -80,6 +80,49 @@ export interface RagEvalResultRow {
   created_at: string;
 }
 
+export interface RagEvalQualityTrendRun {
+  id: string;
+  status: RagEvalRunStatus;
+  case_count: number;
+  failed_count: number;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  duration_ms: number;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface RagEvalLowScoreCase {
+  result_id: string;
+  run_id: string;
+  question: string;
+  status: 'success' | 'failed';
+  overall_score: number;
+  retrieval_score: number;
+  answer_score: number;
+  source_score: number;
+  keyword_score: number;
+  evidence_label: string;
+  error_message: string;
+}
+
+export interface RagEvalQualitySummary {
+  dataset_id: string;
+  run_count: number;
+  latest_run_id?: string | null;
+  trend_delta?: number | null;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  trend: RagEvalQualityTrendRun[];
+  low_score_cases: RagEvalLowScoreCase[];
+}
+
 const datasetColumns = `
   id,
   user_id,
@@ -341,6 +384,89 @@ export const getRagEvalRunForUser = async (runId: string, userId: string) => {
   );
 
   return { ...run, results };
+};
+
+export const getRagEvalQualitySummaryForUser = async (
+  datasetId: string,
+  userId: string
+): Promise<RagEvalQualitySummary | null> => {
+  const { rows: datasets } = await query<Pick<RagEvalDatasetRow, 'id'>>(
+    `select id
+     from rag_eval_datasets
+     where id = $1 and user_id = $2`,
+    [datasetId, userId]
+  );
+
+  if (!datasets[0]) return null;
+
+  const { rows: recentRuns } = await query<RagEvalRunRow>(
+    `select ${runColumns}
+     from rag_eval_runs
+     where dataset_id = $1
+       and user_id = $2
+       and status in ('completed', 'partial', 'failed')
+     order by created_at desc
+     limit 10`,
+    [datasetId, userId]
+  );
+
+  const latestRun = recentRuns[0];
+  const previousRun = recentRuns[1];
+  const trend = recentRuns
+    .slice()
+    .reverse()
+    .map((run) => ({
+      id: run.id,
+      status: run.status,
+      case_count: run.case_count,
+      failed_count: run.failed_count,
+      average_overall_score: run.average_overall_score,
+      average_retrieval_score: run.average_retrieval_score,
+      average_answer_score: run.average_answer_score,
+      average_source_score: run.average_source_score,
+      average_keyword_score: run.average_keyword_score,
+      duration_ms: run.duration_ms,
+      created_at: run.created_at,
+      completed_at: run.completed_at,
+    }));
+
+  const lowScoreCases = latestRun
+    ? (await query<RagEvalLowScoreCase>(
+      `select
+         id as result_id,
+         run_id,
+         question,
+         status,
+         overall_score,
+         retrieval_score,
+         answer_score,
+         source_score,
+         keyword_score,
+         evidence_label,
+         error_message
+       from rag_eval_results
+       where run_id = $1
+       order by overall_score asc, retrieval_score asc, answer_score asc, created_at asc
+       limit 5`,
+      [latestRun.id]
+    )).rows
+    : [];
+
+  return {
+    dataset_id: datasetId,
+    run_count: recentRuns.length,
+    latest_run_id: latestRun?.id || null,
+    trend_delta: latestRun && previousRun
+      ? latestRun.average_overall_score - previousRun.average_overall_score
+      : null,
+    average_overall_score: latestRun?.average_overall_score || 0,
+    average_retrieval_score: latestRun?.average_retrieval_score || 0,
+    average_answer_score: latestRun?.average_answer_score || 0,
+    average_source_score: latestRun?.average_source_score || 0,
+    average_keyword_score: latestRun?.average_keyword_score || 0,
+    trend,
+    low_score_cases: lowScoreCases,
+  };
 };
 
 export const createRunningRagEvalRunForUser = async (input: {

@@ -9,6 +9,7 @@ import {
   deleteRagEvalCaseForUser,
   deleteRagEvalDatasetForUser,
   getRagEvalDatasetWithCasesForUser,
+  getRagEvalQualitySummaryForUser,
   getRagEvalRunForUser,
   listRagEvalDatasetsForUser,
   updateRagEvalDatasetForUser,
@@ -161,6 +162,19 @@ export const getRagEvalRun = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error loading RAG eval run:', error);
     res.status(500).json({ error: 'Failed to load RAG eval run' });
+  }
+};
+
+export const getRagEvalQualitySummary = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const summary = await getRagEvalQualitySummaryForUser(req.params.datasetId, req.user.id);
+    if (!summary) return res.status(404).json({ error: 'Dataset not found' });
+    res.json(summary);
+  } catch (error) {
+    console.error('Error loading RAG eval quality summary:', error);
+    res.status(500).json({ error: 'Failed to load RAG eval quality summary' });
   }
 };
 

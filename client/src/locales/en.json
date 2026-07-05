@@ -336,7 +336,17 @@
     "unknownSource": "Unknown source",
     "noMatchedSources": "No matched sources",
     "noTraceSteps": "No trace steps",
-    "noRunResults": "No run results"
+    "noRunResults": "No run results",
+    "qualityDashboard": "Quality dashboard",
+    "qualityDashboardHint": "Track recent evaluation trends and focus on the lowest-scoring questions.",
+    "qualityLoadFailed": "Failed to load quality dashboard.",
+    "evaluatedRuns": "Scored runs",
+    "latestOverall": "Latest overall",
+    "trendDelta": "Trend delta",
+    "trendChart": "Recent trend",
+    "notEnoughRuns": "No comparison",
+    "lowScoreCases": "Low-score cases",
+    "noLowScoreCases": "No low-score cases"
   },
   "prompts": {
     "title": "Prompt Templates",
