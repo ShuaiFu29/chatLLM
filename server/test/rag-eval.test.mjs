@@ -17,6 +17,7 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   const migrationSource = readOptionalSource('migrations/0007_rag_eval.sql');
   const answerScoreMigrationSource = readOptionalSource('migrations/0008_rag_eval_answer_score.sql');
   const asyncRunMigrationSource = readOptionalSource('migrations/0009_rag_eval_async_runs.sql');
+  const asyncSafetyMigrationSource = readOptionalSource('migrations/0010_rag_eval_async_safety.sql');
 
   assert.match(migrationSource, /create table if not exists rag_eval_datasets/i);
   assert.match(migrationSource, /create table if not exists rag_eval_cases/i);
@@ -29,6 +30,8 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   assert.match(asyncRunMigrationSource, /constraint rag_eval_runs_status_check/i);
   assert.match(asyncRunMigrationSource, /'running'/i);
   assert.match(asyncRunMigrationSource, /rag_eval_runs_running_user_idx/i);
+  assert.match(asyncSafetyMigrationSource, /rag_eval_runs_one_running_dataset_idx/i);
+  assert.match(asyncSafetyMigrationSource, /where status = 'running'/i);
 });
 
 test('RAG eval API exposes authenticated dataset case and run endpoints', () => {
@@ -60,6 +63,7 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(controllerSource, /createRunningRagEvalRunForUser/);
   assert.match(controllerSource, /completeRagEvalRunWithResults/);
   assert.match(controllerSource, /failRagEvalRunForUser/);
+  assert.match(controllerSource, /if \(run\.created\) \{/);
   assert.match(controllerSource, /void executeRagEvalRunInBackground/);
   assert.match(controllerSource, /res\.status\(202\)\.json\(run\)/);
 
@@ -74,6 +78,10 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(repositorySource, /failRagEvalRunForUser/);
   assert.match(repositorySource, /RagEvalRunStatus = 'running'/);
   assert.match(repositorySource, /status in \('running'\)/i);
+  assert.match(repositorySource, /on conflict \(dataset_id\) where status = 'running' do nothing/i);
+  assert.match(repositorySource, /created: true/);
+  assert.match(repositorySource, /created: false/);
+  assert.match(repositorySource, /failStaleRunningRagEvalRuns/);
   assert.match(repositorySource, /delete from rag_eval_datasets/i);
   assert.match(repositorySource, /where id = \$1 and user_id = \$2/i);
   assert.match(repositorySource, /from rag_eval_results/);

@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs-extra';
 import { serverEnv } from '../lib/env';
+import { failStaleRunningRagEvalRuns } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
@@ -45,6 +46,7 @@ class MaintenanceService {
   private async runOnce() {
     const results = await Promise.allSettled([
       deleteExpiredSessions(),
+      failStaleRunningRagEvalRuns(serverEnv.RAG_EVAL_STALE_RUN_MS),
       cleanupUploadTempDirectory(),
     ]);
 

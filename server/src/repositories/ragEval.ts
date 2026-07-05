@@ -44,6 +44,10 @@ export interface RagEvalRunRow {
   results?: RagEvalResultRow[];
 }
 
+export type CreatedRagEvalRunRow = RagEvalRunRow & {
+  created: boolean;
+};
+
 export interface RagEvalResultRow {
   id: string;
   run_id: string;
@@ -322,7 +326,7 @@ export const createRunningRagEvalRunForUser = async (input: {
   userId: string;
   datasetId: string;
   caseCount: number;
-}) => {
+}): Promise<CreatedRagEvalRunRow> => {
   const { rows } = await query<RagEvalRunRow>(
     `insert into rag_eval_runs (
        dataset_id,
@@ -331,18 +335,50 @@ export const createRunningRagEvalRunForUser = async (input: {
        case_count
      )
      values ($1, $2, 'running', $3)
+     on conflict (dataset_id) where status = 'running' do nothing
      returning ${runColumns}`,
     [input.datasetId, input.userId, input.caseCount]
   );
 
-  await query(
-    `update rag_eval_datasets
-     set updated_at = now()
-     where id = $1 and user_id = $2`,
+  if (rows[0]) {
+    await query(
+      `update rag_eval_datasets
+       set updated_at = now()
+       where id = $1 and user_id = $2`,
+      [input.datasetId, input.userId]
+    );
+
+    return { ...rows[0], results: [], created: true };
+  }
+
+  const { rows: runningRows } = await query<RagEvalRunRow>(
+    `select ${runColumns}
+     from rag_eval_runs
+     where dataset_id = $1 and user_id = $2 and status = 'running'
+     order by created_at desc
+     limit 1`,
     [input.datasetId, input.userId]
   );
 
-  return { ...rows[0], results: [] };
+  if (!runningRows[0]) {
+    throw new Error('Unable to create or locate running RAG eval run');
+  }
+
+  return { ...runningRows[0], results: [], created: false };
+};
+
+export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
+  const { rowCount } = await query(
+    `update rag_eval_runs
+     set status = 'failed',
+         failed_count = case_count,
+         completed_at = now()
+     where status = 'running'
+       and created_at < now() - ($1::text || ' milliseconds')::interval`,
+    [staleAfterMs]
+  );
+
+  return rowCount ?? 0;
 };
 
 export const completeRagEvalRunWithResults = async (input: {

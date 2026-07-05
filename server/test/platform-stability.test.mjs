@@ -50,6 +50,7 @@ test('server env exposes runtime stability knobs', () => {
     RAG_CIRCUIT_FAILURE_THRESHOLD: '4',
     RAG_CIRCUIT_RESET_MS: '45000',
     RAG_EVAL_RATE_LIMIT_MAX: '12',
+    RAG_EVAL_STALE_RUN_MS: '900000',
     CHAT_STREAM_MAX_CONCURRENT: '25',
     CHAT_STREAM_MAX_CONCURRENT_PER_USER: '5',
     MAINTENANCE_INTERVAL_MS: '600000',
@@ -78,6 +79,7 @@ test('server env exposes runtime stability knobs', () => {
   assert.equal(env.RAG_CIRCUIT_FAILURE_THRESHOLD, 4);
   assert.equal(env.RAG_CIRCUIT_RESET_MS, 45000);
   assert.equal(env.RAG_EVAL_RATE_LIMIT_MAX, 12);
+  assert.equal(env.RAG_EVAL_STALE_RUN_MS, 900000);
   assert.equal(env.CHAT_STREAM_MAX_CONCURRENT, 25);
   assert.equal(env.CHAT_STREAM_MAX_CONCURRENT_PER_USER, 5);
   assert.equal(env.MAINTENANCE_INTERVAL_MS, 600000);
@@ -335,14 +337,20 @@ test('maintenance service cleans expired sessions and stale upload temp files', 
   const shutdownSource = readOptionalSource('src/lib/gracefulShutdown.ts');
   const sessionsSource = readSource('src/repositories/sessions.ts');
   const maintenanceSource = readOptionalSource('src/services/maintenance.ts');
+  const ragEvalRepositorySource = readOptionalSource('src/repositories/ragEval.ts');
 
   assert.match(envSource, /MAINTENANCE_INTERVAL_MS/);
   assert.match(envSource, /UPLOAD_TEMP_MAX_AGE_MS/);
+  assert.match(envSource, /RAG_EVAL_STALE_RUN_MS/);
   assert.match(sessionsSource, /deleteExpiredSessions/);
   assert.match(sessionsSource, /delete from sessions where expires_at < now\(\)/i);
   assert.match(indexSource, /maintenanceService\.start\(\)/);
   assert.match(shutdownSource, /maintenanceService\.stop\(\)/);
+  assert.match(ragEvalRepositorySource, /failStaleRunningRagEvalRuns/);
+  assert.match(ragEvalRepositorySource, /created_at < now\(\) - \(\$1::text \|\| ' milliseconds'\)::interval/i);
   assert.match(maintenanceSource, /cleanupUploadTempDirectory/);
+  assert.match(maintenanceSource, /failStaleRunningRagEvalRuns/);
+  assert.match(maintenanceSource, /RAG_EVAL_STALE_RUN_MS/);
   assert.match(maintenanceSource, /UPLOAD_TEMP_MAX_AGE_MS/);
   assert.match(maintenanceSource, /setInterval/);
   assert.match(maintenanceSource, /fs\.remove/);

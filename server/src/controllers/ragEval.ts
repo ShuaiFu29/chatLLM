@@ -223,11 +223,13 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
       caseCount: dataset.cases.length,
     });
 
-    void executeRagEvalRunInBackground({
-      runId: run.id,
-      userId: req.user.id,
-      dataset,
-    });
+    if (run.created) {
+      void executeRagEvalRunInBackground({
+        runId: run.id,
+        userId: req.user.id,
+        dataset,
+      });
+    }
 
     res.status(202).json(run);
   } catch (error) {
