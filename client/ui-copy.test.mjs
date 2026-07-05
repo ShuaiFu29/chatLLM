@@ -228,7 +228,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
   assert.match(ragEvaluationPageSource, /api\.patch(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}`/);
   assert.match(ragEvaluationPageSource, /api\.delete\(`\/rag-eval\/datasets\/\$\{datasetToDelete\.id\}`/);
-  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDataset\.id\}\/quality`/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedQualityDatasetId\}\/quality`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}\/cases`/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{datasetId\}\/runs`/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/runs\/\$\{runId\}`/);

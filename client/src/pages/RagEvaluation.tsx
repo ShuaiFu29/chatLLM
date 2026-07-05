@@ -272,6 +272,8 @@ export default function RagEvaluationPage() {
   const isSelectedDatasetAtCaseLimit = selectedDatasetCaseCount >= MAX_RAG_EVAL_CASES_PER_DATASET;
   const isSelectedDatasetRunning = !!selectedDataset?.runs?.some((run) => run.status === 'running');
   const latestRun = selectedDataset?.runs?.[0];
+  const selectedQualityDatasetId = selectedDataset?.id || null;
+  const latestRunRefreshKey = latestRun ? `${latestRun.id}:${latestRun.status}` : '';
 
   const fetchDatasets = useCallback(async (showLoading = true) => {
     if (showLoading) setIsLoading(true);
@@ -305,7 +307,7 @@ export default function RagEvaluationPage() {
   }, [fetchDatasets, hasRunningRuns]);
 
   useEffect(() => {
-    if (!selectedDataset) {
+    if (!selectedQualityDatasetId) {
       setQualitySummary(null);
       return undefined;
     }
@@ -313,7 +315,7 @@ export default function RagEvaluationPage() {
     let isCancelled = false;
     setIsQualityLoading(true);
 
-    api.get<RagEvalQualitySummary>(`/rag-eval/datasets/${selectedDataset.id}/quality`)
+    api.get<RagEvalQualitySummary>(`/rag-eval/datasets/${selectedQualityDatasetId}/quality`)
       .then(({ data }) => {
         if (!isCancelled) setQualitySummary(data);
       })
@@ -331,7 +333,7 @@ export default function RagEvaluationPage() {
     return () => {
       isCancelled = true;
     };
-  }, [selectedDataset?.id, latestRun?.id, latestRun?.status, t]);
+  }, [selectedQualityDatasetId, latestRunRefreshKey, t]);
 
   const getWorkspaceName = (projectSpaceId?: string | null) => {
     if (!projectSpaceId) return t('ragEval.allWorkspaces');
