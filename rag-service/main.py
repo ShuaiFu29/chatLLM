@@ -5,7 +5,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 from config import settings
+from agentic_retrieval import agentic_retrieve
 from db import check_database_ready
+from eval_runner import run_eval_cases
 from ingestion import process_file
 from retrieval import retrieve_documents
 from vector_store import check_vector_store_ready, delete_file_vectors, ensure_collection
@@ -55,6 +57,42 @@ class RetrieveRequest(BaseModel):
     @classmethod
     def strip_and_reject_blank(cls, value: str | None):
         return strip_and_reject_blank_value(value)
+
+
+class AgenticRetrieveRequest(RetrieveRequest):
+    pass
+
+
+class EvalCaseRequest(BaseModel):
+    id: str = Field(..., min_length=1, max_length=128)
+    question: str = Field(..., min_length=1, max_length=4096)
+    expected_answer: str = Field(default="", max_length=4000)
+    expected_keywords: list[str] = Field(default_factory=list, max_length=20)
+    expected_source_files: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("id", "question")
+    @classmethod
+    def strip_required_fields(cls, value: str):
+        return strip_and_reject_blank_value(value)
+
+    @field_validator("expected_answer")
+    @classmethod
+    def strip_expected_answer(cls, value: str):
+        return value.strip()
+
+
+class EvalRunRequest(BaseModel):
+    cases: list[EvalCaseRequest] = Field(..., min_length=1, max_length=50)
+    user_id: str = Field(..., min_length=1, max_length=128)
+    project_space_id: str | None = Field(default=None, max_length=128)
+    limit: int = Field(default=10, ge=1, le=50)
+    threshold: float = Field(default=0.1, ge=0.0, le=1.0)
+
+    @field_validator("user_id", "project_space_id")
+    @classmethod
+    def strip_optional_fields(cls, value: str | None):
+        return strip_and_reject_blank_value(value)
+
 
 class CleanupFileRequest(FileIdRequest):
     pass
@@ -129,6 +167,35 @@ def retrieve_endpoint(request: RetrieveRequest):
         return {"results": results}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/agentic-retrieve")
+def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
+    try:
+        return agentic_retrieve(
+            query=request.query,
+            user_id=request.user_id,
+            project_space_id=request.project_space_id,
+            limit=request.limit,
+            threshold=request.threshold,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/eval/run")
+def eval_run_endpoint(request: EvalRunRequest):
+    try:
+        return run_eval_cases(
+            cases=[case.model_dump() for case in request.cases],
+            user_id=request.user_id,
+            project_space_id=request.project_space_id,
+            limit=request.limit,
+            threshold=request.threshold,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/cleanup-file")
 def cleanup_file_endpoint(request: CleanupFileRequest):

@@ -74,7 +74,7 @@ export default function SearchDialog() {
               id="search-input"
               value={query}
               onValueChange={setQuery}
-              placeholder={t('search.placeholder') || "Search messages..."}
+              placeholder={t('search.placeholder')}
               className="w-full h-14 bg-transparent outline-none text-text-main placeholder-text-muted"
               autoFocus
             />

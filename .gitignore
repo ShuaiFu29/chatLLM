@@ -38,3 +38,6 @@ venv
 
 # Runtime files
 server/uploads
+
+# Local planning and working notes
+docs/

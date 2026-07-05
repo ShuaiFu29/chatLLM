@@ -1,5 +1,6 @@
 import { RequestHandler } from 'express';
 import { verifyAccessToken } from '../lib/jwt';
+import { metrics } from '../lib/metrics';
 
 interface RateLimitOptions {
   windowMs: number;
@@ -68,6 +69,7 @@ export const createRateLimit = (options: RateLimitOptions): RequestHandler => {
     if (bucket.count > options.max) {
       const retryAfterSeconds = Math.max(Math.ceil((bucket.resetAt - now) / 1000), 1);
       res.setHeader('Retry-After', String(retryAfterSeconds));
+      metrics.recordRateLimitRejected(options.keyPrefix);
       return res.status(429).json({
         error: options.message || 'Too many requests',
         requestId: res.locals.requestId,

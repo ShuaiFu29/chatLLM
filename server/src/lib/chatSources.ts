@@ -7,6 +7,8 @@ export interface RagDocument {
     chunk_index?: number;
   };
   similarity?: number;
+  agentic_score?: number;
+  matched_queries?: string[];
 }
 
 export interface ChatSource {
@@ -16,6 +18,29 @@ export interface ChatSource {
   chunk_index?: number;
   similarity: number;
   content: string;
+}
+
+export interface RagTraceStep {
+  step_type: 'query_rewrite' | 'retrieve' | 'rerank' | 'evidence_check' | string;
+  status: 'success' | 'partial' | 'failed' | string;
+  duration_ms: number;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}
+
+export interface RagQualitySummary {
+  retrieval_score: number;
+  citation_score: number;
+  evidence_score: number;
+  overall_score: number;
+  evidence_label: 'strong' | 'partial' | 'weak' | string;
+}
+
+export interface RagTraceSummary {
+  mode: string;
+  planned_queries: string[];
+  trace_steps: RagTraceStep[];
+  quality: RagQualitySummary;
 }
 
 const MAX_SOURCE_SNIPPET_LENGTH = 500;

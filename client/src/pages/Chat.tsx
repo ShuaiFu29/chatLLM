@@ -139,7 +139,7 @@ export default function ChatPage() {
     }
 
     setIsUploading(true);
-    const toastId = toast.loading(t('common.uploading') || 'Uploading...');
+    const toastId = toast.loading(t('common.uploading'));
 
     try {
       await uploadFile(file, (progress: UploadProgress) => {

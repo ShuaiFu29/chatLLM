@@ -1,5 +1,5 @@
 import { query } from '../lib/db';
-import { ChatSource } from '../lib/chatSources';
+import { ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { encodeMessageCursor, MessageCursor } from '../lib/messagePagination';
 
 export interface MessageRow {
@@ -8,6 +8,8 @@ export interface MessageRow {
   role: 'user' | 'assistant' | 'system';
   content: string;
   sources: ChatSource[];
+  rag_run_id?: string | null;
+  rag_trace?: RagTraceSummary | null;
   created_at: string;
 }
 
@@ -41,7 +43,7 @@ export const insertMessage = async (
   const { rows } = await query<MessageRow>(
     `insert into messages (conversation_id, role, content, sources)
      values ($1, $2, $3, $4)
-     returning id, conversation_id, role, content, sources, created_at`,
+     returning id, conversation_id, role, content, sources, rag_run_id, null::jsonb as rag_trace, created_at`,
     [conversationId, role, content, JSON.stringify(sources)]
   );
   return rows[0];
@@ -49,10 +51,24 @@ export const insertMessage = async (
 
 export const listMessagesForConversation = async (conversationId: string) => {
   const { rows } = await query<MessageRow>(
-    `select id, conversation_id, role, content, sources, created_at
-     from messages
-     where conversation_id = $1
-     order by created_at asc`,
+    `select
+       m.id,
+       m.conversation_id,
+       m.role,
+       m.content,
+       m.sources,
+       m.rag_run_id,
+       case when rr.id is null then null else jsonb_build_object(
+         'mode', rr.mode,
+         'planned_queries', rr.planned_queries,
+         'trace_steps', rr.trace_steps,
+         'quality', rr.quality
+       ) end as rag_trace,
+       m.created_at
+     from messages m
+     left join rag_runs rr on rr.id = m.rag_run_id
+     where m.conversation_id = $1
+     order by m.created_at asc`,
     [conversationId]
   );
   return rows;
@@ -109,6 +125,13 @@ export const searchMessagesForUser = async (userId: string, search: string, filt
        m.id,
        m.content,
        m.sources,
+       m.rag_run_id,
+       case when rr.id is null then null else jsonb_build_object(
+         'mode', rr.mode,
+         'planned_queries', rr.planned_queries,
+         'trace_steps', rr.trace_steps,
+         'quality', rr.quality
+       ) end as rag_trace,
        m.created_at,
        m.conversation_id,
        json_build_object(
@@ -122,6 +145,7 @@ export const searchMessagesForUser = async (userId: string, search: string, filt
        ) as conversations
      from messages m
      join conversations c on c.id = m.conversation_id
+     left join rag_runs rr on rr.id = m.rag_run_id
      where ${conditions.join(' and ')}
      order by m.created_at desc
      limit $${values.length}`,
@@ -139,17 +163,31 @@ export const listMessagesForConversationPage = async (
 
   if (options.cursor) {
     values.push(options.cursor.createdAt, options.cursor.id);
-    cursorFilter = `and (created_at, id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`;
+    cursorFilter = `and (m.created_at, m.id) < ($${values.length - 1}::timestamptz, $${values.length}::uuid)`;
   }
 
   values.push(options.limit + 1);
 
   const { rows } = await query<MessageRow>(
-    `select id, conversation_id, role, content, sources, created_at
-     from messages
-     where conversation_id = $1
+    `select
+       m.id,
+       m.conversation_id,
+       m.role,
+       m.content,
+       m.sources,
+       m.rag_run_id,
+       case when rr.id is null then null else jsonb_build_object(
+         'mode', rr.mode,
+         'planned_queries', rr.planned_queries,
+         'trace_steps', rr.trace_steps,
+         'quality', rr.quality
+       ) end as rag_trace,
+       m.created_at
+     from messages m
+     left join rag_runs rr on rr.id = m.rag_run_id
+     where m.conversation_id = $1
        ${cursorFilter}
-     order by created_at desc, id desc
+     order by m.created_at desc, m.id desc
      limit $${values.length}`,
     values
   );

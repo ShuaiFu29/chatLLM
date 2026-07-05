@@ -213,3 +213,30 @@ test('server env exposes configurable RAG cleanup timeout for destructive cleanu
   assert.equal(explicitResult.status, 0, explicitResult.stderr);
   assert.equal(parseLastJsonLine(explicitResult.stdout), 30000);
 });
+
+test('server env exposes configurable RAG evaluation route rate limit', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  }, 'serverEnv.RAG_EVAL_RATE_LIMIT_MAX');
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), 30);
+
+  const explicitResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_EVAL_RATE_LIMIT_MAX: '12',
+  }, 'serverEnv.RAG_EVAL_RATE_LIMIT_MAX');
+
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(parseLastJsonLine(explicitResult.stdout), 12);
+});

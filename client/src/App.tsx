@@ -15,6 +15,7 @@ const ProfilePage = lazy(() => import('./pages/Profile'));
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase'));
 const UsagePage = lazy(() => import('./pages/Usage'));
 const PromptTemplatesPage = lazy(() => import('./pages/PromptTemplates'));
+const RagEvaluationPage = lazy(() => import('./pages/RagEvaluation'));
 
 function App() {
   const checkAuth = useAuthStore((state) => state.checkAuth);
@@ -71,6 +72,7 @@ function App() {
               <Route path="/knowledge" element={<KnowledgeBase />} />
               <Route path="/usage" element={<UsagePage />} />
               <Route path="/prompts" element={<PromptTemplatesPage />} />
+              <Route path="/rag-eval" element={<RagEvaluationPage />} />
             </Route>
           </Route>
 

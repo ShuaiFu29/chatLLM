@@ -1,5 +1,5 @@
 import { memo, lazy, Suspense, useState } from 'react';
-import { Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil } from 'lucide-react';
+import { Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil, Gauge, Route } from 'lucide-react';
 import type { Message } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
@@ -40,6 +40,19 @@ const ChatMessage = memo(({
 
   const formatFilename = (filename: string) => {
     return filename.replace(/\.(?:md|markdown)$/i, "").trim();
+  };
+
+  const traceSummary = msg.traceSummary || msg.rag_trace || null;
+  const qualitySummary = msg.qualitySummary || traceSummary?.quality || null;
+  const traceSteps = traceSummary?.trace_steps || [];
+  const plannedQueries = traceSummary?.planned_queries || [];
+  const ragRunId = msg.ragRunId || msg.rag_run_id;
+
+  const formatScore = (score?: number) => `${Math.round((score || 0) * 100)}%`;
+  const formatEvidenceLabel = (label?: string) => {
+    if (label === 'strong') return t('chat.ragEvidenceStrong');
+    if (label === 'partial') return t('chat.ragEvidencePartial');
+    return t('chat.ragEvidenceWeak');
   };
 
   const formatAvatarUrl = (url?: string) => {
@@ -90,6 +103,53 @@ const ChatMessage = memo(({
                     } />
                   </Suspense>
                 </div>
+              )}
+
+              {qualitySummary && (
+                <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/40 pt-3 text-xs text-text-muted">
+                  <span className="inline-flex items-center gap-1.5 font-medium text-text-main">
+                    <Gauge className="h-3.5 w-3.5 text-primary" />
+                    {t('chat.ragQuality')}: {formatScore(qualitySummary.overall_score)}
+                  </span>
+                  <span>
+                    {t('chat.ragEvidence')}: {formatEvidenceLabel(qualitySummary.evidence_label)}
+                  </span>
+                  {ragRunId && <span className="font-mono text-[10px] text-text-muted">#{String(ragRunId).slice(0, 8)}</span>}
+                </div>
+              )}
+
+              {traceSummary && (
+                <details className="mt-2 border-t border-border/40 pt-2 text-xs text-text-muted">
+                  <summary className="flex cursor-pointer list-none items-center gap-1.5 text-text-main hover:text-primary">
+                    <Route className="h-3.5 w-3.5 text-primary" />
+                    <span>{t('chat.ragTrace')}</span>
+                    <span className="text-text-muted">({traceSteps.length})</span>
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {plannedQueries.length > 0 && (
+                      <div>
+                        <p className="mb-1 font-medium text-text-main">{t('chat.ragPlannedQueries')}</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {plannedQueries.map((query, index) => (
+                            <span key={`${query}-${index}`} className="rounded-full bg-bg-surface px-2 py-1 text-[11px]">
+                              {query}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {traceSteps.length > 0 && (
+                      <div className="grid gap-1">
+                        {traceSteps.map((step, index) => (
+                          <div key={`${step.step_type}-${index}`} className="flex items-center justify-between gap-3">
+                            <span className="truncate">{step.step_type}</span>
+                            <span className="shrink-0">{step.status} · {step.duration_ms}ms</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </details>
               )}
 
               {/* Enhanced Sources Display */}
@@ -162,8 +222,8 @@ const ChatMessage = memo(({
           <button
             onClick={() => onCopy(msg.content, msg.id)}
             className="p-1 text-text-muted hover:text-text-main hover:bg-bg-surface rounded transition-colors"
-            title={t('common.copy') || 'Copy'}
-            aria-label={t('common.copy') || 'Copy'}
+            title={t('common.copy')}
+            aria-label={t('common.copy')}
           >
             {copiedMessageId === msg.id ? <Check className="w-3 h-3 text-green-500" /> : <Copy className="w-3 h-3" />}
           </button>
@@ -195,8 +255,8 @@ const ChatMessage = memo(({
             <button
               onClick={onRegenerate}
               className="p-1 text-text-muted hover:text-primary hover:bg-bg-surface rounded transition-colors"
-              title={t('chat.regenerate') || 'Regenerate'}
-              aria-label={t('chat.regenerate') || 'Regenerate'}
+              title={t('chat.regenerate')}
+              aria-label={t('chat.regenerate')}
             >
               <RefreshCw className="w-3 h-3" />
             </button>
@@ -205,8 +265,8 @@ const ChatMessage = memo(({
           <button
             onClick={() => onDelete(msg.id)}
             className="p-1 text-text-muted hover:text-red-500 hover:bg-bg-surface rounded transition-colors"
-            title={t('common.delete') || 'Delete'}
-            aria-label={t('common.delete') || 'Delete'}
+            title={t('common.delete')}
+            aria-label={t('common.delete')}
           >
             <Trash2 className="w-3 h-3" />
           </button>

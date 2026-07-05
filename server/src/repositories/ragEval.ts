@@ -1,0 +1,405 @@
+import { query, withTransaction } from '../lib/db';
+
+export interface RagEvalDatasetRow {
+  id: string;
+  user_id: string;
+  project_space_id?: string | null;
+  name: string;
+  description: string;
+  created_at: string;
+  updated_at: string;
+  cases?: RagEvalCaseRow[];
+  runs?: RagEvalRunRow[];
+}
+
+export interface RagEvalCaseRow {
+  id: string;
+  dataset_id: string;
+  user_id: string;
+  question: string;
+  expected_answer: string;
+  expected_keywords: string[];
+  expected_source_files: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RagEvalRunRow {
+  id: string;
+  dataset_id: string;
+  user_id: string;
+  status: 'completed' | 'failed' | 'partial';
+  case_count: number;
+  failed_count: number;
+  average_overall_score: number;
+  average_retrieval_score: number;
+  average_answer_score: number;
+  average_source_score: number;
+  average_keyword_score: number;
+  duration_ms: number;
+  created_at: string;
+  completed_at?: string | null;
+  results?: RagEvalResultRow[];
+}
+
+export interface RagEvalResultRow {
+  id: string;
+  run_id: string;
+  case_id?: string | null;
+  question: string;
+  status: 'success' | 'failed';
+  overall_score: number;
+  retrieval_score: number;
+  answer_score: number;
+  source_score: number;
+  keyword_score: number;
+  evidence_label: string;
+  matched_sources: unknown[];
+  trace_summary: Record<string, unknown>;
+  error_message: string;
+  created_at: string;
+}
+
+const datasetColumns = `
+  id,
+  user_id,
+  project_space_id,
+  name,
+  description,
+  created_at,
+  updated_at
+`;
+
+const caseColumns = `
+  id,
+  dataset_id,
+  user_id,
+  question,
+  expected_answer,
+  expected_keywords,
+  expected_source_files,
+  created_at,
+  updated_at
+`;
+
+const runColumns = `
+  id,
+  dataset_id,
+  user_id,
+  status,
+  case_count,
+  failed_count,
+  average_overall_score,
+  average_retrieval_score,
+  average_answer_score,
+  average_source_score,
+  average_keyword_score,
+  duration_ms,
+  created_at,
+  completed_at
+`;
+
+export const listRagEvalDatasetsForUser = async (userId: string): Promise<RagEvalDatasetRow[]> => {
+  const [{ rows: datasets }, { rows: cases }, { rows: runs }] = await Promise.all([
+    query<RagEvalDatasetRow>(
+      `select ${datasetColumns}
+       from rag_eval_datasets d
+       where d.user_id = $1
+       order by d.updated_at desc`,
+      [userId]
+    ),
+    query<RagEvalCaseRow>(
+      `select ${caseColumns}
+       from rag_eval_cases
+       where user_id = $1
+       order by created_at asc`,
+      [userId]
+    ),
+    query<RagEvalRunRow>(
+      `select ${runColumns}
+       from rag_eval_runs
+       where user_id = $1
+       order by created_at desc
+       limit 100`,
+      [userId]
+    ),
+  ]);
+
+  const casesByDataset = new Map<string, RagEvalCaseRow[]>();
+  cases.forEach((item) => {
+    casesByDataset.set(item.dataset_id, [...(casesByDataset.get(item.dataset_id) || []), item]);
+  });
+
+  const runsByDataset = new Map<string, RagEvalRunRow[]>();
+  runs.forEach((item) => {
+    runsByDataset.set(item.dataset_id, [...(runsByDataset.get(item.dataset_id) || []), item]);
+  });
+
+  return datasets.map((dataset) => ({
+    ...dataset,
+    cases: casesByDataset.get(dataset.id) || [],
+    runs: runsByDataset.get(dataset.id) || [],
+  }));
+};
+
+export const createRagEvalDatasetForUser = async (input: {
+  userId: string;
+  projectSpaceId?: string | null;
+  name: string;
+  description?: string;
+}) => {
+  const { rows } = await query<RagEvalDatasetRow>(
+    `insert into rag_eval_datasets (user_id, project_space_id, name, description)
+     values ($1, $2, $3, $4)
+     returning ${datasetColumns}`,
+    [input.userId, input.projectSpaceId || null, input.name, input.description || '']
+  );
+  return { ...rows[0], cases: [], runs: [] };
+};
+
+export const updateRagEvalDatasetForUser = async (input: {
+  userId: string;
+  datasetId: string;
+  projectSpaceId?: string | null;
+  name: string;
+  description?: string;
+}) => {
+  const { rows } = await query<RagEvalDatasetRow>(
+    `update rag_eval_datasets
+     set name = $3,
+         description = $4,
+         project_space_id = $5,
+         updated_at = now()
+     where id = $1 and user_id = $2
+     returning ${datasetColumns}`,
+    [
+      input.datasetId,
+      input.userId,
+      input.name,
+      input.description || '',
+      input.projectSpaceId || null,
+    ]
+  );
+  return rows[0] || null;
+};
+
+export const deleteRagEvalDatasetForUser = async (datasetId: string, userId: string) => {
+  const { rowCount } = await query(
+    `delete from rag_eval_datasets
+     where id = $1 and user_id = $2`,
+    [datasetId, userId]
+  );
+  return (rowCount ?? 0) > 0;
+};
+
+export const createRagEvalCaseForUser = async (input: {
+  userId: string;
+  datasetId: string;
+  question: string;
+  expectedAnswer?: string;
+  expectedKeywords?: string[];
+  expectedSourceFiles?: string[];
+  maxCases?: number;
+}) => {
+  const { rows } = await query<RagEvalCaseRow>(
+    `with scoped_dataset as (
+       select d.id, d.user_id,
+         (select count(*)::int from rag_eval_cases
+          where dataset_id = d.id) as case_count
+       from rag_eval_datasets d
+       where d.id = $1 and d.user_id = $2
+     )
+     insert into rag_eval_cases (
+       dataset_id,
+       user_id,
+       question,
+       expected_answer,
+       expected_keywords,
+       expected_source_files
+     )
+     select id, user_id, $3, $4, $5, $6
+     from scoped_dataset
+     where case_count < $7
+     returning ${caseColumns}`,
+    [
+      input.datasetId,
+      input.userId,
+      input.question,
+      input.expectedAnswer || '',
+      input.expectedKeywords || [],
+      input.expectedSourceFiles || [],
+      input.maxCases || 50,
+    ]
+  );
+  return rows[0] || null;
+};
+
+export const deleteRagEvalCaseForUser = async (caseId: string, userId: string) => {
+  const { rowCount } = await query(
+    `delete from rag_eval_cases
+     where id = $1 and user_id = $2`,
+    [caseId, userId]
+  );
+  return (rowCount ?? 0) > 0;
+};
+
+export const getRagEvalDatasetWithCasesForUser = async (datasetId: string, userId: string) => {
+  const { rows: datasets } = await query<RagEvalDatasetRow>(
+    `select ${datasetColumns}
+     from rag_eval_datasets d
+     where d.id = $1 and d.user_id = $2`,
+    [datasetId, userId]
+  );
+  const dataset = datasets[0];
+  if (!dataset) return null;
+
+  const { rows: cases } = await query<RagEvalCaseRow>(
+    `select ${caseColumns}
+     from rag_eval_cases
+     where dataset_id = $1 and user_id = $2
+     order by created_at asc`,
+    [datasetId, userId]
+  );
+
+  return { ...dataset, cases };
+};
+
+export const getRagEvalRunForUser = async (runId: string, userId: string) => {
+  const { rows: runs } = await query<RagEvalRunRow>(
+    `select ${runColumns}
+     from rag_eval_runs
+     where id = $1 and user_id = $2`,
+    [runId, userId]
+  );
+  const run = runs[0];
+  if (!run) return null;
+
+  const { rows: results } = await query<RagEvalResultRow>(
+    `select *
+     from rag_eval_results
+     where run_id = $1
+     order by created_at asc`,
+    [runId]
+  );
+
+  return { ...run, results };
+};
+
+export const insertRagEvalRunWithResults = async (input: {
+  userId: string;
+  datasetId: string;
+  output: {
+    case_count: number;
+    failed_count: number;
+    duration_ms: number;
+    average_overall_score: number;
+    average_retrieval_score: number;
+    average_answer_score: number;
+    average_source_score: number;
+    average_keyword_score: number;
+    results: Array<{
+      case_id: string;
+      question: string;
+      status: 'success' | 'failed';
+      overall_score: number;
+      retrieval_score: number;
+      answer_score: number;
+      source_score: number;
+      keyword_score: number;
+      evidence_label: string;
+      matched_sources: unknown[];
+      trace_summary: Record<string, unknown>;
+      error_message: string;
+    }>;
+  };
+}) => {
+  return withTransaction(async (client) => {
+    const runStatus = input.output.failed_count === 0
+      ? 'completed'
+      : input.output.failed_count === input.output.case_count
+        ? 'failed'
+        : 'partial';
+
+    const { rows: runRows } = await client.query<RagEvalRunRow>(
+      `insert into rag_eval_runs (
+         dataset_id,
+         user_id,
+         status,
+         case_count,
+         failed_count,
+         average_overall_score,
+         average_retrieval_score,
+         average_answer_score,
+         average_source_score,
+         average_keyword_score,
+         duration_ms,
+         completed_at
+       )
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+       returning ${runColumns}`,
+      [
+        input.datasetId,
+        input.userId,
+        runStatus,
+        input.output.case_count,
+        input.output.failed_count,
+        input.output.average_overall_score,
+        input.output.average_retrieval_score,
+        input.output.average_answer_score,
+        input.output.average_source_score,
+        input.output.average_keyword_score,
+        input.output.duration_ms,
+      ]
+    );
+
+    const run = runRows[0];
+    const resultRows: RagEvalResultRow[] = [];
+
+    for (const result of input.output.results) {
+      const { rows } = await client.query<RagEvalResultRow>(
+        `insert into rag_eval_results (
+           run_id,
+           case_id,
+           question,
+           status,
+           overall_score,
+           retrieval_score,
+           answer_score,
+           source_score,
+           keyword_score,
+           evidence_label,
+           matched_sources,
+           trace_summary,
+           error_message
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         returning *`,
+        [
+          run.id,
+          result.case_id || null,
+          result.question,
+          result.status,
+          result.overall_score,
+          result.retrieval_score,
+          result.answer_score,
+          result.source_score,
+          result.keyword_score,
+          result.evidence_label,
+          JSON.stringify(result.matched_sources || []),
+          JSON.stringify(result.trace_summary || {}),
+          result.error_message || '',
+        ]
+      );
+      resultRows.push(rows[0]);
+    }
+
+    await client.query(
+      `update rag_eval_datasets
+       set updated_at = now()
+       where id = $1 and user_id = $2`,
+      [input.datasetId, input.userId]
+    );
+
+    return { ...run, results: resultRows };
+  });
+};

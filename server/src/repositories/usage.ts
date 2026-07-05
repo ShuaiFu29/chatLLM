@@ -1,3 +1,4 @@
+import { ChatSource, RagQualitySummary, RagTraceStep } from '../lib/chatSources';
 import { query } from '../lib/db';
 
 export interface UsageSummary {
@@ -48,6 +49,20 @@ export interface UsageConversationMessage {
   source_count: number;
   source_filenames: string[];
   created_at: string;
+}
+
+export interface UsageRagRun {
+  id: string;
+  assistant_message_id?: string | null;
+  mode: string;
+  query: string;
+  planned_queries: string[];
+  trace_steps: RagTraceStep[];
+  quality: Partial<RagQualitySummary>;
+  retrieved_sources: ChatSource[];
+  status: 'success' | 'partial' | 'failed' | string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface UsageFileQueueSummary {
@@ -115,6 +130,13 @@ interface UsageConversationMessageRow extends Omit<UsageConversationMessage, 'co
   source_filenames: string[] | null;
 }
 
+interface UsageRagRunRow extends Omit<UsageRagRun, 'planned_queries' | 'trace_steps' | 'quality' | 'retrieved_sources'> {
+  planned_queries: string[] | string | null;
+  trace_steps: RagTraceStep[] | string | null;
+  quality: Partial<RagQualitySummary> | string | null;
+  retrieved_sources: ChatSource[] | string | null;
+}
+
 interface UsageFileQueueSummaryRow {
   total: number | string | null;
   uploading: number | string | null;
@@ -134,6 +156,30 @@ interface UsageFileQueueItemRow extends Omit<UsageFileQueueItem, 'progress' | 'a
 
 const toCount = (value: number | string | null | undefined) => Number(value ?? 0);
 
+const toJsonArray = <T>(value: T[] | string | null | undefined): T[] => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const toJsonObject = <T extends Record<string, unknown>>(value: T | string | null | undefined): T => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {} as T;
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : ({} as T);
+  } catch {
+    return {} as T;
+  }
+};
+
 const mapUsageConversation = (row: UsageConversationRow): UsageConversation => ({
   ...row,
   message_count: toCount(row.message_count),
@@ -147,6 +193,14 @@ const mapUsageMessage = (row: UsageConversationMessageRow): UsageConversationMes
   content_length: toCount(row.content_length),
   source_count: toCount(row.source_count),
   source_filenames: row.source_filenames || [],
+});
+
+const mapUsageRagRun = (row: UsageRagRunRow): UsageRagRun => ({
+  ...row,
+  planned_queries: toJsonArray<string>(row.planned_queries),
+  trace_steps: toJsonArray<RagTraceStep>(row.trace_steps),
+  quality: toJsonObject<Partial<RagQualitySummary>>(row.quality),
+  retrieved_sources: toJsonArray<ChatSource>(row.retrieved_sources),
 });
 
 const mapUsageFileQueueItem = (row: UsageFileQueueItemRow): UsageFileQueueItem => ({
@@ -321,6 +375,35 @@ export const listUsageConversationMessagesForUser = async (
   );
 
   return rows.map(mapUsageMessage);
+};
+
+export const listUsageRagRunsForConversation = async (
+  conversationId: string,
+  userId: string,
+  limit = 50
+): Promise<UsageRagRun[]> => {
+  const { rows } = await query<UsageRagRunRow>(
+    `select
+       rr.id,
+       rr.assistant_message_id,
+       rr.mode,
+       rr.query,
+       rr.planned_queries,
+       rr.trace_steps,
+       rr.quality,
+       rr.retrieved_sources,
+       rr.status,
+       rr.created_at,
+       rr.updated_at
+     from rag_runs rr
+     join conversations c on c.id = rr.conversation_id
+     where rr.conversation_id = $1 and c.user_id = $2
+     order by rr.created_at desc
+     limit $3`,
+    [conversationId, userId, limit]
+  );
+
+  return rows.map(mapUsageRagRun);
 };
 
 export const getFileQueueSummaryForUser = async (userId: string, limit = 25): Promise<UsageFileQueue> => {

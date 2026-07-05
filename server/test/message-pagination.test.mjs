@@ -69,8 +69,8 @@ test('chat message listing uses cursor pagination and exposes page metadata head
   const storeSource = readSource('../client/src/stores/useChatStore.ts');
 
   assert.match(repositorySource, /listMessagesForConversationPage/);
-  assert.match(repositorySource, /\(created_at,\s*id\)\s*<\s*\(\$/);
-  assert.match(repositorySource, /order by created_at desc,\s*id desc/i);
+  assert.match(repositorySource, /\((?:m\.)?created_at,\s*(?:m\.)?id\)\s*<\s*\(\$/);
+  assert.match(repositorySource, /order by (?:m\.)?created_at desc,\s*(?:m\.)?id desc/i);
   assert.match(repositorySource, /limit \$\d+/);
   assert.match(repositorySource, /hasMore/);
   assert.match(repositorySource, /\.reverse\(\)/);

@@ -28,6 +28,11 @@ export interface Message {
   role: 'user' | 'assistant' | 'system';
   content: string;
   created_at: string;
+  rag_run_id?: string | null;
+  ragRunId?: string | null;
+  rag_trace?: RagTraceSummary | null;
+  traceSummary?: RagTraceSummary | null;
+  qualitySummary?: RagQualitySummary | null;
   sources?: {
     chunk_id?: string;
     file_id?: string;
@@ -36,6 +41,29 @@ export interface Message {
     similarity: number;
     content: string;
   }[];
+}
+
+export interface RagTraceStep {
+  step_type: string;
+  status: string;
+  duration_ms: number;
+  input?: Record<string, unknown>;
+  output?: Record<string, unknown>;
+}
+
+export interface RagQualitySummary {
+  retrieval_score: number;
+  citation_score: number;
+  evidence_score: number;
+  overall_score: number;
+  evidence_label: string;
+}
+
+export interface RagTraceSummary {
+  mode: string;
+  planned_queries: string[];
+  trace_steps: RagTraceStep[];
+  quality: RagQualitySummary;
 }
 
 export interface ConversationComparison {
@@ -714,6 +742,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     sources: data.sources
+                  };
+                  updateMessages(updatedMsgs);
+                }
+              }
+
+              if (data.ragRunId || data.traceSummary || data.qualitySummary) {
+                const currentMsgs = get().messages;
+                const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
+                if (lastMsgIndex !== -1) {
+                  const updatedMsgs = [...currentMsgs];
+                  updatedMsgs[lastMsgIndex] = {
+                    ...updatedMsgs[lastMsgIndex],
+                    ragRunId: data.ragRunId || updatedMsgs[lastMsgIndex].ragRunId,
+                    traceSummary: data.traceSummary || updatedMsgs[lastMsgIndex].traceSummary,
+                    qualitySummary: data.qualitySummary || updatedMsgs[lastMsgIndex].qualitySummary,
                   };
                   updateMessages(updatedMsgs);
                 }

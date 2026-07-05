@@ -7,7 +7,7 @@
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "npm run build && node --test test/auth-middleware.test.mjs test/chat-input.test.mjs test/chat-sources.test.mjs test/chat-workbench-upgrades.test.mjs test/conversation-management.test.mjs test/env.test.mjs test/file-queue-status.test.mjs test/http-middleware.test.mjs test/jwt.test.mjs test/message-pagination.test.mjs test/migrations.test.mjs test/platform-stability.test.mjs test/project-space-delete.test.mjs test/project-space-schema.test.mjs test/rate-limit.test.mjs test/request-limits.test.mjs test/search-input.test.mjs test/upload-document-content.test.mjs test/upload-input.test.mjs test/upload-limits.test.mjs test/usage-tracking.test.mjs"
+    "test": "npm run build && node --test test/auth-middleware.test.mjs test/chat-input.test.mjs test/chat-sources.test.mjs test/chat-workbench-upgrades.test.mjs test/conversation-management.test.mjs test/env.test.mjs test/file-queue-status.test.mjs test/http-middleware.test.mjs test/jwt.test.mjs test/message-pagination.test.mjs test/migrations.test.mjs test/platform-stability.test.mjs test/project-space-delete.test.mjs test/project-space-schema.test.mjs test/rag-eval.test.mjs test/rag-trace-eval.test.mjs test/rate-limit.test.mjs test/request-limits.test.mjs test/search-input.test.mjs test/upload-document-content.test.mjs test/upload-input.test.mjs test/upload-limits.test.mjs test/usage-tracking.test.mjs"
   },
   "keywords": [],
   "author": "",

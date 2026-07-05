@@ -1,11 +1,11 @@
 import { Request, Response } from 'express';
 import { openai } from '../lib/openai';
-import { buildChatSources, ChatSource } from '../lib/chatSources';
+import { buildChatSources, ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { normalizeChatMessageContent } from '../lib/chatInput';
 import { normalizeMessagePageQuery } from '../lib/messagePagination';
 import { normalizeSearchQuery, readSearchFilters } from '../lib/searchInput';
 import { tryAcquireChatStreamSlot } from '../lib/concurrencyGate';
-import { retrieveRagDocuments } from '../lib/ragClient';
+import { AgenticRagResponse, retrieveAgenticRagDocuments } from '../lib/ragClient';
 import {
   compareConversationsForUser,
   createConversationForUser,
@@ -24,6 +24,7 @@ import {
   listRecentMessages,
   searchMessagesForUser,
 } from '../repositories/messages';
+import { insertRagRunForMessage } from '../repositories/ragRuns';
 import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
@@ -332,23 +333,37 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     let contextText = '';
     let assistantSources: ChatSource[] = [];
+    let agenticRagRun: AgenticRagResponse | null = null;
+    let traceSummary: RagTraceSummary | null = null;
 
     if (enableRag) {
       try {
-        const documents = await retrieveRagDocuments({
+        agenticRagRun = await retrieveAgenticRagDocuments({
           query: content,
           user_id: req.user.id,
           project_space_id: conversation.project_space_id || undefined,
           limit: 10,
           threshold: 0.1,
         });
+        const documents = agenticRagRun.results || [];
+        traceSummary = {
+          mode: agenticRagRun.mode,
+          planned_queries: agenticRagRun.planned_queries || [],
+          trace_steps: agenticRagRun.trace_steps || [],
+          quality: agenticRagRun.quality,
+        };
 
         if (documents && documents.length > 0) {
           contextText = documents.map((doc) => doc.content || '').join('\n---\n');
 
           assistantSources = buildChatSources(documents);
-          res.write(`data: ${JSON.stringify({ sources: assistantSources })}\n\n`);
         }
+        res.write(`data: ${JSON.stringify({
+          ragRunId: agenticRagRun.run_id,
+          sources: assistantSources,
+          traceSummary,
+          qualitySummary: agenticRagRun.quality,
+        })}\n\n`);
       } catch (error) {
         console.warn('[Chat] RAG retrieval failed; continuing without context:', error);
         res.write(`data: ${JSON.stringify({ rag_warning: 'Knowledge retrieval failed; answering without retrieved context.' })}\n\n`);
@@ -406,6 +421,23 @@ ${originalContent}`;
 
     if (fullContent) {
       const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent, assistantSources);
+      if (agenticRagRun) {
+        insertRagRunForMessage({
+          runId: agenticRagRun.run_id,
+          userId: req.user.id,
+          conversationId,
+          assistantMessageId: assistantMessage.id,
+          mode: agenticRagRun.mode,
+          query: content,
+          plannedQueries: agenticRagRun.planned_queries || [],
+          traceSteps: agenticRagRun.trace_steps || [],
+          quality: agenticRagRun.quality,
+          retrievedSources: assistantSources,
+          status: traceSummary?.quality?.evidence_label === 'weak' ? 'partial' : 'success',
+        }).catch((error) => {
+          console.warn('[Chat] Failed to persist RAG trace:', error);
+        });
+      }
       res.write(`data: ${JSON.stringify({ assistantMessageId: assistantMessage.id })}\n\n`);
     }
 

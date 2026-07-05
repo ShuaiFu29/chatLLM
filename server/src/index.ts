@@ -9,6 +9,7 @@ import searchRoutes from './routes/search';
 import projectSpaceRoutes from './routes/projectSpaces';
 import usageRoutes from './routes/usage';
 import promptTemplateRoutes from './routes/promptTemplates';
+import ragEvalRoutes from './routes/ragEval';
 import { fileQueue } from './services/fileQueue';
 import { maintenanceService } from './services/maintenance';
 import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
@@ -70,6 +71,12 @@ app.use('/api/project-spaces', projectSpaceRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/usage', usageRoutes);
 app.use('/api/prompt-templates', promptTemplateRoutes);
+app.use('/api/rag-eval', createRateLimit({
+  keyPrefix: 'rag-eval',
+  windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
+  max: serverEnv.RAG_EVAL_RATE_LIMIT_MAX,
+  message: 'Too many RAG evaluation requests',
+}), ragEvalRoutes);
 app.use('/api/chat', createRateLimit({
   keyPrefix: 'chat',
   windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,

@@ -5,12 +5,15 @@ import {
   getUsageSummaryForUser,
   listUsageConversationMessagesForUser,
   listUsageConversationsForUser,
+  listUsageRagRunsForConversation,
 } from '../repositories/usage';
 
 const DEFAULT_USAGE_CONVERSATION_LIMIT = 100;
 const MAX_USAGE_CONVERSATION_LIMIT = 500;
 const DEFAULT_USAGE_MESSAGE_LIMIT = 500;
 const MAX_USAGE_MESSAGE_LIMIT = 1000;
+const DEFAULT_USAGE_RAG_RUN_LIMIT = 50;
+const MAX_USAGE_RAG_RUN_LIMIT = 200;
 const DEFAULT_USAGE_FILE_LIMIT = 25;
 const MAX_USAGE_FILE_LIMIT = 100;
 
@@ -53,13 +56,22 @@ export const getUsageConversation = async (req: Request, res: Response) => {
     DEFAULT_USAGE_MESSAGE_LIMIT,
     MAX_USAGE_MESSAGE_LIMIT
   );
+  const ragRunLimit = parseBoundedLimit(
+    req.query.ragRunLimit,
+    DEFAULT_USAGE_RAG_RUN_LIMIT,
+    MAX_USAGE_RAG_RUN_LIMIT
+  );
 
   try {
     const conversation = await findUsageConversationForUser(conversationId, req.user.id);
     if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
 
-    const messages = await listUsageConversationMessagesForUser(conversationId, req.user.id, messageLimit);
-    res.json({ conversation, messages });
+    const [messages, ragRuns] = await Promise.all([
+      listUsageConversationMessagesForUser(conversationId, req.user.id, messageLimit),
+      listUsageRagRunsForConversation(conversationId, req.user.id, ragRunLimit),
+    ]);
+
+    res.json({ conversation, messages, ragRuns });
   } catch (error) {
     console.error('Error fetching usage conversation:', error);
     res.status(500).json({ error: 'Failed to fetch usage conversation' });

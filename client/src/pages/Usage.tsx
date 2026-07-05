@@ -55,6 +55,40 @@ interface UsageConversationMessage {
   created_at: string;
 }
 
+interface UsageRagQuality {
+  retrieval_score?: number;
+  citation_score?: number;
+  evidence_score?: number;
+  overall_score?: number;
+  evidence_label?: string;
+}
+
+interface UsageRagTraceStep {
+  step_type: string;
+  status: string;
+  duration_ms?: number;
+}
+
+interface UsageRagSource {
+  filename: string;
+  chunk_index?: number;
+  similarity?: number;
+}
+
+interface UsageRagRun {
+  id: string;
+  assistant_message_id?: string | null;
+  mode: string;
+  query: string;
+  planned_queries: string[];
+  trace_steps: UsageRagTraceStep[];
+  quality: UsageRagQuality;
+  retrieved_sources: UsageRagSource[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
 interface UsageOverviewResponse {
   summary: UsageSummary;
   conversations: UsageConversation[];
@@ -63,6 +97,7 @@ interface UsageOverviewResponse {
 interface UsageConversationResponse {
   conversation: UsageConversation;
   messages: UsageConversationMessage[];
+  ragRuns: UsageRagRun[];
 }
 
 interface UsageFileQueueSummary {
@@ -147,6 +182,16 @@ export default function UsagePage() {
 
   const formatNumber = useCallback((value: number) => numberFormatter.format(value || 0), [numberFormatter]);
 
+  const formatScore = useCallback((value?: number) => {
+    if (typeof value !== 'number' || Number.isNaN(value)) return t('usage.notAvailable');
+    return `${Math.round(value * 100)}%`;
+  }, [t]);
+
+  const formatDuration = useCallback((value?: number) => {
+    if (typeof value !== 'number' || Number.isNaN(value)) return t('usage.notAvailable');
+    return t('usage.durationMs', { value: formatNumber(Math.round(value)) });
+  }, [formatNumber, t]);
+
   const formatFilename = useCallback((filename: string) => {
     return filename.replace(/\.(?:md|markdown)$/i, '').trim();
   }, []);
@@ -209,6 +254,7 @@ export default function UsagePage() {
   const activeConversation = conversationTrace?.conversation
     || conversations.find((conversation) => conversation.id === selectedConversationId)
     || null;
+  const ragRuns = conversationTrace?.ragRuns || [];
 
   const statCards = [
     {
@@ -623,6 +669,92 @@ export default function UsagePage() {
                 <p className="text-text-muted">{t('usage.sources')}</p>
                 <p className="mt-1 text-text-main">{formatNumber(activeConversation.source_count)}</p>
               </div>
+            </div>
+
+            <div>
+              <h3 className="mb-3 text-sm font-semibold text-text-muted">{t('usage.ragRuns')}</h3>
+              {ragRuns.length === 0 ? (
+                <p className="rounded-lg border border-border bg-bg-base p-4 text-sm text-text-muted">{t('usage.noRagRuns')}</p>
+              ) : (
+                <div className="space-y-3">
+                  {ragRuns.map((run) => {
+                    const plannedQueries = run.planned_queries || [];
+                    const traceSteps = run.trace_steps || [];
+                    const retrievedSources = run.retrieved_sources || [];
+
+                    return (
+                      <div key={run.id} className="rounded-lg border border-border bg-bg-base p-3">
+                        <div className="mb-3 flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="rounded border border-primary/30 bg-primary/10 px-2 py-0.5 text-[11px] uppercase text-primary">
+                                {run.mode}
+                              </span>
+                              <span className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted">
+                                {run.status}
+                              </span>
+                              {run.quality.evidence_label && (
+                                <span className="rounded border border-border px-2 py-0.5 text-[11px] text-text-muted">
+                                  {t('usage.evidence')}: {run.quality.evidence_label}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-2 break-words text-sm text-text-main">{run.query}</p>
+                            <p className="mt-1 text-[11px] text-text-muted">{formatDateTime(run.created_at)}</p>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-xs md:w-56">
+                            <div className="rounded border border-border bg-bg-sidebar px-2 py-1">
+                              <p className="text-text-muted">{t('usage.quality')}</p>
+                              <p className="font-semibold text-text-main">{formatScore(run.quality.overall_score)}</p>
+                            </div>
+                            <div className="rounded border border-border bg-bg-sidebar px-2 py-1">
+                              <p className="text-text-muted">{t('usage.retrievedSources')}</p>
+                              <p className="font-semibold text-text-main">{formatNumber(retrievedSources.length)}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid gap-3 lg:grid-cols-2">
+                          <div>
+                            <p className="mb-2 text-xs font-medium text-text-muted">{t('usage.plannedQueries')}</p>
+                            {plannedQueries.length === 0 ? (
+                              <p className="rounded border border-border bg-bg-sidebar p-2 text-xs text-text-muted">{t('usage.notAvailable')}</p>
+                            ) : (
+                              <div className="flex flex-wrap gap-2">
+                                {plannedQueries.map((query, index) => (
+                                  <span key={`${run.id}-query-${index}`} className="max-w-full truncate rounded border border-border bg-bg-sidebar px-2 py-1 text-xs text-text-muted">
+                                    {query}
+                                  </span>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+
+                          <div>
+                            <p className="mb-2 text-xs font-medium text-text-muted">{t('usage.ragRunTrace')}</p>
+                            {traceSteps.length === 0 ? (
+                              <p className="rounded border border-border bg-bg-sidebar p-2 text-xs text-text-muted">{t('usage.notAvailable')}</p>
+                            ) : (
+                              <div className="space-y-2">
+                                {traceSteps.map((step, index) => (
+                                  <div key={`${run.id}-step-${index}`} className="flex items-center justify-between gap-3 rounded border border-border bg-bg-sidebar px-2 py-1 text-xs">
+                                    <span className="min-w-0 truncate text-text-main">
+                                      {t('usage.traceSteps')} · {step.step_type}
+                                    </span>
+                                    <span className="shrink-0 text-text-muted">
+                                      {step.status} · {formatDuration(step.duration_ms)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
             <div>

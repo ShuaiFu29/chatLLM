@@ -3,6 +3,9 @@ import { RequestHandler } from 'express';
 type RagStatus = 'ok' | 'error';
 type DatabaseStatus = 'ok' | 'error';
 type ChatStreamStatus = 'completed' | 'failed' | 'rejected';
+type HttpStatusFamily = '1xx' | '2xx' | '3xx' | '4xx' | '5xx' | 'other';
+
+const HTTP_STATUS_FAMILIES: HttpStatusFamily[] = ['1xx', '2xx', '3xx', '4xx', '5xx', 'other'];
 
 interface RequestContext {
   startedAt: number;
@@ -14,12 +17,24 @@ interface DatabasePoolStats {
   waiting: number;
 }
 
+const getHttpStatusFamily = (statusCode: number): HttpStatusFamily => {
+  if (statusCode >= 100 && statusCode < 600) {
+    return `${Math.floor(statusCode / 100)}xx` as HttpStatusFamily;
+  }
+
+  return 'other';
+};
+
 class MetricsRegistry {
   private startedAt = Date.now();
   private httpRequestsTotal = 0;
   private httpErrorsTotal = 0;
   private httpActiveRequests = 0;
   private httpDurationMsTotal = 0;
+  private httpRequestsByStatusFamily = new Map<HttpStatusFamily, number>(
+    HTTP_STATUS_FAMILIES.map((family) => [family, 0])
+  );
+  private rateLimitRejectionsByScope = new Map<string, number>();
   private databaseQueriesTotal = 0;
   private databaseQueryFailuresTotal = 0;
   private databaseQueryDurationMsTotal = 0;
@@ -44,6 +59,11 @@ class MetricsRegistry {
     this.httpRequestsTotal += 1;
     if (statusCode >= 500) this.httpErrorsTotal += 1;
     this.httpDurationMsTotal += Date.now() - context.startedAt;
+    const family = getHttpStatusFamily(statusCode);
+    this.httpRequestsByStatusFamily.set(
+      family,
+      (this.httpRequestsByStatusFamily.get(family) || 0) + 1
+    );
   }
 
   setDatabasePoolStatsProvider(provider: () => DatabasePoolStats) {
@@ -81,6 +101,13 @@ class MetricsRegistry {
     this.ragCircuitOpenTotal += 1;
   }
 
+  recordRateLimitRejected(scope: string) {
+    this.rateLimitRejectionsByScope.set(
+      scope,
+      (this.rateLimitRejectionsByScope.get(scope) || 0) + 1
+    );
+  }
+
   renderPrometheus() {
     const uptimeSeconds = Math.max((Date.now() - this.startedAt) / 1000, 0);
     const databasePoolStats = this.databasePoolStatsProvider
@@ -93,6 +120,16 @@ class MetricsRegistry {
       '# HELP chatllm_http_requests_total Total HTTP requests.',
       '# TYPE chatllm_http_requests_total counter',
       `chatllm_http_requests_total ${this.httpRequestsTotal}`,
+      '# HELP chatllm_http_requests_by_status_family_total Total HTTP requests by status code family.',
+      '# TYPE chatllm_http_requests_by_status_family_total counter',
+      ...HTTP_STATUS_FAMILIES.map((family) => (
+        `chatllm_http_requests_by_status_family_total{status_family="${family}"} ${this.httpRequestsByStatusFamily.get(family) || 0}`
+      )),
+      '# HELP chatllm_rate_limit_rejections_total Total HTTP requests rejected by route rate limit scope.',
+      '# TYPE chatllm_rate_limit_rejections_total counter',
+      ...Array.from(this.rateLimitRejectionsByScope.entries()).map(([scope, count]) => (
+        `chatllm_rate_limit_rejections_total{scope="${scope}"} ${count}`
+      )),
       '# HELP chatllm_http_errors_total Total HTTP responses with status >= 500.',
       '# TYPE chatllm_http_errors_total counter',
       `chatllm_http_errors_total ${this.httpErrorsTotal}`,

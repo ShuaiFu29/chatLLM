@@ -49,6 +49,7 @@ test('server env exposes runtime stability knobs', () => {
     RAG_CLEANUP_TIMEOUT_MS: '30000',
     RAG_CIRCUIT_FAILURE_THRESHOLD: '4',
     RAG_CIRCUIT_RESET_MS: '45000',
+    RAG_EVAL_RATE_LIMIT_MAX: '12',
     CHAT_STREAM_MAX_CONCURRENT: '25',
     CHAT_STREAM_MAX_CONCURRENT_PER_USER: '5',
     MAINTENANCE_INTERVAL_MS: '600000',
@@ -76,6 +77,7 @@ test('server env exposes runtime stability knobs', () => {
   assert.equal(env.RAG_CLEANUP_TIMEOUT_MS, 30000);
   assert.equal(env.RAG_CIRCUIT_FAILURE_THRESHOLD, 4);
   assert.equal(env.RAG_CIRCUIT_RESET_MS, 45000);
+  assert.equal(env.RAG_EVAL_RATE_LIMIT_MAX, 12);
   assert.equal(env.CHAT_STREAM_MAX_CONCURRENT, 25);
   assert.equal(env.CHAT_STREAM_MAX_CONCURRENT_PER_USER, 5);
   assert.equal(env.MAINTENANCE_INTERVAL_MS, 600000);
@@ -110,6 +112,8 @@ test('server exposes live and ready health probes with request tracing and shutd
   assert.match(indexSource, /requestContextMiddleware/);
   assert.match(indexSource, /createRateLimit/);
   assert.match(indexSource, /serverEnv\.CORS_ALLOWED_ORIGINS/);
+  assert.match(indexSource, /keyPrefix:\s*'rag-eval'/);
+  assert.match(indexSource, /max:\s*serverEnv\.RAG_EVAL_RATE_LIMIT_MAX/);
   assert.match(indexSource, /app\.get\('\/health\/live', liveHealthHandler\)/);
   assert.match(indexSource, /app\.get\('\/health\/ready', readyHealthHandler\)/);
   assert.match(indexSource, /installGracefulShutdown/);
@@ -190,6 +194,7 @@ test('message search has large-data index support and remains bounded', () => {
 test('server exposes lightweight metrics for high-concurrency operations', () => {
   const indexSource = readSource('src/index.ts');
   const requestContextSource = readOptionalSource('src/middleware/requestContext.ts');
+  const rateLimitSource = readOptionalSource('src/middleware/rateLimit.ts');
   const metricsSource = readOptionalSource('src/lib/metrics.ts');
 
   assert.match(indexSource, /metricsHandler/);
@@ -200,6 +205,15 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
   assert.match(requestContextSource, /res\.on\('close'/);
   assert.match(requestContextSource, /recorded/);
   assert.match(metricsSource, /chatllm_http_requests_total/);
+  assert.match(metricsSource, /chatllm_http_requests_by_status_family_total/);
+  assert.match(metricsSource, /status_family="\$\{family\}"/);
+  assert.match(metricsSource, /2xx/);
+  assert.match(metricsSource, /3xx/);
+  assert.match(metricsSource, /4xx/);
+  assert.match(metricsSource, /5xx/);
+  assert.match(rateLimitSource, /recordRateLimitRejected/);
+  assert.match(metricsSource, /chatllm_rate_limit_rejections_total/);
+  assert.match(metricsSource, /scope="\$\{scope\}"/);
   assert.match(metricsSource, /chatllm_database_queries_total/);
   assert.match(metricsSource, /chatllm_database_query_failures_total/);
   assert.match(metricsSource, /chatllm_database_slow_queries_total/);
@@ -228,12 +242,33 @@ test('RAG retrieval uses a circuit-breaker client instead of inline axios calls'
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
 
   assert.doesNotMatch(chatSource, /axios\.post\(`\$\{serverEnv\.RAG_SERVICE_URL\}\/retrieve`/);
-  assert.match(chatSource, /retrieveRagDocuments/);
+  assert.match(chatSource, /retrieveAgenticRagDocuments/);
+  assert.match(ragClientSource, /\/agentic-retrieve/);
   assert.match(ragClientSource, /RAG_RETRIEVE_TIMEOUT_MS/);
   assert.match(ragClientSource, /RAG_CIRCUIT_FAILURE_THRESHOLD/);
   assert.match(ragClientSource, /RAG_CIRCUIT_RESET_MS/);
   assert.match(ragClientSource, /recordRagRetrieve/);
   assert.match(ragClientSource, /recordRagCircuitOpen/);
+});
+
+test('RAG evaluation uses the shared circuit breaker and metrics', () => {
+  const ragEvalControllerSource = readSource('src/controllers/ragEval.ts');
+  const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
+
+  assert.doesNotMatch(ragEvalControllerSource, /axios\.post/);
+  assert.match(ragEvalControllerSource, /runRagEvaluation/);
+  assert.match(
+    ragClientSource,
+    /const postRagService = async <T>[\s\S]*?if \(isCircuitOpen\(\)\) \{[\s\S]*?metrics\.recordRagCircuitOpen\(\);[\s\S]*?throw new Error\('RAG circuit is open'\);[\s\S]*?axios\.post/
+  );
+  assert.match(
+    ragClientSource,
+    /const postRagService = async <T>[\s\S]*?metrics\.recordRagRetrieve\('ok', Date\.now\(\) - startedAt\);[\s\S]*?catch \(error\) \{[\s\S]*?consecutiveFailures \+= 1;[\s\S]*?metrics\.recordRagRetrieve\('error', Date\.now\(\) - startedAt\);[\s\S]*?RAG_CIRCUIT_FAILURE_THRESHOLD/
+  );
+  assert.match(
+    ragClientSource,
+    /export const runRagEvaluation[\s\S]*?postRagService<RagEvalRunResponse>\(\s*'\/eval\/run'/
+  );
 });
 
 test('RAG cleanup uses the shared client and configurable timeout', () => {

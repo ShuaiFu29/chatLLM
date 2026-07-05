@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -15,6 +15,8 @@ const knowledgePageSource = readFileSync(path.join(clientDir, 'src/pages/Knowled
 const profilePageSource = readFileSync(path.join(clientDir, 'src/pages/Profile.tsx'), 'utf8');
 const searchDialogSource = readFileSync(path.join(clientDir, 'src/components/SearchDialog.tsx'), 'utf8');
 const promptTemplatePageSource = readFileSync(path.join(clientDir, 'src/pages/PromptTemplates.tsx'), 'utf8');
+const ragEvaluationPagePath = path.join(clientDir, 'src/pages/RagEvaluation.tsx');
+const ragEvaluationPageSource = readFileSync(ragEvaluationPagePath, 'utf8');
 const usagePageSource = readFileSync(path.join(clientDir, 'src/pages/Usage.tsx'), 'utf8');
 const modalSource = readFileSync(path.join(clientDir, 'src/components/Modal.tsx'), 'utf8');
 const chatMessageSource = readFileSync(path.join(clientDir, 'src/components/ChatMessage.tsx'), 'utf8');
@@ -45,6 +47,45 @@ function findDuplicateTopLevelKeys(source) {
   return [...duplicates];
 }
 
+function listSourceFiles(dir) {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) return listSourceFiles(fullPath);
+    return /\.(?:ts|tsx|js|jsx)$/.test(entry.name) ? [fullPath] : [];
+  });
+}
+
+function getLocaleValue(locale, dottedKey) {
+  return dottedKey.split('.').reduce((value, segment) => {
+    if (value && typeof value === 'object' && segment in value) {
+      return value[segment];
+    }
+    return undefined;
+  }, locale);
+}
+
+function collectStaticTranslationKeys(source) {
+  const keys = new Set();
+  const keyPattern = /(?:\bt|i18n\.t)\(\s*(['"])([A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9_-]+)+)\1/g;
+  let match;
+
+  while ((match = keyPattern.exec(source)) !== null) {
+    keys.add(match[2]);
+  }
+
+  return keys;
+}
+
+function findHardcodedTranslationFallbacks(source, sourcePath) {
+  return source
+    .split(/\r?\n/)
+    .flatMap((line, index) => (
+      /(?:\bt|i18n\.t)\(\s*['"][A-Za-z][A-Za-z0-9]*(?:\.[A-Za-z0-9_-]+)+['"][^)]*\)\s*\|\|\s*['"]/.test(line)
+        ? [`${path.relative(clientDir, sourcePath)}:${index + 1}`]
+        : []
+    ));
+}
+
 test('locale files do not contain duplicate top-level namespaces', () => {
   for (const localeFile of localeFiles) {
     const source = readFileSync(localeFile.filePath, 'utf8');
@@ -54,6 +95,46 @@ test('locale files do not contain duplicate top-level namespaces', () => {
       `${localeFile.locale}.json should not define the same namespace twice`,
     );
   }
+});
+
+test('every static translation key used by the client exists in every locale', () => {
+  const sourceFiles = listSourceFiles(path.join(clientDir, 'src'));
+  const keyReferences = new Map();
+
+  for (const sourceFile of sourceFiles) {
+    const source = readFileSync(sourceFile, 'utf8');
+    for (const key of collectStaticTranslationKeys(source)) {
+      if (!keyReferences.has(key)) keyReferences.set(key, []);
+      keyReferences.get(key).push(path.relative(clientDir, sourceFile));
+    }
+  }
+
+  assert.notEqual(keyReferences.size, 0, 'the client should use static translation keys');
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+    const missingKeys = [...keyReferences.keys()]
+      .filter((key) => getLocaleValue(locale, key) === undefined)
+      .map((key) => `${key} (${keyReferences.get(key).join(', ')})`);
+
+    assert.deepEqual(
+      missingKeys,
+      [],
+      `${localeFile.locale}.json is missing static translation keys`,
+    );
+  }
+});
+
+test('localized UI does not hide missing keys behind hardcoded fallback text', () => {
+  const fallbackLocations = listSourceFiles(path.join(clientDir, 'src')).flatMap((sourceFile) => (
+    findHardcodedTranslationFallbacks(readFileSync(sourceFile, 'utf8'), sourceFile)
+  ));
+
+  assert.deepEqual(
+    fallbackLocations,
+    [],
+    'static t()/i18n.t() calls should rely on locale coverage instead of English fallback strings',
+  );
 });
 
 test('workspace and knowledge base copy are separate in every locale', () => {
@@ -107,6 +188,11 @@ test('usage tracking page is routed, reachable from navigation, and localized', 
   assert.match(mainLayoutSource, /sidebar\.usage/);
   assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage'\)/);
   assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\(`\/usage\/conversations\/\$\{conversationId\}`\)/);
+  assert.match(usagePageSource, /ragRuns/);
+  assert.match(usagePageSource, /usage\.ragRuns/);
+  assert.match(usagePageSource, /usage\.ragRunTrace/);
+  assert.match(usagePageSource, /usage\.plannedQueries/);
+  assert.match(usagePageSource, /usage\.traceSteps/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -117,6 +203,68 @@ test('usage tracking page is routed, reachable from navigation, and localized', 
     assert.ok(locale.usage?.conversations, `${localeFile.locale}.json needs usage.conversations`);
     assert.ok(locale.usage?.traceConversation, `${localeFile.locale}.json needs usage.traceConversation`);
     assert.ok(locale.usage?.noConversationSelected, `${localeFile.locale}.json needs usage.noConversationSelected`);
+    assert.ok(locale.usage?.ragRuns, `${localeFile.locale}.json needs usage.ragRuns`);
+    assert.ok(locale.usage?.ragRunTrace, `${localeFile.locale}.json needs usage.ragRunTrace`);
+    assert.ok(locale.usage?.plannedQueries, `${localeFile.locale}.json needs usage.plannedQueries`);
+    assert.ok(locale.usage?.traceSteps, `${localeFile.locale}.json needs usage.traceSteps`);
+  }
+});
+
+test('RAG evaluation page is routed, reachable from navigation, and localized', () => {
+  assert.match(appSource, /const RagEvaluationPage = lazy\(\(\) => import\('\.\/pages\/RagEvaluation'\)\)/);
+  assert.match(appSource, /<Route path="\/rag-eval" element=\{<RagEvaluationPage \/>\} \/>/);
+  assert.match(mainLayoutSource, /sidebar\.ragEvaluation/);
+  assert.match(mainLayoutSource, /navigate\('\/rag-eval'\)/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/datasets'\)/);
+  assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
+  assert.match(ragEvaluationPageSource, /api\.patch(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}`/);
+  assert.match(ragEvaluationPageSource, /api\.delete\(`\/rag-eval\/datasets\/\$\{datasetToDelete\.id\}`/);
+  assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}\/cases`/);
+  assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{datasetId\}\/runs`/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\(`\/rag-eval\/runs\/\$\{runId\}`/);
+  assert.match(ragEvaluationPageSource, /datasetModalMode/);
+  assert.match(ragEvaluationPageSource, /openEditDataset/);
+  assert.match(ragEvaluationPageSource, /datasetToDelete/);
+  assert.match(ragEvaluationPageSource, /buildRagEvalRunMarkdown/);
+  assert.match(ragEvaluationPageSource, /createRagEvalRunExportFilename/);
+  assert.match(ragEvaluationPageSource, /downloadTextFile/);
+  assert.match(ragEvaluationPageSource, /selectedRun/);
+  assert.match(ragEvaluationPageSource, /ragEval\.viewRunDetails/);
+  assert.match(ragEvaluationPageSource, /ragEval\.editDataset/);
+  assert.match(ragEvaluationPageSource, /ragEval\.deleteDataset/);
+  assert.match(ragEvaluationPageSource, /ragEval\.exportRunReport/);
+  assert.match(ragEvaluationPageSource, /ragEval\.runHistory/);
+  assert.match(ragEvaluationPageSource, /ragEval\.createdAt/);
+  assert.match(ragEvaluationPageSource, /selectedDataset\.runs\.map/);
+  assert.match(ragEvaluationPageSource, /handleViewRunDetails\(run\.id\)/);
+  assert.match(ragEvaluationPageSource, /ragEval\.traceSteps/);
+  assert.match(ragEvaluationPageSource, /ragEval\.matchedSources/);
+  assert.match(ragEvaluationPageSource, /MAX_RAG_EVAL_CASES_PER_DATASET = 50/);
+  assert.match(ragEvaluationPageSource, /isSelectedDatasetAtCaseLimit/);
+  assert.match(ragEvaluationPageSource, /ragEval\.maxCasesHint/);
+  assert.match(ragEvaluationPageSource, /disabled=\{isSaving \|\| isSelectedDatasetAtCaseLimit\}/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.sidebar?.ragEvaluation, `${localeFile.locale}.json needs sidebar.ragEvaluation`);
+    assert.ok(locale.ragEval?.title, `${localeFile.locale}.json needs ragEval.title`);
+    assert.ok(locale.ragEval?.newDataset, `${localeFile.locale}.json needs ragEval.newDataset`);
+    assert.ok(locale.ragEval?.editDataset, `${localeFile.locale}.json needs ragEval.editDataset`);
+    assert.ok(locale.ragEval?.deleteDataset, `${localeFile.locale}.json needs ragEval.deleteDataset`);
+    assert.ok(locale.ragEval?.deleteDatasetTitle, `${localeFile.locale}.json needs ragEval.deleteDatasetTitle`);
+    assert.ok(locale.ragEval?.addCase, `${localeFile.locale}.json needs ragEval.addCase`);
+    assert.ok(locale.ragEval?.runEval, `${localeFile.locale}.json needs ragEval.runEval`);
+    assert.ok(locale.ragEval?.latestRuns, `${localeFile.locale}.json needs ragEval.latestRuns`);
+    assert.ok(locale.ragEval?.viewRunDetails, `${localeFile.locale}.json needs ragEval.viewRunDetails`);
+    assert.ok(locale.ragEval?.exportRunReport, `${localeFile.locale}.json needs ragEval.exportRunReport`);
+    assert.ok(locale.ragEval?.exportSuccess, `${localeFile.locale}.json needs ragEval.exportSuccess`);
+    assert.ok(locale.ragEval?.runHistory, `${localeFile.locale}.json needs ragEval.runHistory`);
+    assert.ok(locale.ragEval?.createdAt, `${localeFile.locale}.json needs ragEval.createdAt`);
+    assert.ok(locale.ragEval?.runDetails, `${localeFile.locale}.json needs ragEval.runDetails`);
+    assert.ok(locale.ragEval?.traceSteps, `${localeFile.locale}.json needs ragEval.traceSteps`);
+    assert.ok(locale.ragEval?.matchedSources, `${localeFile.locale}.json needs ragEval.matchedSources`);
+    assert.ok(locale.ragEval?.maxCasesHint, `${localeFile.locale}.json needs ragEval.maxCasesHint`);
   }
 });
 
@@ -422,6 +570,28 @@ test('chat source document previews carry citation snippets and scroll to the ma
     assert.ok(locale.knowledge?.citationMatched, `${localeFile.locale}.json needs knowledge.citationMatched`);
     assert.ok(locale.knowledge?.citationNotFound, `${localeFile.locale}.json needs knowledge.citationNotFound`);
     assert.ok(locale.knowledge?.citationTarget, `${localeFile.locale}.json needs knowledge.citationTarget`);
+  }
+});
+
+test('assistant messages expose Agentic RAG trace and quality summaries in localized UI', () => {
+  assert.match(chatStoreSource, /ragRunId/);
+  assert.match(chatStoreSource, /traceSummary/);
+  assert.match(chatStoreSource, /qualitySummary/);
+  assert.match(chatMessageSource, /chat\.ragQuality/);
+  assert.match(chatMessageSource, /chat\.ragTrace/);
+  assert.match(chatMessageSource, /chat\.ragPlannedQueries/);
+  assert.match(chatMessageSource, /chat\.ragEvidence/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.chat?.ragQuality, `${localeFile.locale}.json needs chat.ragQuality`);
+    assert.ok(locale.chat?.ragTrace, `${localeFile.locale}.json needs chat.ragTrace`);
+    assert.ok(locale.chat?.ragPlannedQueries, `${localeFile.locale}.json needs chat.ragPlannedQueries`);
+    assert.ok(locale.chat?.ragEvidence, `${localeFile.locale}.json needs chat.ragEvidence`);
+    assert.ok(locale.chat?.ragEvidenceStrong, `${localeFile.locale}.json needs chat.ragEvidenceStrong`);
+    assert.ok(locale.chat?.ragEvidencePartial, `${localeFile.locale}.json needs chat.ragEvidencePartial`);
+    assert.ok(locale.chat?.ragEvidenceWeak, `${localeFile.locale}.json needs chat.ragEvidenceWeak`);
   }
 });
 

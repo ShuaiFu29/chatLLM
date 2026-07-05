@@ -21,6 +21,7 @@ const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
 const DEFAULT_RATE_LIMIT_MAX = 600;
 const DEFAULT_CHAT_RATE_LIMIT_MAX = 60;
 const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 120;
+const DEFAULT_RAG_EVAL_RATE_LIMIT_MAX = 30;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
 const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 10000;
@@ -73,6 +74,7 @@ export interface ServerEnv {
   RATE_LIMIT_MAX: number;
   CHAT_RATE_LIMIT_MAX: number;
   UPLOAD_RATE_LIMIT_MAX: number;
+  RAG_EVAL_RATE_LIMIT_MAX: number;
   FILE_QUEUE_INTERVAL_MS: number;
   FILE_QUEUE_CONCURRENCY: number;
   FILE_QUEUE_INGEST_TIMEOUT_MS: number;
@@ -158,6 +160,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const rateLimitMax = getPositiveInteger(env, 'RATE_LIMIT_MAX', DEFAULT_RATE_LIMIT_MAX, errors);
   const chatRateLimitMax = getPositiveInteger(env, 'CHAT_RATE_LIMIT_MAX', DEFAULT_CHAT_RATE_LIMIT_MAX, errors);
   const uploadRateLimitMax = getPositiveInteger(env, 'UPLOAD_RATE_LIMIT_MAX', DEFAULT_UPLOAD_RATE_LIMIT_MAX, errors);
+  const ragEvalRateLimitMax = getPositiveInteger(env, 'RAG_EVAL_RATE_LIMIT_MAX', DEFAULT_RAG_EVAL_RATE_LIMIT_MAX, errors);
   const fileQueueIntervalMs = getPositiveInteger(env, 'FILE_QUEUE_INTERVAL_MS', DEFAULT_FILE_QUEUE_INTERVAL_MS, errors);
   const fileQueueConcurrency = getPositiveInteger(env, 'FILE_QUEUE_CONCURRENCY', DEFAULT_FILE_QUEUE_CONCURRENCY, errors);
   const fileQueueIngestTimeoutMs = getPositiveInteger(env, 'FILE_QUEUE_INGEST_TIMEOUT_MS', DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS, errors);
@@ -218,6 +221,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     RATE_LIMIT_MAX: rateLimitMax,
     CHAT_RATE_LIMIT_MAX: chatRateLimitMax,
     UPLOAD_RATE_LIMIT_MAX: uploadRateLimitMax,
+    RAG_EVAL_RATE_LIMIT_MAX: ragEvalRateLimitMax,
     FILE_QUEUE_INTERVAL_MS: fileQueueIntervalMs,
     FILE_QUEUE_CONCURRENCY: fileQueueConcurrency,
     FILE_QUEUE_INGEST_TIMEOUT_MS: fileQueueIngestTimeoutMs,
