@@ -71,14 +71,25 @@ class RuntimeStabilityTests(unittest.TestCase):
                 "RAG_READINESS_TIMEOUT_MS": "1500",
                 "RAG_INGEST_CONCURRENCY": "3",
                 "ELASTICSEARCH_TIMEOUT_MS": "900",
+                "ELASTICSEARCH_NUMBER_OF_SHARDS": "2",
+                "ELASTICSEARCH_NUMBER_OF_REPLICAS": "1",
+                "ELASTICSEARCH_BULK_BATCH_SIZE": "250",
+                "ELASTICSEARCH_REFRESH_ON_WRITE": "true",
+                "MILVUS_INDEX_TYPE": "HNSW",
+                "MILVUS_METRIC_TYPE": "COSINE",
+                "MILVUS_HNSW_M": "32",
+                "MILVUS_HNSW_EF_CONSTRUCTION": "300",
+                "MILVUS_SEARCH_EF": "128",
+                "MILVUS_INSERT_BATCH_SIZE": "500",
                 "NEO4J_TIMEOUT_MS": "1200",
+                "NEO4J_BATCH_SIZE": "300",
                 "RAG_ALLOWED_ORIGINS": "http://localhost:3000, http://localhost:5173",
             }),
-            "(config.settings.rag_readiness_timeout_ms, config.settings.rag_ingest_concurrency, config.settings.elasticsearch_url, config.settings.elasticsearch_index, config.settings.elasticsearch_timeout_ms, config.settings.neo4j_url, config.settings.neo4j_user, config.settings.neo4j_timeout_ms, config.settings.rag_allowed_origins)",
+            "(config.settings.rag_readiness_timeout_ms, config.settings.rag_ingest_concurrency, config.settings.elasticsearch_url, config.settings.elasticsearch_index, config.settings.elasticsearch_timeout_ms, config.settings.elasticsearch_number_of_shards, config.settings.elasticsearch_number_of_replicas, config.settings.elasticsearch_bulk_batch_size, config.settings.elasticsearch_refresh_on_write, config.settings.milvus_index_type, config.settings.milvus_metric_type, config.settings.milvus_hnsw_m, config.settings.milvus_hnsw_ef_construction, config.settings.milvus_search_ef, config.settings.milvus_insert_batch_size, config.settings.neo4j_url, config.settings.neo4j_user, config.settings.neo4j_timeout_ms, config.settings.neo4j_batch_size, config.settings.rag_allowed_origins)",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("(1500, 3, 'http://localhost:9200', 'chatllm_chunks', 900, 'http://localhost:7474', 'neo4j', 1200, ['http://localhost:3000', 'http://localhost:5173'])", result.stdout)
+        self.assertIn("(1500, 3, 'http://localhost:9200', 'chatllm_chunks', 900, 2, 1, 250, True, 'HNSW', 'COSINE', 32, 300, 128, 500, 'http://localhost:7474', 'neo4j', 1200, 300, ['http://localhost:3000', 'http://localhost:5173'])", result.stdout)
 
     def test_main_defines_ready_probe_and_ingest_concurrency_guard(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -182,6 +193,21 @@ print("ok")
         self.assertIn("_escape_filter_value(file_id)", vector_source)
         self.assertIn("_escape_filter_value(user_id)", vector_source)
         self.assertIn("_escape_filter_value(project_space_id)", vector_source)
+
+    def test_vector_and_keyword_stores_batch_large_ingestion_writes(self):
+        vector_source = (ROOT / "vector_store.py").read_text(encoding="utf-8")
+        keyword_source = (ROOT / "keyword_store.py").read_text(encoding="utf-8")
+        graph_source = (ROOT / "graph_store.py").read_text(encoding="utf-8")
+
+        self.assertIn("settings.milvus_insert_batch_size", vector_source)
+        self.assertIn("settings.milvus_hnsw_m", vector_source)
+        self.assertIn("settings.milvus_search_ef", vector_source)
+        self.assertIn("_batched(rows, settings.milvus_insert_batch_size)", vector_source)
+        self.assertIn("settings.elasticsearch_bulk_batch_size", keyword_source)
+        self.assertIn("settings.elasticsearch_number_of_shards", keyword_source)
+        self.assertIn("settings.elasticsearch_refresh_on_write", keyword_source)
+        self.assertIn("_batched(rows, settings.elasticsearch_bulk_batch_size)", keyword_source)
+        self.assertIn("settings.neo4j_batch_size", graph_source)
 
 
 if __name__ == "__main__":

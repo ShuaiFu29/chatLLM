@@ -92,6 +92,33 @@ test('validateProjectEnvMaps accepts valid server and RAG env maps', () => {
   assert.deepEqual(issues, []);
 });
 
+test('validateProjectEnvMaps accepts Qwen as the only configured chat provider', () => {
+  const issues = validateProjectEnvMaps({
+    'server/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      QWEN_API_KEY: 'sk-test',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_API_KEY: 'embedding-key',
+      EMBEDDING_BASE_URL: 'https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
+      EMBEDDING_MODEL: 'text-embedding-v4',
+      EMBEDDING_DIMENSION: '1024',
+    },
+  });
+
+  assert.deepEqual(issues, []);
+});
+
 test('validateProjectEnvMaps accepts explicit local RAG embeddings without external provider keys', () => {
   const issues = validateProjectEnvMaps({
     'server/.env': {

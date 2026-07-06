@@ -36,6 +36,11 @@ def _term_candidates(text: str) -> list[str]:
     return terms[:16]
 
 
+def _batched(rows: list[dict], batch_size: int):
+    for index in range(0, len(rows), batch_size):
+        yield rows[index: index + batch_size]
+
+
 def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
     document = {
         "file_id": str(file_data["id"]),
@@ -164,32 +169,33 @@ def index_graph_chunks(file_data: dict, chunk_rows: list[dict]):
     if not settings.neo4j_enabled or not chunk_rows:
         return
 
-    facts = extract_graph_facts(file_data, chunk_rows)
     ensure_graph_schema()
-    _run_cypher(
-        """
-        MERGE (d:Document {file_id: $document.file_id})
-        SET d += $document
-        WITH d
-        UNWIND $chunks AS chunk
-          MERGE (c:Chunk {chunk_id: chunk.chunk_id})
-          SET c += chunk
-          MERGE (d)-[:HAS_CHUNK]->(c)
-        WITH d
-        UNWIND $entities AS entity
-          MERGE (e:Entity {name: entity.name, user_id: entity.user_id, project_space_id: entity.project_space_id})
-          SET e += entity
-        WITH d
-        UNWIND $relationships AS rel
-          OPTIONAL MATCH (c:Chunk {chunk_id: rel.from})
-          OPTIONAL MATCH (e:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})
-          FOREACH (_ IN CASE WHEN rel.type = 'MENTIONS' AND c IS NOT NULL AND e IS NOT NULL THEN [1] ELSE [] END |
-            MERGE (c)-[:MENTIONS]->(e)
-          )
-        RETURN {ok: true} AS row
-        """,
-        facts,
-    )
+    for batch in _batched(chunk_rows, settings.neo4j_batch_size):
+        facts = extract_graph_facts(file_data, batch)
+        _run_cypher(
+            """
+            MERGE (d:Document {file_id: $document.file_id})
+            SET d += $document
+            WITH d
+            UNWIND $chunks AS chunk
+              MERGE (c:Chunk {chunk_id: chunk.chunk_id})
+              SET c += chunk
+              MERGE (d)-[:HAS_CHUNK]->(c)
+            WITH d
+            UNWIND $entities AS entity
+              MERGE (e:Entity {name: entity.name, user_id: entity.user_id, project_space_id: entity.project_space_id})
+              SET e += entity
+            WITH d
+            UNWIND $relationships AS rel
+              OPTIONAL MATCH (c:Chunk {chunk_id: rel.from})
+              OPTIONAL MATCH (e:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})
+              FOREACH (_ IN CASE WHEN rel.type = 'MENTIONS' AND c IS NOT NULL AND e IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (c)-[:MENTIONS]->(e)
+              )
+            RETURN {ok: true} AS row
+            """,
+            facts,
+        )
 
 
 def search_graph(

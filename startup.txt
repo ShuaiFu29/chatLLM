@@ -99,6 +99,16 @@ http://localhost:8000/health/ready
 cd D:\project\chatLLM
 npm run load:smoke
 
+容量配置检查：
+
+cd D:\project\chatLLM
+npm run check:capacity
+
+企业级容量检查（会提示高并发/大数据场景下偏弱的配置）：
+
+cd D:\project\chatLLM
+$env:CAPACITY_PROFILE="enterprise"; npm run check:capacity
+
 RAG 端到端冒烟检查（不消耗外部 embedding API 额度）：
 
 cd D:\project\chatLLM
@@ -110,6 +120,11 @@ npm run rag:smoke
 
 cd D:\project\chatLLM
 $env:LOAD_TARGET_URL="http://localhost:3000"; $env:LOAD_REQUESTS="100"; $env:LOAD_CONCURRENCY="10"; npm run load:smoke
+
+如需按场景压测健康检查 / 混合接口：
+
+cd D:\project\chatLLM
+$env:LOAD_SCENARIO="mixed"; $env:LOAD_REQUESTS="300"; $env:LOAD_CONCURRENCY="30"; $env:LOAD_MAX_FAILURE_RATE="0.01"; $env:LOAD_P95_MS="500"; npm run load:scenario
 
 MinIO 控制台：
 http://localhost:9001

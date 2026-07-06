@@ -3,6 +3,7 @@ import { RequestHandler } from 'express';
 type RagStatus = 'ok' | 'error';
 type DatabaseStatus = 'ok' | 'error';
 type ChatStreamStatus = 'completed' | 'failed' | 'rejected';
+type FileQueueStatus = 'completed' | 'failed';
 type HttpStatusFamily = '1xx' | '2xx' | '3xx' | '4xx' | '5xx' | 'other';
 type RagEvalCompletionStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 
@@ -46,6 +47,10 @@ class MetricsRegistry {
   private chatStreamsCompletedTotal = 0;
   private chatStreamsFailedTotal = 0;
   private chatStreamsRejectedTotal = 0;
+  private fileQueueActive = 0;
+  private fileQueueClaimedTotal = 0;
+  private fileQueueCompletedTotal = 0;
+  private fileQueueFailedTotal = 0;
   private ragRetrieveTotal = 0;
   private ragRetrieveFailuresTotal = 0;
   private ragRetrieveDurationMsTotal = 0;
@@ -99,6 +104,20 @@ class MetricsRegistry {
     if (status === 'completed') this.chatStreamsCompletedTotal += 1;
     if (status === 'failed') this.chatStreamsFailedTotal += 1;
     if (status === 'rejected') this.chatStreamsRejectedTotal += 1;
+  }
+
+  recordFileQueueClaimed(count = 1) {
+    this.fileQueueClaimedTotal += Math.max(count, 0);
+  }
+
+  recordFileQueueStarted() {
+    this.fileQueueActive += 1;
+  }
+
+  recordFileQueueFinished(status: FileQueueStatus) {
+    this.fileQueueActive = Math.max(this.fileQueueActive - 1, 0);
+    if (status === 'completed') this.fileQueueCompletedTotal += 1;
+    if (status === 'failed') this.fileQueueFailedTotal += 1;
   }
 
   recordRagRetrieve(status: RagStatus, durationMs: number) {
@@ -209,6 +228,18 @@ class MetricsRegistry {
       '# HELP chatllm_chat_streams_rejected_total Rejected chat streams.',
       '# TYPE chatllm_chat_streams_rejected_total counter',
       `chatllm_chat_streams_rejected_total ${this.chatStreamsRejectedTotal}`,
+      '# HELP chatllm_file_queue_active Active document ingestion jobs.',
+      '# TYPE chatllm_file_queue_active gauge',
+      `chatllm_file_queue_active ${this.fileQueueActive}`,
+      '# HELP chatllm_file_queue_claimed_total Document ingestion jobs claimed from the queue.',
+      '# TYPE chatllm_file_queue_claimed_total counter',
+      `chatllm_file_queue_claimed_total ${this.fileQueueClaimedTotal}`,
+      '# HELP chatllm_file_queue_completed_total Document ingestion jobs completed successfully.',
+      '# TYPE chatllm_file_queue_completed_total counter',
+      `chatllm_file_queue_completed_total ${this.fileQueueCompletedTotal}`,
+      '# HELP chatllm_file_queue_failed_total Document ingestion jobs failed and scheduled for retry or terminal failure.',
+      '# TYPE chatllm_file_queue_failed_total counter',
+      `chatllm_file_queue_failed_total ${this.fileQueueFailedTotal}`,
       '# HELP chatllm_rag_retrieve_total Total RAG retrieve attempts.',
       '# TYPE chatllm_rag_retrieve_total counter',
       `chatllm_rag_retrieve_total ${this.ragRetrieveTotal}`,

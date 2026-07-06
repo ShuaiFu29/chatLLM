@@ -223,6 +223,10 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
   assert.match(metricsSource, /chatllm_database_pool_idle/);
   assert.match(metricsSource, /chatllm_database_pool_waiting/);
   assert.match(metricsSource, /chatllm_chat_streams_active/);
+  assert.match(metricsSource, /chatllm_file_queue_active/);
+  assert.match(metricsSource, /chatllm_file_queue_claimed_total/);
+  assert.match(metricsSource, /chatllm_file_queue_completed_total/);
+  assert.match(metricsSource, /chatllm_file_queue_failed_total/);
   assert.match(metricsSource, /chatllm_rag_retrieve_failures_total/);
   assert.match(metricsSource, /chatllm_rag_eval_runs_started_total/);
   assert.match(metricsSource, /chatllm_rag_eval_runs_reused_total/);
@@ -337,9 +341,13 @@ test('root package includes a no-dependency load smoke script', () => {
   const loadScriptSource = readOptionalSource('../scripts/load-smoke.mjs');
 
   assert.equal(rootPackage.scripts['load:smoke'], 'node scripts/load-smoke.mjs');
+  assert.equal(rootPackage.scripts['check:capacity'], 'node scripts/capacity-check.mjs');
   assert.match(loadScriptSource, /LOAD_TARGET_URL/);
+  assert.match(loadScriptSource, /LOAD_SCENARIO/);
   assert.match(loadScriptSource, /LOAD_CONCURRENCY/);
   assert.match(loadScriptSource, /LOAD_REQUESTS/);
+  assert.match(loadScriptSource, /LOAD_MAX_FAILURE_RATE/);
+  assert.match(loadScriptSource, /LOAD_P95_MS/);
   assert.match(loadScriptSource, /Promise\.all/);
   assert.match(loadScriptSource, /process\.exitCode = 1/);
 });
@@ -356,9 +364,15 @@ test('docker compose infrastructure has restart policies and health-gated depend
   assert.match(composeSource, /elasticsearch:/);
   assert.match(composeSource, /discovery\.type=single-node/);
   assert.match(composeSource, /xpack\.security\.enabled=false/);
+  assert.match(composeSource, /bootstrap\.memory_lock=true/);
+  assert.match(composeSource, /ES_JAVA_OPTS=-Xms1g -Xmx1g/);
+  assert.match(composeSource, /memlock:/);
   assert.match(composeSource, /9200:9200/);
   assert.match(composeSource, /neo4j:/);
   assert.match(composeSource, /NEO4J_AUTH=neo4j\/chatllm-password/);
+  assert.match(composeSource, /NEO4J_server_memory_heap_initial__size=512m/);
+  assert.match(composeSource, /NEO4J_server_memory_heap_max__size=1G/);
+  assert.match(composeSource, /NEO4J_server_memory_pagecache_size=512m/);
   assert.match(composeSource, /7474:7474/);
   assert.match(composeSource, /7687:7687/);
 });

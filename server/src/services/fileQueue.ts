@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { serverEnv } from '../lib/env';
+import { metrics } from '../lib/metrics';
 import { claimNextPendingFile, FileRow, markFileAttemptFailed } from '../repositories/files';
 
 class FileQueueService {
@@ -52,6 +53,7 @@ class FileQueueService {
           continue;
         }
 
+        metrics.recordFileQueueClaimed(files.length);
         await Promise.all(files.map((file) => this.processFile(file)));
         shouldContinue = files.length === this.concurrency;
       }
@@ -63,13 +65,18 @@ class FileQueueService {
   }
 
   private async processFile(file: FileRow) {
+    metrics.recordFileQueueStarted();
+    let status: 'completed' | 'failed' = 'failed';
     try {
       await axios.post(`${this.ragServiceUrl}/ingest`, {
         file_id: file.id,
       }, { timeout: this.ingestTimeoutMs });
+      status = 'completed';
     } catch (err: any) {
       const message = `RAG Service unavailable: ${err.message}`;
       await markFileAttemptFailed(file, message);
+    } finally {
+      metrics.recordFileQueueFinished(status);
     }
   }
 }

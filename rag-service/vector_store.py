@@ -7,6 +7,11 @@ client: MilvusClient | None = None
 _project_space_field_available: bool | None = None
 
 
+def _batched(rows: list[dict[str, Any]], batch_size: int):
+    for index in range(0, len(rows), batch_size):
+        yield rows[index: index + batch_size]
+
+
 def get_client() -> MilvusClient:
     global client
 
@@ -57,9 +62,12 @@ def ensure_collection():
     index_params = MilvusClient.prepare_index_params()
     index_params.add_index(
         field_name="embedding",
-        index_type="HNSW",
-        metric_type="COSINE",
-        params={"M": 16, "efConstruction": 200},
+        index_type=settings.milvus_index_type,
+        metric_type=settings.milvus_metric_type,
+        params={
+            "M": settings.milvus_hnsw_m,
+            "efConstruction": settings.milvus_hnsw_ef_construction,
+        },
     )
 
     client.create_collection(
@@ -94,7 +102,8 @@ def insert_vectors(rows: list[dict[str, Any]]):
     ensure_collection()
     if not _has_project_space_field():
         rows = [{key: value for key, value in row.items() if key != "project_space_id"} for row in rows]
-    client.insert(collection_name=settings.milvus_collection, data=rows)
+    for batch in _batched(rows, settings.milvus_insert_batch_size):
+        client.insert(collection_name=settings.milvus_collection, data=batch)
 
 
 def search_vectors(
@@ -123,7 +132,7 @@ def search_vectors(
         limit=limit,
         filter=" and ".join(filters),
         output_fields=output_fields,
-        search_params={"metric_type": "COSINE", "params": {"ef": 64}},
+        search_params={"metric_type": settings.milvus_metric_type, "params": {"ef": settings.milvus_search_ef}},
     )
 
     hits = results[0] if results else []

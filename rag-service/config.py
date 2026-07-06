@@ -19,16 +19,27 @@ class Settings:
     s3_force_path_style: bool
     milvus_uri: str
     milvus_collection: str
+    milvus_index_type: str
+    milvus_metric_type: str
+    milvus_hnsw_m: int
+    milvus_hnsw_ef_construction: int
+    milvus_search_ef: int
+    milvus_insert_batch_size: int
     elasticsearch_enabled: bool
     elasticsearch_url: str
     elasticsearch_index: str
     elasticsearch_timeout_ms: int
+    elasticsearch_number_of_shards: int
+    elasticsearch_number_of_replicas: int
+    elasticsearch_bulk_batch_size: int
+    elasticsearch_refresh_on_write: bool
     neo4j_enabled: bool
     neo4j_url: str
     neo4j_user: str
     neo4j_password: str
     neo4j_database: str
     neo4j_timeout_ms: int
+    neo4j_batch_size: int
     embedding_provider: str
     embedding_api_key: str
     embedding_base_url: str
@@ -106,16 +117,27 @@ def load_settings() -> Settings:
         s3_force_path_style=_bool("S3_FORCE_PATH_STYLE", True),
         milvus_uri=_required("MILVUS_URI"),
         milvus_collection=_required("MILVUS_COLLECTION"),
+        milvus_index_type=os.environ.get("MILVUS_INDEX_TYPE", "HNSW").strip().upper() or "HNSW",
+        milvus_metric_type=os.environ.get("MILVUS_METRIC_TYPE", "COSINE").strip().upper() or "COSINE",
+        milvus_hnsw_m=_positive_int("MILVUS_HNSW_M", "16"),
+        milvus_hnsw_ef_construction=_positive_int("MILVUS_HNSW_EF_CONSTRUCTION", "200"),
+        milvus_search_ef=_positive_int("MILVUS_SEARCH_EF", "64"),
+        milvus_insert_batch_size=_positive_int("MILVUS_INSERT_BATCH_SIZE", "500"),
         elasticsearch_enabled=_bool("ELASTICSEARCH_ENABLED", True),
         elasticsearch_url=os.environ.get("ELASTICSEARCH_URL", "http://localhost:9200").strip() or "http://localhost:9200",
         elasticsearch_index=os.environ.get("ELASTICSEARCH_INDEX", "chatllm_chunks").strip() or "chatllm_chunks",
         elasticsearch_timeout_ms=_positive_int("ELASTICSEARCH_TIMEOUT_MS", "2000"),
+        elasticsearch_number_of_shards=_positive_int("ELASTICSEARCH_NUMBER_OF_SHARDS", "1"),
+        elasticsearch_number_of_replicas=int(os.environ.get("ELASTICSEARCH_NUMBER_OF_REPLICAS", "0").strip() or "0"),
+        elasticsearch_bulk_batch_size=_positive_int("ELASTICSEARCH_BULK_BATCH_SIZE", "500"),
+        elasticsearch_refresh_on_write=_bool("ELASTICSEARCH_REFRESH_ON_WRITE", False),
         neo4j_enabled=_bool("NEO4J_ENABLED", True),
         neo4j_url=os.environ.get("NEO4J_URL", "http://localhost:7474").strip() or "http://localhost:7474",
         neo4j_user=os.environ.get("NEO4J_USER", "neo4j").strip() or "neo4j",
         neo4j_password=os.environ.get("NEO4J_PASSWORD", "chatllm-password").strip() or "chatllm-password",
         neo4j_database=os.environ.get("NEO4J_DATABASE", "neo4j").strip() or "neo4j",
         neo4j_timeout_ms=_positive_int("NEO4J_TIMEOUT_MS", "3000"),
+        neo4j_batch_size=_positive_int("NEO4J_BATCH_SIZE", "500"),
         embedding_provider=embedding_provider,
         embedding_api_key=_required("EMBEDDING_API_KEY"),
         embedding_base_url=_required("EMBEDDING_BASE_URL"),

@@ -5,6 +5,11 @@ import urllib.request
 from config import settings
 
 
+def _batched(rows: list[dict], batch_size: int):
+    for index in range(0, len(rows), batch_size):
+        yield rows[index: index + batch_size]
+
+
 def _request(method: str, path: str, body: dict | str | None = None) -> dict:
     if not settings.elasticsearch_enabled:
         return {}
@@ -43,6 +48,8 @@ def ensure_keyword_index():
 
     mapping = {
         "settings": {
+            "number_of_shards": settings.elasticsearch_number_of_shards,
+            "number_of_replicas": settings.elasticsearch_number_of_replicas,
             "analysis": {
                 "analyzer": {
                     "chatllm_mixed_text": {
@@ -76,28 +83,31 @@ def index_chunks(rows: list[dict]):
         return
 
     ensure_keyword_index()
-    lines = []
-    for row in rows:
-        metadata = row.get("metadata") or {}
-        chunk_id = str(row.get("id") or row.get("chunk_id"))
-        lines.append(json.dumps({
-            "index": {
-                "_index": settings.elasticsearch_index,
-                "_id": chunk_id,
-            },
-        }))
-        lines.append(json.dumps({
-            "chunk_id": chunk_id,
-            "file_id": str(row.get("file_id") or metadata.get("file_id") or ""),
-            "user_id": str(row.get("user_id") or metadata.get("user_id") or ""),
-            "project_space_id": str(metadata.get("project_space_id") or ""),
-            "filename": metadata.get("filename") or "",
-            "chunk_index": int(row.get("chunk_index") or metadata.get("chunk_index") or 0),
-            "content": row.get("content") or "",
-        }, ensure_ascii=False))
+    bulk_path = "/_bulk?refresh=true" if settings.elasticsearch_refresh_on_write else "/_bulk"
 
-    payload = "\n".join(lines) + "\n"
-    _request("POST", "/_bulk", payload)
+    for batch in _batched(rows, settings.elasticsearch_bulk_batch_size):
+        lines = []
+        for row in batch:
+            metadata = row.get("metadata") or {}
+            chunk_id = str(row.get("id") or row.get("chunk_id"))
+            lines.append(json.dumps({
+                "index": {
+                    "_index": settings.elasticsearch_index,
+                    "_id": chunk_id,
+                },
+            }))
+            lines.append(json.dumps({
+                "chunk_id": chunk_id,
+                "file_id": str(row.get("file_id") or metadata.get("file_id") or ""),
+                "user_id": str(row.get("user_id") or metadata.get("user_id") or ""),
+                "project_space_id": str(metadata.get("project_space_id") or ""),
+                "filename": metadata.get("filename") or "",
+                "chunk_index": int(row.get("chunk_index") or metadata.get("chunk_index") or 0),
+                "content": row.get("content") or "",
+            }, ensure_ascii=False))
+
+        payload = "\n".join(lines) + "\n"
+        _request("POST", bulk_path, payload)
 
 
 def delete_file_keywords(file_id: str):

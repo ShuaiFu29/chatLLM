@@ -14,7 +14,7 @@ const serverRules = {
   required: ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'],
   forbiddenPrefixes: ['SUPABASE_'],
   jwtSecretKey: 'JWT_SECRET',
-  atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'OPENAI_API_KEY']],
+  atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY', 'OPENAI_API_KEY']],
 };
 
 const ragRules = {
