@@ -116,6 +116,137 @@ class AgenticRetrievalTests(unittest.TestCase):
         rerank_steps = [step for step in result["trace_steps"] if step["step_type"] == "rerank"]
         self.assertEqual(rerank_steps[-1]["output"]["reranker"], "custom")
 
+    def test_agentic_retrieve_default_rerank_uses_named_reranker(self):
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return [{
+                "id": "chunk-1",
+                "content": "JSBridge connects WebView and Native runtime.",
+                "metadata": {"filename": "webview.md", "file_id": "file-1", "chunk_index": 0},
+                "similarity": 0.8,
+                "retrieval_score": 0.8,
+            }]
+
+        result = agentic_retrieve(
+            query="JSBridge WebView Native",
+            user_id="user-1",
+            project_space_id="space-1",
+            retrieve_fn=fake_retrieve,
+        )
+
+        rerank_steps = [step for step in result["trace_steps"] if step["step_type"] == "rerank"]
+        self.assertEqual(rerank_steps[-1]["output"]["reranker"], "local-overlap")
+        self.assertEqual(result["results"][0]["reranker"], "local-overlap")
+
+    def test_agentic_retrieve_records_question_classification_and_route(self):
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return [{
+                "id": "chunk-graph",
+                "content": "JSBridge connects WebView and Native runtime.",
+                "metadata": {"filename": "webview.md", "file_id": "file-1", "chunk_index": 0},
+                "similarity": 0.8,
+                "retrieval_score": 0.8,
+                "retrieval_channels": ["vector", "bm25", "graph"],
+            }]
+
+        result = agentic_retrieve(
+            query="JSBridge 和 WebView 有什么关系？",
+            user_id="user-1",
+            project_space_id="space-1",
+            retrieve_fn=fake_retrieve,
+        )
+
+        step_types = [step["step_type"] for step in result["trace_steps"]]
+        self.assertIn("question_classify", step_types)
+        self.assertIn("retriever_route", step_types)
+        route_step = [step for step in result["trace_steps"] if step["step_type"] == "retriever_route"][0]
+        self.assertIn("graph", route_step["output"]["routes"])
+        self.assertEqual(result["intent"]["type"], "relationship")
+
+    def test_agentic_retrieve_retries_with_expanded_query_when_initial_evidence_is_empty(self):
+        calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            calls.append(query)
+            if "相关背景" not in query:
+                return []
+            return [{
+                "id": "chunk-retry",
+                "content": "Expanded retrieval found the WebView JSBridge notes.",
+                "metadata": {"filename": "webview.md", "file_id": "file-1", "chunk_index": 1},
+                "similarity": 0.7,
+                "retrieval_score": 0.7,
+            }]
+
+        result = agentic_retrieve(
+            query="JSBridge",
+            user_id="user-1",
+            project_space_id="space-1",
+            retrieve_fn=fake_retrieve,
+        )
+
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(result["results"][0]["id"], "chunk-retry")
+        retry_steps = [step for step in result["trace_steps"] if step["step_type"] == "retrieve_retry"]
+        self.assertEqual(retry_steps[-1]["status"], "success")
+
+    def test_agentic_retrieve_routes_uploaded_document_inventory_to_metadata_lookup(self):
+        retrieve_calls = []
+        inventory_calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(query)
+            return []
+
+        def fake_inventory(user_id, project_space_id, limit):
+            inventory_calls.append({
+                "user_id": user_id,
+                "project_space_id": project_space_id,
+                "limit": limit,
+            })
+            return [
+                {
+                    "id": "file-intro",
+                    "filename": "0-小册介绍.md",
+                    "file_size": 2048,
+                    "status": "completed",
+                    "created_at": "2026-07-05T10:00:00Z",
+                    "updated_at": "2026-07-05T10:01:00Z",
+                },
+                {
+                    "id": "file-webview",
+                    "filename": "2-WebView 原理篇：核心架构设计.md",
+                    "file_size": 4096,
+                    "status": "completed",
+                    "created_at": "2026-07-05T10:02:00Z",
+                    "updated_at": "2026-07-05T10:03:00Z",
+                },
+            ]
+
+        result = agentic_retrieve(
+            query="告诉我现在知识库里面上传了些什么内容？",
+            user_id="user-1",
+            project_space_id="space-1",
+            limit=5,
+            threshold=0.1,
+            retrieve_fn=fake_retrieve,
+            inventory_fn=fake_inventory,
+        )
+
+        self.assertEqual(retrieve_calls, [])
+        self.assertEqual(inventory_calls, [{
+            "user_id": "user-1",
+            "project_space_id": "space-1",
+            "limit": 20,
+        }])
+        self.assertEqual(result["mode"], "metadata_inventory")
+        self.assertEqual(len(result["results"]), 2)
+        self.assertIn("0-小册介绍.md", result["results"][0]["content"])
+        self.assertEqual(result["results"][0]["metadata"]["retrieval_mode"], "metadata_inventory")
+        self.assertEqual(result["quality"]["evidence_label"], "strong")
+
+        step_types = [step["step_type"] for step in result["trace_steps"]]
+        self.assertEqual(step_types, ["intent_route", "metadata_lookup", "evidence_check"])
+
     def test_evaluate_retrieval_quality_is_bounded_for_empty_results(self):
         quality = evaluate_retrieval_quality("missing deployment notes", [])
 
@@ -145,6 +276,7 @@ class AgenticRetrievalTests(unittest.TestCase):
         self.assertIn("retrieval_mode", retrieval_source)
         self.assertIn("def search_chunks_by_text", db_source)
         self.assertIn("websearch_to_tsquery", db_source)
+        self.assertIn("(%s::text is null or files.project_space_id::text = %s)", db_source)
         self.assertIn("to_tsvector('simple', content)", migration_source)
         self.assertIn("file_chunks_content_search_idx", migration_source)
 

@@ -38,6 +38,11 @@ export interface RagQualitySummary {
 
 export interface RagTraceSummary {
   mode: string;
+  intent?: {
+    type: string;
+    complexity: string;
+    routes: string[];
+  };
   planned_queries: string[];
   trace_steps: RagTraceStep[];
   quality: RagQualitySummary;

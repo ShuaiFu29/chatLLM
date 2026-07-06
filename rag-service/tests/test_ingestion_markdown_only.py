@@ -44,9 +44,11 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.extract_text", return_value=("# Notes", True)
         ), patch("ingestion.split_text", return_value=chunks), patch(
             "ingestion.delete_file_vectors"
+        ), patch("ingestion.delete_file_keywords"
+        ), patch("ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
             "ingestion.get_embeddings", side_effect=fake_get_embeddings
-        ), patch("ingestion.insert_vectors"), patch(
+        ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"), patch(
             "ingestion.update_file_status"
         ), patch("ingestion.update_file_progress"):
             result = process_file("file-1")
@@ -76,6 +78,8 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.extract_text", return_value=("# Notes", True)
         ), patch("ingestion.split_text", return_value=["chunk"]), patch(
             "ingestion.delete_file_vectors"
+        ), patch("ingestion.delete_file_keywords"
+        ), patch("ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=[{
             "id": "chunk-1",
             "file_id": "file-1",
@@ -84,7 +88,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "content": "chunk",
         }]), patch("ingestion.get_embeddings", side_effect=RuntimeError(
             "Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}"
-        )), patch("ingestion.insert_vectors"), patch(
+        )), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"), patch(
             "ingestion.update_file_status", side_effect=capture_status
         ), patch("ingestion.update_file_progress"):
             with self.assertRaises(RuntimeError):
@@ -94,6 +98,78 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         self.assertEqual(failed_update["status"], "failed")
         self.assertIn("百炼 embedding 额度不足", failed_update["error_message"])
         self.assertNotIn("{'error'", failed_update["error_message"])
+
+    def test_process_file_indexes_chunks_for_bm25_search_before_vector_insert(self):
+        chunk_rows = [{
+            "id": "chunk-1",
+            "file_id": "file-1",
+            "user_id": "user-1",
+            "chunk_index": 0,
+            "content": "JSBridge lets WebView communicate with Native.",
+            "metadata": {"filename": "notes.md"},
+        }]
+
+        with patch("ingestion.get_file", return_value={
+            "id": "file-1",
+            "user_id": "user-1",
+            "filename": "notes.md",
+            "file_type": "text/markdown",
+            "object_key": "uploads/notes.md",
+            "project_space_id": "space-1",
+        }), patch("ingestion.download_object", return_value=b"# Notes"), patch(
+            "ingestion.extract_text", return_value=("# Notes", True)
+        ), patch("ingestion.split_text", return_value=["chunk"]), patch(
+            "ingestion.delete_file_vectors"
+        ), patch("ingestion.delete_file_keywords"
+        ), patch("ingestion.delete_file_graph"
+        ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
+            "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
+        ), patch("ingestion.insert_vectors"), patch("ingestion.index_graph_chunks"), patch(
+            "ingestion.index_chunks"
+        ) as index_chunks_mock, patch("ingestion.update_file_status"), patch(
+            "ingestion.update_file_progress"
+        ):
+            process_file("file-1")
+
+        indexed_rows = index_chunks_mock.call_args.args[0]
+        self.assertEqual(indexed_rows[0]["id"], "chunk-1")
+        self.assertEqual(indexed_rows[0]["metadata"]["filename"], "notes.md")
+        self.assertEqual(indexed_rows[0]["metadata"]["project_space_id"], "space-1")
+
+    def test_process_file_indexes_chunks_into_knowledge_graph(self):
+        chunk_rows = [{
+            "id": "chunk-1",
+            "file_id": "file-1",
+            "user_id": "user-1",
+            "chunk_index": 0,
+            "content": "JSBridge connects WebView and Native.",
+            "metadata": {"filename": "notes.md"},
+        }]
+
+        with patch("ingestion.get_file", return_value={
+            "id": "file-1",
+            "user_id": "user-1",
+            "filename": "notes.md",
+            "file_type": "text/markdown",
+            "object_key": "uploads/notes.md",
+            "project_space_id": "space-1",
+        }) as get_file_mock, patch("ingestion.download_object", return_value=b"# Notes"), patch(
+            "ingestion.extract_text", return_value=("# Notes", True)
+        ), patch("ingestion.split_text", return_value=["chunk"]), patch(
+            "ingestion.delete_file_vectors"
+        ), patch("ingestion.delete_file_keywords"), patch(
+            "ingestion.delete_file_graph"
+        ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
+            "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
+        ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch(
+            "ingestion.index_graph_chunks"
+        ) as index_graph_mock, patch("ingestion.update_file_status"), patch(
+            "ingestion.update_file_progress"
+        ):
+            process_file("file-1")
+
+        self.assertEqual(index_graph_mock.call_args.args[0], get_file_mock.return_value)
+        self.assertEqual(index_graph_mock.call_args.args[1][0]["metadata"]["project_space_id"], "space-1")
 
 
 if __name__ == "__main__":

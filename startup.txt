@@ -24,7 +24,7 @@ pnpm run dev
 这个命令会自动：
 - 检查 server/.env 和 rag-service/.env 是否缺关键配置
 - 检查后端 / 前端 / RAG 端口是否已经被其他进程占用
-- 启动 PostgreSQL / MinIO / Milvus / Attu
+- 启动 PostgreSQL / MinIO / Milvus / Attu / Elasticsearch / Neo4j
 - 后端启动时自动执行 server/migrations 里尚未应用的数据库迁移
 - 启动后端 Express
 - 启动 RAG 服务
@@ -50,7 +50,7 @@ HTTPS_PROXY=http://127.0.0.1:7897
 单独启动命令（调试用）
 ----------------------
 
-启动数据库 / MinIO / Milvus：
+启动数据库 / MinIO / Milvus / Elasticsearch / Neo4j：
 
 cd D:\project\chatLLM
 npm run dev:infra
@@ -116,6 +116,12 @@ http://localhost:9001
 
 Attu / Milvus 管理界面：
 http://localhost:3001
+
+Elasticsearch：
+http://localhost:9200
+
+Neo4j Browser：
+http://localhost:7474
 
 
 停止项目

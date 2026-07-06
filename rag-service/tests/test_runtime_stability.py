@@ -49,6 +49,11 @@ def valid_env(extra=None):
         "S3_SECRET_KEY": "minioadmin",
         "MILVUS_URI": "http://localhost:19530",
         "MILVUS_COLLECTION": "document_chunks",
+        "ELASTICSEARCH_URL": "http://localhost:9200",
+        "ELASTICSEARCH_INDEX": "chatllm_chunks",
+        "NEO4J_URL": "http://localhost:7474",
+        "NEO4J_USER": "neo4j",
+        "NEO4J_PASSWORD": "chatllm-password",
         "EMBEDDING_API_KEY": "embedding-key",
         "EMBEDDING_BASE_URL": "https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "EMBEDDING_MODEL": "text-embedding-v4",
@@ -65,13 +70,15 @@ class RuntimeStabilityTests(unittest.TestCase):
             valid_env({
                 "RAG_READINESS_TIMEOUT_MS": "1500",
                 "RAG_INGEST_CONCURRENCY": "3",
+                "ELASTICSEARCH_TIMEOUT_MS": "900",
+                "NEO4J_TIMEOUT_MS": "1200",
                 "RAG_ALLOWED_ORIGINS": "http://localhost:3000, http://localhost:5173",
             }),
-            "(config.settings.rag_readiness_timeout_ms, config.settings.rag_ingest_concurrency, config.settings.rag_allowed_origins)",
+            "(config.settings.rag_readiness_timeout_ms, config.settings.rag_ingest_concurrency, config.settings.elasticsearch_url, config.settings.elasticsearch_index, config.settings.elasticsearch_timeout_ms, config.settings.neo4j_url, config.settings.neo4j_user, config.settings.neo4j_timeout_ms, config.settings.rag_allowed_origins)",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("(1500, 3, ['http://localhost:3000', 'http://localhost:5173'])", result.stdout)
+        self.assertIn("(1500, 3, 'http://localhost:9200', 'chatllm_chunks', 900, 'http://localhost:7474', 'neo4j', 1200, ['http://localhost:3000', 'http://localhost:5173'])", result.stdout)
 
     def test_main_defines_ready_probe_and_ingest_concurrency_guard(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -79,6 +86,8 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertIn('@app.get("/health/ready")', source)
         self.assertIn("check_database_ready", source)
         self.assertIn("check_vector_store_ready", source)
+        self.assertIn("check_keyword_store_ready", source)
+        self.assertIn("check_graph_store_ready", source)
         self.assertIn("threading.BoundedSemaphore", source)
         self.assertIn("settings.rag_ingest_concurrency", source)
         self.assertIn("settings.rag_allowed_origins", source)
@@ -146,11 +155,24 @@ print("ok")
     def test_readiness_helpers_are_defined_for_database_and_vector_store(self):
         db_source = (ROOT / "db.py").read_text(encoding="utf-8")
         vector_source = (ROOT / "vector_store.py").read_text(encoding="utf-8")
+        keyword_source = (ROOT / "keyword_store.py").read_text(encoding="utf-8")
+        graph_source = (ROOT / "graph_store.py").read_text(encoding="utf-8")
 
         self.assertIn("def check_database_ready", db_source)
         self.assertIn("select 1", db_source.lower())
         self.assertIn("def check_vector_store_ready", vector_source)
         self.assertIn("client.has_collection", vector_source)
+        self.assertIn("def check_keyword_store_ready", keyword_source)
+        self.assertIn("settings.elasticsearch_index", keyword_source)
+        self.assertIn("def check_graph_store_ready", graph_source)
+        self.assertIn("settings.neo4j_url", graph_source)
+
+    def test_cleanup_endpoint_removes_vector_and_keyword_indexes(self):
+        source = (ROOT / "main.py").read_text(encoding="utf-8")
+
+        self.assertIn("delete_file_vectors", source)
+        self.assertIn("delete_file_keywords", source)
+        self.assertIn("delete_file_graph", source)
 
     def test_vector_store_escapes_filter_values_before_interpolation(self):
         vector_source = (ROOT / "vector_store.py").read_text(encoding="utf-8")

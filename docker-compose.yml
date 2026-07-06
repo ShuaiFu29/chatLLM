@@ -39,6 +39,47 @@ services:
       timeout: 5s
       retries: 5
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    container_name: chatllm-elasticsearch
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  neo4j:
+    image: neo4j:5.26-community
+    container_name: chatllm-neo4j
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      - NEO4J_AUTH=neo4j/chatllm-password
+      - NEO4J_dbms_security_procedures_unrestricted=apoc.*
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
   milvus-etcd:
     image: quay.io/coreos/etcd:v3.5.18
     container_name: chatllm-milvus-etcd
@@ -121,6 +162,9 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  elasticsearch_data:
+  neo4j_data:
+  neo4j_logs:
   milvus_etcd_data:
   milvus_minio_data:
   milvus_data:

@@ -20,6 +20,7 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   const asyncSafetyMigrationSource = readOptionalSource('migrations/0010_rag_eval_async_safety.sql');
   const cancelMigrationSource = readOptionalSource('migrations/0011_rag_eval_cancelled_runs.sql');
   const queueMigrationSource = readOptionalSource('migrations/0012_rag_eval_job_queue.sql');
+  const historyIndexMigrationSource = readOptionalSource('migrations/0014_rag_history_indexes.sql');
 
   assert.match(migrationSource, /create table if not exists rag_eval_datasets/i);
   assert.match(migrationSource, /create table if not exists rag_eval_cases/i);
@@ -45,6 +46,8 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   assert.match(queueMigrationSource, /add column if not exists last_error/i);
   assert.match(queueMigrationSource, /rag_eval_runs_queue_ready_idx/i);
   assert.match(queueMigrationSource, /rag_eval_runs_claimed_idx/i);
+  assert.match(historyIndexMigrationSource, /rag_runs_user_created_idx/i);
+  assert.match(historyIndexMigrationSource, /on rag_runs \(user_id, created_at desc\)/i);
 });
 
 test('RAG eval API exposes authenticated dataset case and run endpoints', () => {
@@ -140,6 +143,28 @@ test('RAG eval exposes dataset quality trend and low-score case summaries', () =
 
   assert.match(controllerSource, /getRagEvalQualitySummaryForUser/);
   assert.match(controllerSource, /res\.json\(summary\)/);
+});
+
+test('RAG eval exposes historical chat RAG runs for the quality center', () => {
+  const routesSource = readOptionalSource('src/routes/ragEval.ts');
+  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+  const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
+
+  assert.match(routesSource, /router\.get\('\/history', requireAuth, listRagEvalHistory\)/);
+  assert.match(controllerSource, /DEFAULT_RAG_EVAL_HISTORY_LIMIT = 50/);
+  assert.match(controllerSource, /MAX_RAG_EVAL_HISTORY_LIMIT = 200/);
+  assert.match(controllerSource, /listRagEvalHistory/);
+  assert.match(controllerSource, /listHistoricalRagRunsForUser\(req\.user\.id, historyLimit\)/);
+  assert.match(controllerSource, /res\.json\(\{ items: history \}\)/);
+
+  assert.match(repositorySource, /interface RagEvalHistoryItem/);
+  assert.match(repositorySource, /listHistoricalRagRunsForUser/);
+  assert.match(repositorySource, /from rag_runs rr/i);
+  assert.match(repositorySource, /join conversations c on c\.id = rr\.conversation_id/i);
+  assert.match(repositorySource, /left join messages am on am\.id = rr\.assistant_message_id/i);
+  assert.match(repositorySource, /left join project_spaces ps on ps\.id = c\.project_space_id/i);
+  assert.match(repositorySource, /where rr\.user_id = \$1/i);
+  assert.match(repositorySource, /order by rr\.created_at desc\s+limit \$2/i);
 });
 
 test('RAG eval queue worker claims persisted jobs and retries safely', () => {

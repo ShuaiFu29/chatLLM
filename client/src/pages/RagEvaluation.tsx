@@ -1,5 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Ban, BarChart3, ClipboardCheck, Download, Eye, Loader2, Pencil, Play, Plus, Save, Trash2 } from 'lucide-react';
+import {
+  AlertCircle,
+  Ban,
+  BarChart3,
+  ClipboardCheck,
+  Download,
+  Eye,
+  Loader2,
+  MessageSquare,
+  Pencil,
+  Play,
+  Plus,
+  RefreshCw,
+  Save,
+  Trash2,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../lib/api';
@@ -106,6 +121,43 @@ interface RagEvalQualitySummary {
   average_keyword_score: number;
   trend: RagEvalQualityTrendRun[];
   low_score_cases: RagEvalLowScoreCase[];
+}
+
+interface RagEvalHistoryQuality {
+  retrieval_score?: number;
+  citation_score?: number;
+  evidence_score?: number;
+  overall_score?: number;
+  evidence_label?: string;
+}
+
+interface RagEvalHistorySource extends RagEvalMatchedSource {
+  content?: string;
+}
+
+interface RagEvalHistoryItem {
+  id: string;
+  conversation_id: string;
+  conversation_title: string;
+  project_space_id?: string | null;
+  project_space_name?: string | null;
+  model?: string | null;
+  assistant_message_id?: string | null;
+  answer_preview: string;
+  answer_length: number;
+  mode: string;
+  query: string;
+  planned_queries: string[];
+  trace_steps: RagEvalTraceStep[];
+  quality: RagEvalHistoryQuality;
+  retrieved_sources: RagEvalHistorySource[];
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RagEvalHistoryResponse {
+  items: RagEvalHistoryItem[];
 }
 
 interface RagEvalDataset {
@@ -258,6 +310,10 @@ export default function RagEvaluationPage() {
   const [isLoadingRun, setIsLoadingRun] = useState(false);
   const [qualitySummary, setQualitySummary] = useState<RagEvalQualitySummary | null>(null);
   const [isQualityLoading, setIsQualityLoading] = useState(false);
+  const [historyItems, setHistoryItems] = useState<RagEvalHistoryItem[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(true);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<RagEvalHistoryItem | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const selectedDataset = useMemo(
@@ -291,10 +347,28 @@ export default function RagEvaluationPage() {
     }
   }, [t]);
 
+  const fetchHistory = useCallback(async () => {
+    setIsHistoryLoading(true);
+    setHistoryError(null);
+
+    try {
+      const { data } = await api.get<RagEvalHistoryResponse>('/rag-eval/history', {
+        params: { limit: 50 },
+      });
+      setHistoryItems(data.items || []);
+    } catch (fetchError) {
+      console.error('Failed to load historical RAG runs:', fetchError);
+      setHistoryError(t('ragEval.historyLoadFailed'));
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }, [t]);
+
   useEffect(() => {
     void fetchProjectSpaces();
     void fetchDatasets();
-  }, [fetchDatasets, fetchProjectSpaces]);
+    void fetchHistory();
+  }, [fetchDatasets, fetchHistory, fetchProjectSpaces]);
 
   useEffect(() => {
     if (!hasRunningRuns) return undefined;
@@ -348,6 +422,23 @@ export default function RagEvaluationPage() {
     return t('ragEval.failedStatus');
   };
 
+  const getEvidenceLabel = (label?: string) => {
+    if (label === 'strong') return t('chat.ragEvidenceStrong');
+    if (label === 'partial') return t('chat.ragEvidencePartial');
+    if (label === 'weak') return t('chat.ragEvidenceWeak');
+    return label || t('usage.notAvailable');
+  };
+
+  const formatHistorySourceName = (source: RagEvalHistorySource) => (
+    source.filename || source.file_id || source.chunk_id || t('ragEval.unknownSource')
+  ).replace(/\.(?:md|markdown)$/i, '');
+
+  const getHistoryWorkspaceName = (item: RagEvalHistoryItem) => (
+    item.project_space_name || getWorkspaceName(item.project_space_id)
+  );
+
+  const getHistoryScore = (item: RagEvalHistoryItem) => item.quality?.overall_score ?? 0;
+
   const mergeRunIntoDatasets = (runToMerge: RagEvalRun) => {
     setDatasets((current) => current.map((dataset) => ({
       ...dataset,
@@ -376,6 +467,26 @@ export default function RagEvaluationPage() {
     if (isSaving) return;
     setDatasetModalMode(null);
     setDatasetDraft(emptyDatasetDraft);
+  };
+
+  const openCreateCaseFromHistory = (item: RagEvalHistoryItem) => {
+    const targetDatasetId = selectedDatasetId || selectedDataset?.id;
+    if (!targetDatasetId || isSelectedDatasetAtCaseLimit) return;
+
+    const sourceNames = Array.from(new Set(
+      (item.retrieved_sources || [])
+        .map((source) => formatHistorySourceName(source))
+        .filter(Boolean)
+    )).slice(0, 12);
+
+    setSelectedDatasetId(targetDatasetId);
+    setCaseDraft({
+      question: item.query,
+      expected_answer: item.answer_preview || '',
+      expected_keywords: (item.planned_queries || []).slice(0, 8).join(', '),
+      expected_source_files: sourceNames.join(', '),
+    });
+    setIsCaseModalOpen(true);
   };
 
   const handleSaveDataset = async () => {
@@ -594,6 +705,7 @@ export default function RagEvaluationPage() {
   const qualityTrendDeltaLabel = qualityTrendDelta === null
     ? t('ragEval.notEnoughRuns')
     : `${qualityTrendDelta >= 0 ? '+' : ''}${formatScore(qualityTrendDelta)}`;
+  const visibleHistoryItems = historyItems.slice(0, 8);
 
   return (
     <div className="flex h-full flex-col bg-bg-base text-text-main">
@@ -618,7 +730,7 @@ export default function RagEvaluationPage() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 overflow-hidden lg:grid-cols-[320px_minmax(0,1fr)]">
         <aside className="border-b border-border bg-bg-sidebar p-4 lg:border-b-0 lg:border-r">
-          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('ragEval.datasets')}</div>
+          <div className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-muted">{t('ragEval.benchmarkDatasets')}</div>
           {isLoading ? (
             <div className="flex items-center gap-2 text-sm text-text-muted">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -686,20 +798,124 @@ export default function RagEvaluationPage() {
             </div>
           )}
 
-          {!selectedDataset ? (
-            <div className="flex min-h-80 flex-col items-center justify-center gap-3 text-center text-text-muted">
-              <ClipboardCheck className="h-12 w-12 opacity-30" />
-              <p>{t('ragEval.emptyState')}</p>
-            </div>
-          ) : (
-            <div className="mx-auto max-w-6xl space-y-4">
+          <div className="mx-auto max-w-6xl space-y-4">
+            <section className="rounded-lg border border-border bg-bg-sidebar p-4">
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <h2 className="flex items-center gap-2 font-semibold">
+                    <MessageSquare className="h-4 w-4 text-primary" />
+                    {t('ragEval.historyTitle')}
+                  </h2>
+                  <p className="mt-1 text-xs text-text-muted">{t('ragEval.historyHint')}</p>
+                </div>
+                <button
+                  onClick={fetchHistory}
+                  disabled={isHistoryLoading}
+                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isHistoryLoading ? 'animate-spin' : ''}`} />
+                  {t('usage.refresh')}
+                </button>
+              </div>
+
+              {historyError && (
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+                  <AlertCircle className="h-4 w-4 shrink-0" />
+                  {historyError}
+                </div>
+              )}
+
+              {isHistoryLoading ? (
+                <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-text-muted">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t('common.loading')}
+                </div>
+              ) : visibleHistoryItems.length === 0 ? (
+                <div className="flex min-h-28 flex-col items-center justify-center gap-2 text-center text-sm text-text-muted">
+                  <MessageSquare className="h-8 w-8 opacity-30" />
+                  <p>{t('ragEval.historyEmpty')}</p>
+                </div>
+              ) : (
+                <div className="grid gap-3 xl:grid-cols-2">
+                  {visibleHistoryItems.map((item) => {
+                    const retrievedSources = item.retrieved_sources || [];
+                    const plannedQueries = item.planned_queries || [];
+                    const score = getHistoryScore(item);
+
+                    return (
+                      <div key={item.id} className="min-w-0 rounded-lg border border-border bg-bg-base p-4">
+                        <div className="mb-3 flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+                              <span className="rounded border border-primary/30 bg-primary/10 px-2 py-0.5 uppercase text-primary">
+                                {item.mode}
+                              </span>
+                              <span className="rounded border border-border px-2 py-0.5">
+                                {getEvidenceLabel(item.quality?.evidence_label)}
+                              </span>
+                              <span className="rounded border border-border px-2 py-0.5">
+                                {formatScore(score)}
+                              </span>
+                            </div>
+                            <p className="line-clamp-2 break-words text-sm font-medium">{item.query}</p>
+                          </div>
+                          <span className="shrink-0 text-xs text-text-muted">{formatDate(item.created_at).slice(0, 10)}</span>
+                        </div>
+
+                        <p className="line-clamp-2 break-words text-xs leading-5 text-text-muted">
+                          {item.answer_preview || t('usage.notAvailable')}
+                        </p>
+
+                        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
+                          <span>{t('ragEval.historyConversation')}: {item.conversation_title || t('sidebar.newChat')}</span>
+                          <span>{t('usage.workspace')}: {getHistoryWorkspaceName(item)}</span>
+                          <span>{t('ragEval.historySources')}: {retrievedSources.length}</span>
+                          <span>{t('ragEval.historyTrace')}: {plannedQueries.length}</span>
+                        </div>
+
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            onClick={() => setSelectedHistoryItem(item)}
+                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main"
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            {t('ragEval.historyOpenDetails')}
+                          </button>
+                          <button
+                            onClick={() => openCreateCaseFromHistory(item)}
+                            disabled={!selectedDataset || isSelectedDatasetAtCaseLimit}
+                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            {t('ragEval.historyAddToDataset')}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            {!selectedDataset ? (
+              <section className="flex min-h-60 flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-border bg-bg-sidebar p-8 text-center text-text-muted">
+                <ClipboardCheck className="h-12 w-12 opacity-30" />
+                <h2 className="text-base font-semibold text-text-main">{t('ragEval.benchmarkTitle')}</h2>
+                <p className="max-w-xl text-sm">{t('ragEval.emptyState')}</p>
+              </section>
+            ) : (
+              <>
               <section className="rounded-lg border border-border bg-bg-sidebar p-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                      {t('ragEval.benchmarkTitle')}
+                    </p>
                     <h2 className="text-lg font-semibold">{selectedDataset.name}</h2>
                     <p className="mt-1 text-sm text-text-muted">
                       {selectedDataset.description || t('ragEval.noDescription')}
                     </p>
+                    <p className="mt-1 text-xs text-text-muted">{t('ragEval.benchmarkHint')}</p>
                     <p className="mt-2 text-xs text-text-muted">{getWorkspaceName(selectedDataset.project_space_id)}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -1029,10 +1245,133 @@ export default function RagEvaluationPage() {
                   </div>
                 )}
               </section>
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </main>
       </div>
+
+      <Modal
+        isOpen={!!selectedHistoryItem}
+        onClose={() => setSelectedHistoryItem(null)}
+        title={t('ragEval.historyDetails')}
+        maxWidth="3xl"
+        footer={
+          <button
+            onClick={() => setSelectedHistoryItem(null)}
+            className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+          >
+            {t('common.close')}
+          </button>
+        }
+      >
+        {selectedHistoryItem && (
+          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+            <div>
+              <p className="text-xs font-medium text-text-muted">{t('ragEval.question')}</p>
+              <p className="mt-1 whitespace-pre-wrap break-words text-base font-semibold">
+                {selectedHistoryItem.query}
+              </p>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('ragEval.historyConversation')}</p>
+                <p className="mt-1 truncate text-text-main">
+                  {selectedHistoryItem.conversation_title || t('sidebar.newChat')}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('usage.workspace')}</p>
+                <p className="mt-1 truncate text-text-main">{getHistoryWorkspaceName(selectedHistoryItem)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('ragEval.overallScore')}</p>
+                <p className="mt-1 text-text-main">{formatScore(selectedHistoryItem.quality?.overall_score)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('ragEval.evidence')}</p>
+                <p className="mt-1 text-text-main">{getEvidenceLabel(selectedHistoryItem.quality?.evidence_label)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('usage.model')}</p>
+                <p className="mt-1 truncate text-text-main">{selectedHistoryItem.model || t('usage.notAvailable')}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('ragEval.status')}</p>
+                <p className="mt-1 text-text-main">{selectedHistoryItem.status}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('ragEval.createdAt')}</p>
+                <p className="mt-1 text-text-main">{formatDate(selectedHistoryItem.created_at).slice(0, 19)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-text-muted">{t('ragEval.historySources')}</p>
+                <p className="mt-1 text-text-main">{selectedHistoryItem.retrieved_sources?.length || 0}</p>
+              </div>
+            </div>
+
+            <div>
+              <p className="mb-2 text-xs font-medium text-text-muted">{t('ragEval.historyAnswerPreview')}</p>
+              <p className="whitespace-pre-wrap break-words rounded-lg border border-border bg-bg-base p-3 text-sm leading-6 text-text-muted">
+                {selectedHistoryItem.answer_preview || t('usage.notAvailable')}
+              </p>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-2">
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                  {t('ragEval.historySources')}
+                </p>
+                {selectedHistoryItem.retrieved_sources?.length ? (
+                  <div className="space-y-2">
+                    {selectedHistoryItem.retrieved_sources.slice(0, 8).map((source, index) => (
+                      <div key={`${source.file_id || source.chunk_id || source.filename || index}`} className="text-xs">
+                        <div className="truncate text-text-main">{formatHistorySourceName(source)}</div>
+                        <div className="mt-1 text-text-muted">
+                          {source.chunk_index !== undefined && source.chunk_index !== null ? `#${source.chunk_index} · ` : ''}
+                          {formatScore(source.agentic_score ?? source.similarity ?? 0)}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-muted">{t('ragEval.noMatchedSources')}</p>
+                )}
+              </div>
+
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                  {t('ragEval.historyTrace')}
+                </p>
+                {selectedHistoryItem.planned_queries?.length ? (
+                  <div className="mb-3 flex flex-wrap gap-1.5">
+                    {selectedHistoryItem.planned_queries.map((query, index) => (
+                      <span key={`${selectedHistoryItem.id}-planned-${index}`} className="max-w-full truncate rounded-full bg-bg-sidebar px-2 py-1 text-[11px] text-text-muted">
+                        {query}
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                {selectedHistoryItem.trace_steps?.length ? (
+                  <div className="space-y-1.5">
+                    {selectedHistoryItem.trace_steps.map((step, index) => (
+                      <div key={`${step.step_type || 'step'}-${index}`} className="flex items-center justify-between gap-3 text-xs">
+                        <span className="truncate text-text-main">{step.step_type || t('ragEval.traceStep')}</span>
+                        <span className="shrink-0 text-text-muted">
+                          {step.status || '-'} · {step.duration_ms ?? 0}ms
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-text-muted">{t('ragEval.noTraceSteps')}</p>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <Modal
         isOpen={!!datasetModalMode}

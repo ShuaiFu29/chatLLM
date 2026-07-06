@@ -351,6 +351,7 @@ export const sendMessage = async (req: Request, res: Response) => {
         const documents = agenticRagRun.results || [];
         traceSummary = {
           mode: agenticRagRun.mode,
+          intent: agenticRagRun.intent,
           planned_queries: agenticRagRun.planned_queries || [],
           trace_steps: agenticRagRun.trace_steps || [],
           quality: agenticRagRun.quality,

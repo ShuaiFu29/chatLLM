@@ -10,6 +10,7 @@ import projectSpaceRoutes from './routes/projectSpaces';
 import usageRoutes from './routes/usage';
 import promptTemplateRoutes from './routes/promptTemplates';
 import ragEvalRoutes from './routes/ragEval';
+import ragWorkbenchRoutes from './routes/ragWorkbench';
 import { fileQueue } from './services/fileQueue';
 import { ragEvalQueue } from './services/ragEvalQueue';
 import { maintenanceService } from './services/maintenance';
@@ -78,6 +79,12 @@ app.use('/api/rag-eval', createRateLimit({
   max: serverEnv.RAG_EVAL_RATE_LIMIT_MAX,
   message: 'Too many RAG evaluation requests',
 }), ragEvalRoutes);
+app.use('/api/rag-workbench', createRateLimit({
+  keyPrefix: 'rag-workbench',
+  windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
+  max: serverEnv.RAG_EVAL_RATE_LIMIT_MAX,
+  message: 'Too many RAG workbench requests',
+}), ragWorkbenchRoutes);
 app.use('/api/chat', createRateLimit({
   keyPrefix: 'chat',
   windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,

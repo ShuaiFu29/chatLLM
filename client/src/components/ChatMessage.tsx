@@ -1,5 +1,5 @@
 import { memo, lazy, Suspense, useState } from 'react';
-import { Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil, Gauge, Route } from 'lucide-react';
+import { AlertTriangle, Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil, Gauge, Route } from 'lucide-react';
 import type { Message } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
@@ -115,6 +115,13 @@ const ChatMessage = memo(({
                     {t('chat.ragEvidence')}: {formatEvidenceLabel(qualitySummary.evidence_label)}
                   </span>
                   {ragRunId && <span className="font-mono text-[10px] text-text-muted">#{String(ragRunId).slice(0, 8)}</span>}
+                </div>
+              )}
+
+              {msg.ragWarning && (
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-amber-500/20 bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-200">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  <span>{t('chat.ragRetrievalFailed')}</span>
                 </div>
               )}
 

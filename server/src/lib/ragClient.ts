@@ -14,6 +14,11 @@ interface RetrieveRagDocumentsInput {
 export interface AgenticRagResponse {
   run_id: string;
   mode: string;
+  intent?: {
+    type: string;
+    complexity: string;
+    routes: string[];
+  };
   planned_queries: string[];
   results: RagDocument[];
   trace_steps: RagTraceStep[];
@@ -111,6 +116,16 @@ export const retrieveRagDocuments = async (input: RetrieveRagDocumentsInput): Pr
 
 export const retrieveAgenticRagDocuments = async (input: RetrieveRagDocumentsInput): Promise<AgenticRagResponse> => {
   return postRagService<AgenticRagResponse>('/agentic-retrieve', input, serverEnv.RAG_RETRIEVE_TIMEOUT_MS);
+};
+
+export const searchRagGraphDocuments = async (input: RetrieveRagDocumentsInput): Promise<RagDocument[]> => {
+  const response = await postRagService<{ results?: RagDocument[] }>(
+    '/graph/search',
+    input,
+    serverEnv.RAG_RETRIEVE_TIMEOUT_MS
+  );
+
+  return response.results || [];
 };
 
 export const runRagEvaluation = async (input: {

@@ -1,5 +1,6 @@
 import { query, withTransaction } from '../lib/db';
 import { serverEnv } from '../lib/env';
+import { ChatSource, RagQualitySummary, RagTraceStep } from '../lib/chatSources';
 
 type RagEvalRunStatus = 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
 
@@ -123,6 +124,38 @@ export interface RagEvalQualitySummary {
   low_score_cases: RagEvalLowScoreCase[];
 }
 
+export interface RagEvalHistoryItem {
+  id: string;
+  conversation_id: string;
+  conversation_title: string;
+  project_space_id?: string | null;
+  project_space_name?: string | null;
+  model?: string | null;
+  assistant_message_id?: string | null;
+  answer_preview: string;
+  answer_length: number;
+  mode: string;
+  query: string;
+  planned_queries: string[];
+  trace_steps: RagTraceStep[];
+  quality: Partial<RagQualitySummary>;
+  retrieved_sources: ChatSource[];
+  status: 'success' | 'partial' | 'failed' | string;
+  created_at: string;
+  updated_at: string;
+}
+
+interface RagEvalHistoryRow extends Omit<
+  RagEvalHistoryItem,
+  'answer_length' | 'planned_queries' | 'trace_steps' | 'quality' | 'retrieved_sources'
+> {
+  answer_length: number | string | null;
+  planned_queries: string[] | string | null;
+  trace_steps: RagTraceStep[] | string | null;
+  quality: Partial<RagQualitySummary> | string | null;
+  retrieved_sources: ChatSource[] | string | null;
+}
+
 const datasetColumns = `
   id,
   user_id,
@@ -193,6 +226,42 @@ interface RagEvalRunOutput {
     error_message: string;
   }>;
 }
+
+const toCount = (value: number | string | null | undefined) => Number(value ?? 0);
+
+const toJsonArray = <T>(value: T[] | string | null | undefined): T[] => {
+  if (Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return [];
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+};
+
+const toJsonObject = <T extends Record<string, unknown>>(value: T | string | null | undefined): T => {
+  if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return {} as T;
+
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : ({} as T);
+  } catch {
+    return {} as T;
+  }
+};
+
+const mapRagEvalHistoryItem = (row: RagEvalHistoryRow): RagEvalHistoryItem => ({
+  ...row,
+  answer_preview: row.answer_preview || '',
+  answer_length: toCount(row.answer_length),
+  planned_queries: toJsonArray<string>(row.planned_queries),
+  trace_steps: toJsonArray<RagTraceStep>(row.trace_steps),
+  quality: toJsonObject<Partial<RagQualitySummary>>(row.quality),
+  retrieved_sources: toJsonArray<ChatSource>(row.retrieved_sources),
+});
 
 const getRunStatusFromOutput = (output: RagEvalRunOutput): RagEvalRunStatus => {
   if (output.failed_count === 0) return 'completed';
@@ -467,6 +536,46 @@ export const getRagEvalQualitySummaryForUser = async (
     trend,
     low_score_cases: lowScoreCases,
   };
+};
+
+export const listHistoricalRagRunsForUser = async (
+  userId: string,
+  limit = 50
+): Promise<RagEvalHistoryItem[]> => {
+  const { rows } = await query<RagEvalHistoryRow>(
+    `select
+       rr.id,
+       rr.conversation_id,
+       c.title as conversation_title,
+       c.project_space_id,
+       ps.name as project_space_name,
+       c.model,
+       rr.assistant_message_id,
+       left(coalesce(am.content, ''), 640) as answer_preview,
+       char_length(coalesce(am.content, ''))::int as answer_length,
+       rr.mode,
+       rr.query,
+       rr.planned_queries,
+       rr.trace_steps,
+       rr.quality,
+       rr.retrieved_sources,
+       rr.status,
+       rr.created_at,
+       rr.updated_at
+     from rag_runs rr
+     join conversations c on c.id = rr.conversation_id
+     left join messages am on am.id = rr.assistant_message_id
+       and am.conversation_id = rr.conversation_id
+     left join project_spaces ps on ps.id = c.project_space_id
+       and ps.user_id = rr.user_id
+     where rr.user_id = $1
+       and c.user_id = $1
+     order by rr.created_at desc
+     limit $2`,
+    [userId, limit]
+  );
+
+  return rows.map(mapRagEvalHistoryItem);
 };
 
 export const createRunningRagEvalRunForUser = async (input: {

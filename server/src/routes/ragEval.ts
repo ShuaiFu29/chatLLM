@@ -8,6 +8,7 @@ import {
   getRagEvalQualitySummary,
   getRagEvalRun,
   listRagEvalDatasets,
+  listRagEvalHistory,
   runRagEvalDataset,
   updateRagEvalDataset,
 } from '../controllers/ragEval';
@@ -15,6 +16,7 @@ import { requireAuth } from '../middleware/auth';
 
 const router = Router();
 
+router.get('/history', requireAuth, listRagEvalHistory);
 router.get('/datasets', requireAuth, listRagEvalDatasets);
 router.post('/datasets', requireAuth, createRagEvalDataset);
 router.patch('/datasets/:datasetId', requireAuth, updateRagEvalDataset);

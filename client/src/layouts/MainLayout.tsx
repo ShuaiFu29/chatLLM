@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
-import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network } from 'lucide-react';
 import api from '../lib/api';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
@@ -305,6 +305,8 @@ export default function MainLayout() {
   const isUsagePage = location.pathname === '/usage';
   const isPromptsPage = location.pathname === '/prompts';
   const isRagEvalPage = location.pathname === '/rag-eval';
+  const isRetrievalLabPage = location.pathname === '/retrieval-lab';
+  const isGraphExplorerPage = location.pathname === '/rag-graph';
 
   useEffect(() => {
     // Also support clicking on the search trigger
@@ -787,6 +789,74 @@ export default function MainLayout() {
             )}
           </div>
 
+          <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-bg-base/40 p-2">
+            <button
+              onClick={() => {
+                navigate('/prompts');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isPromptsPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.promptTemplates')}
+            >
+              <BookOpenText className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.promptTemplates')}</span>
+            </button>
+            <button
+              onClick={() => {
+                navigate('/usage');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isUsagePage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('usage.title')}
+            >
+              <BarChart3 className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.usage')}</span>
+            </button>
+            <button
+              onClick={() => {
+                navigate('/rag-eval');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isRagEvalPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.ragEvaluation')}
+            >
+              <ClipboardCheck className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.ragEvaluation')}</span>
+            </button>
+            <button
+              onClick={() => {
+                navigate('/retrieval-lab');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isRetrievalLabPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.retrievalLab')}
+            >
+              <Route className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.retrievalLab')}</span>
+            </button>
+            <button
+              onClick={() => {
+                navigate('/rag-graph');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`col-span-2 flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isGraphExplorerPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.graphExplorer')}
+            >
+              <Network className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.graphExplorer')}</span>
+            </button>
+          </div>
+
           {/* Workspace Documents Section */}
           <div className="rounded-xl bg-bg-base/40 p-2">
             <button
@@ -817,48 +887,10 @@ export default function MainLayout() {
               </span>
             </button>
           </div>
+
         </div>
 
         <div className="border-t border-border bg-bg-sidebar p-3">
-          <button
-            onClick={() => {
-              navigate('/prompts');
-              setIsMobileMenuOpen(false);
-            }}
-            className={`mb-2 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
-              isPromptsPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
-            }`}
-            title={t('sidebar.promptTemplates')}
-          >
-            <BookOpenText className="h-4 w-4 shrink-0" />
-            <span className="text-sm font-medium">{t('sidebar.promptTemplates')}</span>
-          </button>
-          <button
-            onClick={() => {
-              navigate('/usage');
-              setIsMobileMenuOpen(false);
-            }}
-            className={`mb-3 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
-              isUsagePage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
-            }`}
-            title={t('usage.title')}
-          >
-            <BarChart3 className="h-4 w-4 shrink-0" />
-            <span className="text-sm font-medium">{t('sidebar.usage')}</span>
-          </button>
-          <button
-            onClick={() => {
-              navigate('/rag-eval');
-              setIsMobileMenuOpen(false);
-            }}
-            className={`mb-3 flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${
-              isRagEvalPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
-            }`}
-            title={t('sidebar.ragEvaluation')}
-          >
-            <ClipboardCheck className="h-4 w-4 shrink-0" />
-            <span className="text-sm font-medium">{t('sidebar.ragEvaluation')}</span>
-          </button>
           <div
             onClick={() => {
               navigate('/profile');

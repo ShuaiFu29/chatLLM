@@ -2,6 +2,8 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 
 from db import get_file, replace_file_chunks, update_file_progress, update_file_status
 from embeddings import get_embeddings
+from graph_store import delete_file_graph, index_graph_chunks
+from keyword_store import delete_file_keywords, index_chunks
 from storage import download_object
 from vector_store import delete_file_vectors, insert_vectors
 
@@ -87,7 +89,27 @@ def process_file(file_id: str):
             raise ValueError("File produced no chunks")
 
         delete_file_vectors(file_id)
+        delete_file_keywords(file_id)
+        delete_file_graph(file_id)
         chunk_rows = replace_file_chunks(file_id, user_id, chunks, file_data)
+        indexed_chunk_rows = []
+        for row in chunk_rows:
+            indexed_row = dict(row)
+            metadata = dict(indexed_row.get("metadata") or {})
+            metadata.update({
+                "filename": file_data["filename"],
+                "file_type": file_data.get("file_type"),
+                "user_id": user_id,
+                "project_space_id": project_space_id or None,
+                "source_file_id": file_id,
+                "file_id": file_id,
+                "chunk_index": int(indexed_row["chunk_index"]),
+            })
+            indexed_row["metadata"] = metadata
+            indexed_chunk_rows.append(indexed_row)
+
+        index_chunks(indexed_chunk_rows)
+        index_graph_chunks(file_data, indexed_chunk_rows)
 
         batch_size = EMBEDDING_BATCH_SIZE
         processed_count = 0

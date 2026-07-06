@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -17,6 +17,10 @@ const searchDialogSource = readFileSync(path.join(clientDir, 'src/components/Sea
 const promptTemplatePageSource = readFileSync(path.join(clientDir, 'src/pages/PromptTemplates.tsx'), 'utf8');
 const ragEvaluationPagePath = path.join(clientDir, 'src/pages/RagEvaluation.tsx');
 const ragEvaluationPageSource = readFileSync(ragEvaluationPagePath, 'utf8');
+const retrievalLabPagePath = path.join(clientDir, 'src/pages/RetrievalLab.tsx');
+const retrievalLabPageSource = existsSync(retrievalLabPagePath) ? readFileSync(retrievalLabPagePath, 'utf8') : '';
+const graphExplorerPagePath = path.join(clientDir, 'src/pages/GraphExplorer.tsx');
+const graphExplorerPageSource = existsSync(graphExplorerPagePath) ? readFileSync(graphExplorerPagePath, 'utf8') : '';
 const usagePageSource = readFileSync(path.join(clientDir, 'src/pages/Usage.tsx'), 'utf8');
 const modalSource = readFileSync(path.join(clientDir, 'src/components/Modal.tsx'), 'utf8');
 const chatMessageSource = readFileSync(path.join(clientDir, 'src/components/ChatMessage.tsx'), 'utf8');
@@ -225,6 +229,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(mainLayoutSource, /sidebar\.ragEvaluation/);
   assert.match(mainLayoutSource, /navigate\('\/rag-eval'\)/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/datasets'\)/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/history'/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
   assert.match(ragEvaluationPageSource, /api\.patch(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}`/);
   assert.match(ragEvaluationPageSource, /api\.delete\(`\/rag-eval\/datasets\/\$\{datasetToDelete\.id\}`/);
@@ -268,6 +273,14 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /ragEval\.trendDelta/);
   assert.match(ragEvaluationPageSource, /ragEval\.lowScoreCases/);
   assert.match(ragEvaluationPageSource, /qualitySummary\.low_score_cases/);
+  assert.match(ragEvaluationPageSource, /historyItems/);
+  assert.match(ragEvaluationPageSource, /selectedHistoryItem/);
+  assert.match(ragEvaluationPageSource, /openCreateCaseFromHistory/);
+  assert.match(ragEvaluationPageSource, /ragEval\.historyTitle/);
+  assert.match(ragEvaluationPageSource, /ragEval\.historyHint/);
+  assert.match(ragEvaluationPageSource, /ragEval\.historyDetails/);
+  assert.match(ragEvaluationPageSource, /ragEval\.benchmarkTitle/);
+  assert.match(ragEvaluationPageSource, /ragEval\.benchmarkHint/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -302,6 +315,80 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
     assert.ok(locale.ragEval?.lowScoreCases, `${localeFile.locale}.json needs ragEval.lowScoreCases`);
     assert.ok(locale.ragEval?.noLowScoreCases, `${localeFile.locale}.json needs ragEval.noLowScoreCases`);
     assert.ok(locale.ragEval?.qualityLoadFailed, `${localeFile.locale}.json needs ragEval.qualityLoadFailed`);
+    assert.ok(locale.ragEval?.historyTitle, `${localeFile.locale}.json needs ragEval.historyTitle`);
+    assert.ok(locale.ragEval?.historyHint, `${localeFile.locale}.json needs ragEval.historyHint`);
+    assert.ok(locale.ragEval?.historyEmpty, `${localeFile.locale}.json needs ragEval.historyEmpty`);
+    assert.ok(locale.ragEval?.historyLoadFailed, `${localeFile.locale}.json needs ragEval.historyLoadFailed`);
+    assert.ok(locale.ragEval?.historyDetails, `${localeFile.locale}.json needs ragEval.historyDetails`);
+    assert.ok(locale.ragEval?.historyAnswerPreview, `${localeFile.locale}.json needs ragEval.historyAnswerPreview`);
+    assert.ok(locale.ragEval?.historyAddToDataset, `${localeFile.locale}.json needs ragEval.historyAddToDataset`);
+    assert.ok(locale.ragEval?.benchmarkTitle, `${localeFile.locale}.json needs ragEval.benchmarkTitle`);
+    assert.ok(locale.ragEval?.benchmarkHint, `${localeFile.locale}.json needs ragEval.benchmarkHint`);
+  }
+});
+
+test('RAG retrieval lab is routed, reachable from navigation, and localized', () => {
+  assert.ok(retrievalLabPageSource, 'RetrievalLab.tsx should exist');
+  assert.match(appSource, /const RetrievalLabPage = lazy\(\(\) => import\('\.\/pages\/RetrievalLab'\)\)/);
+  assert.match(appSource, /<Route path="\/retrieval-lab" element=\{<RetrievalLabPage \/>\} \/>/);
+  assert.match(mainLayoutSource, /sidebar\.retrievalLab/);
+  assert.match(mainLayoutSource, /navigate\('\/retrieval-lab'\)/);
+  assert.match(retrievalLabPageSource, /api\.post(?:<[^>]+>)?\('\/rag-workbench\/inspect'/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.title/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.queryLabel/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.plannedQueries/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.traceSteps/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.retrievalChannels/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.rerankScore/);
+  assert.match(retrievalLabPageSource, /retrieval_channels/);
+  assert.match(retrievalLabPageSource, /channel_ranks/);
+  assert.match(retrievalLabPageSource, /channel_scores/);
+  assert.match(retrievalLabPageSource, /project_space_id/);
+  assert.match(retrievalLabPageSource, /URLSearchParams\(window\.location\.search\)/);
+  assert.match(retrievalLabPageSource, /hasAutoRunFromUrl/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.sidebar?.retrievalLab, `${localeFile.locale}.json needs sidebar.retrievalLab`);
+    assert.ok(locale.ragWorkbench?.title, `${localeFile.locale}.json needs ragWorkbench.title`);
+    assert.ok(locale.ragWorkbench?.subtitle, `${localeFile.locale}.json needs ragWorkbench.subtitle`);
+    assert.ok(locale.ragWorkbench?.queryLabel, `${localeFile.locale}.json needs ragWorkbench.queryLabel`);
+    assert.ok(locale.ragWorkbench?.inspect, `${localeFile.locale}.json needs ragWorkbench.inspect`);
+    assert.ok(locale.ragWorkbench?.plannedQueries, `${localeFile.locale}.json needs ragWorkbench.plannedQueries`);
+    assert.ok(locale.ragWorkbench?.traceSteps, `${localeFile.locale}.json needs ragWorkbench.traceSteps`);
+    assert.ok(locale.ragWorkbench?.retrievalChannels, `${localeFile.locale}.json needs ragWorkbench.retrievalChannels`);
+    assert.ok(locale.ragWorkbench?.rerankScore, `${localeFile.locale}.json needs ragWorkbench.rerankScore`);
+    assert.ok(locale.ragWorkbench?.loadFailed, `${localeFile.locale}.json needs ragWorkbench.loadFailed`);
+  }
+});
+
+test('RAG graph explorer is routed, reachable from navigation, and localized', () => {
+  assert.ok(graphExplorerPageSource, 'GraphExplorer.tsx should exist');
+  assert.match(appSource, /const GraphExplorerPage = lazy\(\(\) => import\('\.\/pages\/GraphExplorer'\)\)/);
+  assert.match(appSource, /<Route path="\/rag-graph" element=\{<GraphExplorerPage \/>\} \/>/);
+  assert.match(mainLayoutSource, /sidebar\.graphExplorer/);
+  assert.match(mainLayoutSource, /navigate\('\/rag-graph'\)/);
+  assert.match(graphExplorerPageSource, /api\.post(?:<[^>]+>)?\('\/rag-workbench\/graph\/search'/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.title/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.queryLabel/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.search/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.entities/);
+  assert.match(graphExplorerPageSource, /graph_entities/);
+  assert.match(graphExplorerPageSource, /project_space_id/);
+  assert.match(graphExplorerPageSource, /URLSearchParams\(window\.location\.search\)/);
+  assert.match(graphExplorerPageSource, /hasAutoRunFromUrl/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.sidebar?.graphExplorer, `${localeFile.locale}.json needs sidebar.graphExplorer`);
+    assert.ok(locale.graphExplorer?.title, `${localeFile.locale}.json needs graphExplorer.title`);
+    assert.ok(locale.graphExplorer?.subtitle, `${localeFile.locale}.json needs graphExplorer.subtitle`);
+    assert.ok(locale.graphExplorer?.queryLabel, `${localeFile.locale}.json needs graphExplorer.queryLabel`);
+    assert.ok(locale.graphExplorer?.search, `${localeFile.locale}.json needs graphExplorer.search`);
+    assert.ok(locale.graphExplorer?.entities, `${localeFile.locale}.json needs graphExplorer.entities`);
+    assert.ok(locale.graphExplorer?.loadFailed, `${localeFile.locale}.json needs graphExplorer.loadFailed`);
   }
 });
 
@@ -430,6 +517,7 @@ test('chat runtime status copy is localized instead of hardcoded', () => {
 
   assert.match(chatMessageSource, /chat\.searchingWorkspaceDocuments/);
   assert.match(chatMessageSource, /chat\.loadingContent/);
+  assert.match(chatMessageSource, /chat\.ragRetrievalFailed/);
   assert.match(chatInputSource, /chat\.sendMessage/);
   assert.match(chatPageSource, /chat\.uploadHashing/);
   assert.match(chatPageSource, /chat\.uploadUploading/);
@@ -444,9 +532,10 @@ test('chat runtime status copy is localized instead of hardcoded', () => {
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
 
-    assert.ok(locale.chat?.searchingWorkspaceDocuments, `${localeFile.locale}.json needs chat.searchingWorkspaceDocuments`);
-    assert.ok(locale.chat?.loadingContent, `${localeFile.locale}.json needs chat.loadingContent`);
-    assert.ok(locale.chat?.sendMessage, `${localeFile.locale}.json needs chat.sendMessage`);
+  assert.ok(locale.chat?.searchingWorkspaceDocuments, `${localeFile.locale}.json needs chat.searchingWorkspaceDocuments`);
+  assert.ok(locale.chat?.loadingContent, `${localeFile.locale}.json needs chat.loadingContent`);
+    assert.ok(locale.chat?.ragRetrievalFailed, `${localeFile.locale}.json needs chat.ragRetrievalFailed`);
+  assert.ok(locale.chat?.sendMessage, `${localeFile.locale}.json needs chat.sendMessage`);
     assert.ok(locale.chat?.uploadHashing, `${localeFile.locale}.json needs chat.uploadHashing`);
     assert.ok(locale.chat?.uploadUploading, `${localeFile.locale}.json needs chat.uploadUploading`);
     assert.ok(locale.chat?.uploadMerging, `${localeFile.locale}.json needs chat.uploadMerging`);

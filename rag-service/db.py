@@ -148,11 +148,29 @@ def search_chunks_by_text(query: str, user_id: str, project_space_id: str | None
                 from file_chunks
                 join files on files.id = file_chunks.file_id
                 where file_chunks.user_id::text = %s
-                  and (%s is null or files.project_space_id::text = %s)
+                  and (%s::text is null or files.project_space_id::text = %s)
                   and to_tsvector('simple', file_chunks.content) @@ websearch_to_tsquery('simple', %s)
                 order by lexical_score desc, file_chunks.created_at desc
                 limit %s
                 """,
                 (query, user_id, project_space_id, project_space_id, query, limit),
+            )
+            return cur.fetchall()
+
+
+def list_files_for_inventory(user_id: str, project_space_id: str | None = None, limit: int = 50) -> list[dict]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select id, user_id, project_space_id, filename, file_size, file_type,
+                       status, progress, created_at, updated_at
+                from files
+                where user_id::text = %s
+                  and (%s::text is null or project_space_id::text = %s)
+                order by created_at desc
+                limit %s
+                """,
+                (user_id, project_space_id, project_space_id, limit),
             )
             return cur.fetchall()

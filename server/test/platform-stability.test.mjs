@@ -353,6 +353,14 @@ test('docker compose infrastructure has restart policies and health-gated depend
   assert.match(composeSource, /test:\s+\["CMD",\s+"etcdctl"/);
   assert.match(composeSource, /milvus-standalone:[\s\S]*?healthcheck:/);
   assert.match(composeSource, /condition:\s+service_healthy/);
+  assert.match(composeSource, /elasticsearch:/);
+  assert.match(composeSource, /discovery\.type=single-node/);
+  assert.match(composeSource, /xpack\.security\.enabled=false/);
+  assert.match(composeSource, /9200:9200/);
+  assert.match(composeSource, /neo4j:/);
+  assert.match(composeSource, /NEO4J_AUTH=neo4j\/chatllm-password/);
+  assert.match(composeSource, /7474:7474/);
+  assert.match(composeSource, /7687:7687/);
 });
 
 test('startup guide includes readiness, metrics, and smoke-test commands', () => {

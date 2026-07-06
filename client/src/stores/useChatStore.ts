@@ -33,6 +33,7 @@ export interface Message {
   rag_trace?: RagTraceSummary | null;
   traceSummary?: RagTraceSummary | null;
   qualitySummary?: RagQualitySummary | null;
+  ragWarning?: boolean;
   sources?: {
     chunk_id?: string;
     file_id?: string;
@@ -61,6 +62,11 @@ export interface RagQualitySummary {
 
 export interface RagTraceSummary {
   mode: string;
+  intent?: {
+    type: string;
+    complexity: string;
+    routes: string[];
+  };
   planned_queries: string[];
   trace_steps: RagTraceStep[];
   quality: RagQualitySummary;
@@ -757,6 +763,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                     ragRunId: data.ragRunId || updatedMsgs[lastMsgIndex].ragRunId,
                     traceSummary: data.traceSummary || updatedMsgs[lastMsgIndex].traceSummary,
                     qualitySummary: data.qualitySummary || updatedMsgs[lastMsgIndex].qualitySummary,
+                  };
+                  updateMessages(updatedMsgs);
+                }
+              }
+
+              if (data.rag_warning) {
+                const currentMsgs = get().messages;
+                const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
+                if (lastMsgIndex !== -1) {
+                  const updatedMsgs = [...currentMsgs];
+                  updatedMsgs[lastMsgIndex] = {
+                    ...updatedMsgs[lastMsgIndex],
+                    ragWarning: true,
                   };
                   updateMessages(updatedMsgs);
                 }

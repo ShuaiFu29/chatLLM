@@ -11,12 +11,25 @@ import {
   getRagEvalDatasetWithCasesForUser,
   getRagEvalQualitySummaryForUser,
   getRagEvalRunForUser,
+  listHistoricalRagRunsForUser,
   listRagEvalDatasetsForUser,
   updateRagEvalDatasetForUser,
 } from '../repositories/ragEval';
 
 const MAX_RAG_EVAL_CASES_PER_RUN = 50;
 const MAX_RAG_EVAL_CASES_PER_DATASET = 50;
+const DEFAULT_RAG_EVAL_HISTORY_LIMIT = 50;
+const MAX_RAG_EVAL_HISTORY_LIMIT = 200;
+
+const parseBoundedLimit = (value: unknown, defaultValue: number, maxValue: number) => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (typeof raw !== 'string' || !raw.trim()) return defaultValue;
+
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) return defaultValue;
+
+  return Math.min(parsed, maxValue);
+};
 
 const cleanText = (value: unknown, maxLength: number) => {
   if (typeof value !== 'string') return '';
@@ -47,6 +60,23 @@ export const listRagEvalDatasets = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error listing RAG eval datasets:', error);
     res.status(500).json({ error: 'Failed to list RAG eval datasets' });
+  }
+};
+
+export const listRagEvalHistory = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const historyLimit = parseBoundedLimit(
+    req.query.limit,
+    DEFAULT_RAG_EVAL_HISTORY_LIMIT,
+    MAX_RAG_EVAL_HISTORY_LIMIT
+  );
+
+  try {
+    const history = await listHistoricalRagRunsForUser(req.user.id, historyLimit);
+    res.json({ items: history });
+  } catch (error) {
+    console.error('Error listing historical RAG runs:', error);
+    res.status(500).json({ error: 'Failed to list historical RAG runs' });
   }
 };
 
