@@ -148,9 +148,17 @@ def ready_health_check():
 
 @app.on_event("startup")
 def startup():
-    ensure_collection()
-    ensure_keyword_index()
-    ensure_graph_schema()
+    startup_tasks = [
+        ("milvus collection", ensure_collection),
+        ("elasticsearch keyword index", ensure_keyword_index),
+        ("neo4j graph schema", ensure_graph_schema),
+    ]
+
+    for label, task in startup_tasks:
+        try:
+            task()
+        except Exception as error:
+            print(f"[startup] Deferred {label} initialization: {error}")
 
 def process_file_with_guard(file_id: str):
     try:

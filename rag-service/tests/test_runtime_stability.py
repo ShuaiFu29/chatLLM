@@ -107,6 +107,21 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertIn("status_code=429", source)
         self.assertIn("process_file_with_guard", source)
 
+    def test_startup_does_not_crash_when_optional_indexes_are_temporarily_unavailable(self):
+        script = """
+from unittest.mock import patch
+import main
+
+with patch("main.ensure_collection"), patch("main.ensure_keyword_index", side_effect=RuntimeError("es warming up")), patch("main.ensure_graph_schema"):
+    main.startup()
+
+print("ok")
+"""
+        result = run_main_script(valid_env(), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
     def test_retrieve_request_rejects_unbounded_inputs(self):
         script = """
 from pydantic import ValidationError
