@@ -4,6 +4,7 @@
   "scripts": {
     "check:config": "node scripts/check-env.mjs",
     "check:capacity": "node scripts/capacity-check.mjs",
+    "check:ops": "node scripts/ops-check.mjs",
     "check:ports": "node scripts/check-ports.mjs",
     "rag:smoke": "node scripts/rag-smoke.mjs",
     "predev": "npm run check:config && npm run check:ports && npm run dev:infra",
@@ -12,7 +13,7 @@
     "dev:server": "npm --prefix server run dev",
     "dev:rag": "cd rag-service && python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000",
     "dev:client": "npm --prefix client run dev",
-    "test": "node --test scripts/check-env.test.mjs scripts/check-ports.test.mjs scripts/capacity-check.test.mjs scripts/load-smoke.test.mjs scripts/rag-smoke.test.mjs client/vite-proxy-target.test.mjs client/build-config.test.mjs client/ui-copy.test.mjs client/export-conversation.test.mjs client/chat-drafts.test.mjs && npm --prefix server run test && cd rag-service && python -m unittest discover -s tests",
+    "test": "node --test scripts/check-env.test.mjs scripts/check-ports.test.mjs scripts/capacity-check.test.mjs scripts/load-smoke.test.mjs scripts/ops-check.test.mjs scripts/rag-smoke.test.mjs client/vite-proxy-target.test.mjs client/build-config.test.mjs client/ui-copy.test.mjs client/export-conversation.test.mjs client/chat-drafts.test.mjs && npm --prefix server run test && cd rag-service && python -m unittest discover -s tests",
     "build": "npm --prefix server run build && npm --prefix client run build",
     "lint": "npm --prefix client run lint",
     "load:smoke": "node scripts/load-smoke.mjs",

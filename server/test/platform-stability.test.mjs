@@ -342,6 +342,7 @@ test('root package includes a no-dependency load smoke script', () => {
 
   assert.equal(rootPackage.scripts['load:smoke'], 'node scripts/load-smoke.mjs');
   assert.equal(rootPackage.scripts['check:capacity'], 'node scripts/capacity-check.mjs');
+  assert.equal(rootPackage.scripts['check:ops'], 'node scripts/ops-check.mjs');
   assert.match(loadScriptSource, /LOAD_TARGET_URL/);
   assert.match(loadScriptSource, /LOAD_SCENARIO/);
   assert.match(loadScriptSource, /LOAD_CONCURRENCY/);

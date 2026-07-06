@@ -104,6 +104,11 @@ npm run load:smoke
 cd D:\project\chatLLM
 npm run check:capacity
 
+运行中健康巡检（项目启动后再执行）：
+
+cd D:\project\chatLLM
+npm run check:ops
+
 企业级容量检查（会提示高并发/大数据场景下偏弱的配置）：
 
 cd D:\project\chatLLM
