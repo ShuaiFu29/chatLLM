@@ -15,7 +15,7 @@ test('rag smoke script uses local embeddings and verifies ingest retrieve cleanu
   assert.match(source, /EMBEDDING_PROVIDER:\s*'local'/);
   assert.match(source, /spawn\(/);
   assert.match(source, /\/health\/ready/);
-  assert.match(source, /\/ingest/);
+  assert.match(source, /\/ingest-sync/);
   assert.match(source, /\/retrieve/);
   assert.match(source, /\/cleanup-file/);
   assert.match(source, /delete from users where id = \$1/);

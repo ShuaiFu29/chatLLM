@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Activity, AlertCircle, BarChart3, Bot, Clock, Database, FileText, MessageSquare, RefreshCw, UserRound } from 'lucide-react';
+import { Activity, AlertCircle, BarChart3, Bot, CheckCircle2, Clock, Database, FileText, MessageSquare, RefreshCw, UserRound } from 'lucide-react';
 import api from '../lib/api';
 import Modal from '../components/Modal';
 import Skeleton from '../components/Skeleton';
+import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 
 interface UsageSummary {
   totalWorkspaces: number;
@@ -169,6 +170,7 @@ export default function UsagePage() {
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [conversationTrace, setConversationTrace] = useState<UsageConversationResponse | null>(null);
   const [selectedFileJob, setSelectedFileJob] = useState<UsageFileQueueItem | null>(null);
+  const [isFileJobsModalOpen, setIsFileJobsModalOpen] = useState(false);
   const [isTraceModalOpen, setIsTraceModalOpen] = useState(false);
   const [isLoadingOverview, setIsLoadingOverview] = useState(true);
   const [isLoadingFileQueue, setIsLoadingFileQueue] = useState(true);
@@ -213,6 +215,13 @@ export default function UsagePage() {
 
   const formatFilename = useCallback((filename: string) => {
     return filename.replace(/\.(?:md|markdown)$/i, '').trim();
+  }, []);
+
+  const getFileStatusClass = useCallback((status: UsageFileQueueItem['status']) => {
+    if (status === 'completed') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+    if (status === 'processing' || status === 'uploading') return 'border-blue-500/30 bg-blue-500/10 text-blue-300';
+    if (status === 'pending') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+    return 'border-red-500/30 bg-red-500/10 text-red-300';
   }, []);
 
   const fetchOverview = useCallback(async () => {
@@ -501,8 +510,12 @@ export default function UsagePage() {
             {isLoadingFileQueue ? (
               <Skeleton className="h-32 w-full rounded-lg" />
             ) : (
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,0.45fr)_minmax(0,0.55fr)]">
-                <div className="grid grid-cols-3 gap-2 text-center text-xs">
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-center text-xs md:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-bg-base p-3">
+                    <p className="text-lg font-semibold text-text-main">{formatNumber(fileQueue?.summary.completed || 0)}</p>
+                    <p className="text-text-muted">{t('usage.completedDocuments')}</p>
+                  </div>
                   <div className="rounded-lg border border-border bg-bg-base p-3">
                     <p className="text-lg font-semibold text-text-main">{formatNumber(fileQueue?.summary.pending || 0)}</p>
                     <p className="text-text-muted">{t('usage.pendingDocuments')}</p>
@@ -517,43 +530,22 @@ export default function UsagePage() {
                   </div>
                 </div>
 
-                <div className="min-w-0">
-                  <div className="mb-2 flex items-center justify-between gap-2">
+                <div className="flex flex-col gap-3 rounded-lg border border-border bg-bg-base p-3 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
                     <h3 className="text-sm font-medium">{t('usage.recentDocumentJobs')}</h3>
-                    <span className="flex items-center gap-1 text-xs text-text-muted">
-                      <Clock className="h-3.5 w-3.5" />
+                    <p className="mt-1 flex items-center gap-1 text-xs text-text-muted">
+                      <Clock className="h-3.5 w-3.5 shrink-0" />
                       {t('usage.nextRetry')}: {formatDateTime(fileQueue?.summary.nextRetryAt)}
-                    </span>
+                    </p>
                   </div>
-                  {fileQueue?.files.length === 0 ? (
-                    <p className="rounded-lg border border-border bg-bg-base p-4 text-sm text-text-muted">{t('knowledge.noDocuments')}</p>
-                  ) : (
-                    <div className="grid gap-2 md:grid-cols-2">
-                      {fileQueue?.files.map((file) => (
-                        <button
-                          key={file.id}
-                          onClick={() => setSelectedFileJob(file)}
-                          aria-label={t('usage.viewDocumentJob', { filename: formatFilename(file.filename) })}
-                          className="min-w-0 rounded-lg border border-border bg-bg-base p-3 text-left transition-colors hover:border-primary/60 hover:bg-bg-surface"
-                        >
-                          <div className="mb-2 flex items-center justify-between gap-2">
-                            <p className="truncate text-sm font-medium text-text-main">{formatFilename(file.filename)}</p>
-                            <span className="shrink-0 rounded border border-border px-2 py-0.5 text-[11px] text-text-muted">
-                              {file.status}
-                            </span>
-                          </div>
-                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
-                            <span>{t('usage.attempts', { count: file.attempts, max: file.max_attempts })}</span>
-                            <span>{formatNumber(file.progress)}%</span>
-                            <span>{formatDateTime(file.updated_at)}</span>
-                          </div>
-                          {file.error_message && (
-                            <p className="mt-2 line-clamp-2 break-words text-xs text-red-300">{file.error_message}</p>
-                          )}
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <button
+                    onClick={() => setIsFileJobsModalOpen(true)}
+                    disabled={!fileQueue?.files.length}
+                    className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border px-3 text-sm text-text-muted transition-colors hover:border-primary/60 hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <FileText className="h-4 w-4" />
+                    {t('usage.viewRecentDocumentJobs', { count: fileQueue?.files.length || 0 })}
+                  </button>
                 </div>
               </div>
             )}
@@ -634,6 +626,57 @@ export default function UsagePage() {
       </div>
 
       <Modal
+        isOpen={isFileJobsModalOpen}
+        onClose={() => setIsFileJobsModalOpen(false)}
+        title={t('usage.recentDocumentJobs')}
+        maxWidth="4xl"
+        footer={
+          <button
+            onClick={() => setIsFileJobsModalOpen(false)}
+            className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+          >
+            {t('common.close')}
+          </button>
+        }
+      >
+        {fileQueue?.files.length ? (
+          <div className="max-h-[65vh] space-y-2 overflow-y-auto pr-1">
+            {fileQueue.files.map((file) => (
+              <button
+                key={file.id}
+                onClick={() => {
+                  setIsFileJobsModalOpen(false);
+                  setSelectedFileJob(file);
+                }}
+                aria-label={t('usage.viewDocumentJob', { filename: formatFilename(file.filename) })}
+                className="w-full rounded-lg border border-border bg-bg-base p-3 text-left transition-colors hover:border-primary/60 hover:bg-bg-surface"
+              >
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="min-w-0">
+                    <p className="break-words text-sm font-medium text-text-main">{formatFilename(file.filename)}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
+                      <span>{t('usage.attempts', { count: file.attempts, max: file.max_attempts })}</span>
+                      <span>{formatNumber(file.progress)}%</span>
+                      <span>{formatDateTime(file.updated_at)}</span>
+                    </div>
+                    {file.error_message && (
+                      <p className="mt-2 line-clamp-2 break-words text-xs text-red-300">{file.error_message}</p>
+                    )}
+                  </div>
+                  <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${getFileStatusClass(file.status)}`}>
+                    {file.status === 'completed' && <CheckCircle2 className="h-3.5 w-3.5" />}
+                    {file.status}
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        ) : (
+          <p className="rounded-lg border border-border bg-bg-base p-4 text-sm text-text-muted">{t('knowledge.noDocuments')}</p>
+        )}
+      </Modal>
+
+      <Modal
         isOpen={!!selectedFileJob}
         onClose={() => setSelectedFileJob(null)}
         title={t('usage.documentJobDetails')}
@@ -656,7 +699,12 @@ export default function UsagePage() {
             <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('knowledge.status')}</p>
-                <p className="mt-1 text-text-main">{selectedFileJob.status}</p>
+                <p className="mt-1">
+                  <span className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${getFileStatusClass(selectedFileJob.status)}`}>
+                    {selectedFileJob.status === 'completed' && <CheckCircle2 className="h-3.5 w-3.5" />}
+                    {selectedFileJob.status}
+                  </span>
+                </p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('usage.progress')}</p>
@@ -739,7 +787,7 @@ export default function UsagePage() {
               </div>
               <div className="rounded border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('usage.model')}</p>
-                <p className="mt-1 text-text-main">{activeConversation.model || 'deepseek-chat'}</p>
+                <p className="mt-1 text-text-main">{activeConversation.model || providerHealth?.default_model || 'moonshot-v1-8k'}</p>
               </div>
               <div className="rounded border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('usage.sources')}</p>
@@ -815,10 +863,10 @@ export default function UsagePage() {
                                 {traceSteps.map((step, index) => (
                                   <div key={`${run.id}-step-${index}`} className="flex items-center justify-between gap-3 rounded border border-border bg-bg-sidebar px-2 py-1 text-xs">
                                     <span className="min-w-0 truncate text-text-main">
-                                      {t('usage.traceSteps')} · {step.step_type}
+                                      {t('usage.traceSteps')} · {getRagTraceStepLabel(t, step.step_type)}
                                     </span>
                                     <span className="shrink-0 text-text-muted">
-                                      {step.status} · {formatDuration(step.duration_ms)}
+                                      {getRagTraceStatusLabel(t, step.status)} · {formatDuration(step.duration_ms)}
                                     </span>
                                   </div>
                                 ))}

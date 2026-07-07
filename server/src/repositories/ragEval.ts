@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../lib/db';
 import { serverEnv } from '../lib/env';
 import { ChatSource, RagQualitySummary, RagTraceStep } from '../lib/chatSources';
+import { getDefaultChatModel } from '../lib/llmProviders';
 
 type RagEvalRunStatus = 'running' | 'completed' | 'failed' | 'partial' | 'cancelled';
 
@@ -39,7 +40,13 @@ export interface RagEvalRunRow {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score: number;
+  average_source_precision_score: number;
+  average_citation_accuracy_score: number;
   average_keyword_score: number;
+  average_answer_keyword_score: number;
+  average_grounding_score: number;
+  average_judge_score: number;
   duration_ms: number;
   queued_at: string;
   claimed_at?: string | null;
@@ -73,7 +80,14 @@ export interface RagEvalResultRow {
   retrieval_score: number;
   answer_score: number;
   source_score: number;
+  source_recall_score: number;
+  source_precision_score: number;
+  citation_accuracy_score: number;
   keyword_score: number;
+  answer_keyword_score: number;
+  grounding_score: number;
+  judge_score: number;
+  latency_ms: number;
   evidence_label: string;
   matched_sources: unknown[];
   trace_summary: Record<string, unknown>;
@@ -90,7 +104,13 @@ export interface RagEvalQualityTrendRun {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score: number;
+  average_source_precision_score: number;
+  average_citation_accuracy_score: number;
   average_keyword_score: number;
+  average_answer_keyword_score: number;
+  average_grounding_score: number;
+  average_judge_score: number;
   duration_ms: number;
   created_at: string;
   completed_at?: string | null;
@@ -105,7 +125,14 @@ export interface RagEvalLowScoreCase {
   retrieval_score: number;
   answer_score: number;
   source_score: number;
+  source_recall_score: number;
+  source_precision_score: number;
+  citation_accuracy_score: number;
   keyword_score: number;
+  answer_keyword_score: number;
+  grounding_score: number;
+  judge_score: number;
+  latency_ms: number;
   evidence_label: string;
   error_message: string;
 }
@@ -119,7 +146,13 @@ export interface RagEvalQualitySummary {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score: number;
+  average_source_precision_score: number;
+  average_citation_accuracy_score: number;
   average_keyword_score: number;
+  average_answer_keyword_score: number;
+  average_grounding_score: number;
+  average_judge_score: number;
   trend: RagEvalQualityTrendRun[];
   low_score_cases: RagEvalLowScoreCase[];
 }
@@ -189,7 +222,13 @@ const runColumns = `
   average_retrieval_score,
   average_answer_score,
   average_source_score,
+  average_source_recall_score,
+  average_source_precision_score,
+  average_citation_accuracy_score,
   average_keyword_score,
+  average_answer_keyword_score,
+  average_grounding_score,
+  average_judge_score,
   duration_ms,
   queued_at,
   claimed_at,
@@ -210,7 +249,13 @@ interface RagEvalRunOutput {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score?: number;
+  average_source_precision_score?: number;
+  average_citation_accuracy_score?: number;
   average_keyword_score: number;
+  average_answer_keyword_score?: number;
+  average_grounding_score?: number;
+  average_judge_score?: number;
   results: Array<{
     case_id: string;
     question: string;
@@ -219,7 +264,14 @@ interface RagEvalRunOutput {
     retrieval_score: number;
     answer_score: number;
     source_score: number;
+    source_recall_score?: number;
+    source_precision_score?: number;
+    citation_accuracy_score?: number;
     keyword_score: number;
+    answer_keyword_score?: number;
+    grounding_score?: number;
+    judge_score?: number;
+    latency_ms?: number;
     evidence_label: string;
     matched_sources: unknown[];
     trace_summary: Record<string, unknown>;
@@ -493,7 +545,13 @@ export const getRagEvalQualitySummaryForUser = async (
       average_retrieval_score: run.average_retrieval_score,
       average_answer_score: run.average_answer_score,
       average_source_score: run.average_source_score,
+      average_source_recall_score: run.average_source_recall_score,
+      average_source_precision_score: run.average_source_precision_score,
+      average_citation_accuracy_score: run.average_citation_accuracy_score,
       average_keyword_score: run.average_keyword_score,
+      average_answer_keyword_score: run.average_answer_keyword_score,
+      average_grounding_score: run.average_grounding_score,
+      average_judge_score: run.average_judge_score,
       duration_ms: run.duration_ms,
       created_at: run.created_at,
       completed_at: run.completed_at,
@@ -510,7 +568,14 @@ export const getRagEvalQualitySummaryForUser = async (
          retrieval_score,
          answer_score,
          source_score,
+         source_recall_score,
+         source_precision_score,
+         citation_accuracy_score,
          keyword_score,
+         answer_keyword_score,
+         grounding_score,
+         judge_score,
+         latency_ms,
          evidence_label,
          error_message
        from rag_eval_results
@@ -532,7 +597,13 @@ export const getRagEvalQualitySummaryForUser = async (
     average_retrieval_score: latestRun?.average_retrieval_score || 0,
     average_answer_score: latestRun?.average_answer_score || 0,
     average_source_score: latestRun?.average_source_score || 0,
+    average_source_recall_score: latestRun?.average_source_recall_score || 0,
+    average_source_precision_score: latestRun?.average_source_precision_score || 0,
+    average_citation_accuracy_score: latestRun?.average_citation_accuracy_score || 0,
     average_keyword_score: latestRun?.average_keyword_score || 0,
+    average_answer_keyword_score: latestRun?.average_answer_keyword_score || 0,
+    average_grounding_score: latestRun?.average_grounding_score || 0,
+    average_judge_score: latestRun?.average_judge_score || 0,
     trend,
     low_score_cases: lowScoreCases,
   };
@@ -549,7 +620,7 @@ export const listHistoricalRagRunsForUser = async (
        c.title as conversation_title,
        c.project_space_id,
        ps.name as project_space_name,
-       c.model,
+       coalesce(c.model, $3) as model,
        rr.assistant_message_id,
        left(coalesce(am.content, ''), 640) as answer_preview,
        char_length(coalesce(am.content, ''))::int as answer_length,
@@ -572,7 +643,7 @@ export const listHistoricalRagRunsForUser = async (
        and c.user_id = $1
      order by rr.created_at desc
      limit $2`,
-    [userId, limit]
+    [userId, limit, getDefaultChatModel()]
   );
 
   return rows.map(mapRagEvalHistoryItem);
@@ -771,8 +842,14 @@ export const completeRagEvalRunWithResults = async (input: {
            average_retrieval_score = $7,
            average_answer_score = $8,
            average_source_score = $9,
-           average_keyword_score = $10,
-           duration_ms = $11,
+           average_source_recall_score = $10,
+           average_source_precision_score = $11,
+           average_citation_accuracy_score = $12,
+           average_keyword_score = $13,
+           average_answer_keyword_score = $14,
+           average_grounding_score = $15,
+           average_judge_score = $16,
+           duration_ms = $17,
            claimed_at = null,
            worker_id = null,
            next_attempt_at = null,
@@ -781,7 +858,7 @@ export const completeRagEvalRunWithResults = async (input: {
        where id = $1
          and user_id = $2
          and status in ('running')
-         and ($12::text is null or worker_id = $12)
+         and ($18::text is null or worker_id = $18)
        returning ${runColumns}`,
       [
         input.runId,
@@ -793,7 +870,13 @@ export const completeRagEvalRunWithResults = async (input: {
         input.output.average_retrieval_score,
         input.output.average_answer_score,
         input.output.average_source_score,
+        input.output.average_source_recall_score ?? input.output.average_source_score,
+        input.output.average_source_precision_score ?? 0,
+        input.output.average_citation_accuracy_score ?? 0,
         input.output.average_keyword_score,
+        input.output.average_answer_keyword_score ?? input.output.average_keyword_score,
+        input.output.average_grounding_score ?? 0,
+        input.output.average_judge_score ?? 0,
         input.output.duration_ms,
         input.workerId || null,
       ]
@@ -814,13 +897,20 @@ export const completeRagEvalRunWithResults = async (input: {
            retrieval_score,
            answer_score,
            source_score,
+           source_recall_score,
+           source_precision_score,
+           citation_accuracy_score,
            keyword_score,
+           answer_keyword_score,
+           grounding_score,
+           judge_score,
+           latency_ms,
            evidence_label,
            matched_sources,
            trace_summary,
            error_message
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
          returning *`,
         [
           run.id,
@@ -831,7 +921,14 @@ export const completeRagEvalRunWithResults = async (input: {
           result.retrieval_score,
           result.answer_score,
           result.source_score,
+          result.source_recall_score ?? result.source_score,
+          result.source_precision_score ?? 0,
+          result.citation_accuracy_score ?? 0,
           result.keyword_score,
+          result.answer_keyword_score ?? result.keyword_score,
+          result.grounding_score ?? 0,
+          result.judge_score ?? 0,
+          result.latency_ms ?? 0,
           result.evidence_label,
           JSON.stringify(result.matched_sources || []),
           JSON.stringify(result.trace_summary || {}),
@@ -972,11 +1069,17 @@ export const insertRagEvalRunWithResults = async (input: {
          average_retrieval_score,
          average_answer_score,
          average_source_score,
+         average_source_recall_score,
+         average_source_precision_score,
+         average_citation_accuracy_score,
          average_keyword_score,
+         average_answer_keyword_score,
+         average_grounding_score,
+         average_judge_score,
          duration_ms,
          completed_at
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
        returning ${runColumns}`,
       [
         input.datasetId,
@@ -988,7 +1091,13 @@ export const insertRagEvalRunWithResults = async (input: {
         input.output.average_retrieval_score,
         input.output.average_answer_score,
         input.output.average_source_score,
+        input.output.average_source_recall_score ?? input.output.average_source_score,
+        input.output.average_source_precision_score ?? 0,
+        input.output.average_citation_accuracy_score ?? 0,
         input.output.average_keyword_score,
+        input.output.average_answer_keyword_score ?? input.output.average_keyword_score,
+        input.output.average_grounding_score ?? 0,
+        input.output.average_judge_score ?? 0,
         input.output.duration_ms,
       ]
     );
@@ -1007,13 +1116,20 @@ export const insertRagEvalRunWithResults = async (input: {
            retrieval_score,
            answer_score,
            source_score,
+           source_recall_score,
+           source_precision_score,
+           citation_accuracy_score,
            keyword_score,
+           answer_keyword_score,
+           grounding_score,
+           judge_score,
+           latency_ms,
            evidence_label,
            matched_sources,
            trace_summary,
            error_message
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
          returning *`,
         [
           run.id,
@@ -1024,7 +1140,14 @@ export const insertRagEvalRunWithResults = async (input: {
           result.retrieval_score,
           result.answer_score,
           result.source_score,
+          result.source_recall_score ?? result.source_score,
+          result.source_precision_score ?? 0,
+          result.citation_accuracy_score ?? 0,
           result.keyword_score,
+          result.answer_keyword_score ?? result.keyword_score,
+          result.grounding_score ?? 0,
+          result.judge_score ?? 0,
+          result.latency_ms ?? 0,
           result.evidence_label,
           JSON.stringify(result.matched_sources || []),
           JSON.stringify(result.trace_summary || {}),

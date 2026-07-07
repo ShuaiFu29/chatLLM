@@ -12,9 +12,9 @@ const weakJwtSecrets = new Set([
 
 const serverRules = {
   required: ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'],
-  forbiddenPrefixes: ['SUPABASE_'],
+  forbiddenPrefixes: ['SUPABASE_', 'OPENAI_'],
   jwtSecretKey: 'JWT_SECRET',
-  atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY', 'OPENAI_API_KEY']],
+  atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY']],
 };
 
 const ragRules = {
@@ -93,23 +93,42 @@ export function validateProjectEnvMaps(envMaps) {
 
   return [
     ...validateEnvMap('server/.env', serverEnv, serverRules),
+    ...validateServerModelConfig(serverEnv),
     ...validateServerBackendUrl(serverEnv),
     ...validateRagEnvMap(ragEnv),
   ];
 }
 
+function validateServerModelConfig(env) {
+  const defaultModel = env.DEFAULT_CHAT_MODEL?.trim() || '';
+  if (/^(gpt-|o\d)/i.test(defaultModel)) {
+    return [
+      'server/.env DEFAULT_CHAT_MODEL must use a supported provider model such as deepseek-chat, moonshot-v1-8k, or qwen-plus',
+    ];
+  }
+
+  return [];
+}
+
 function validateRagEnvMap(env) {
-  const provider = env.EMBEDDING_PROVIDER?.trim().toLowerCase() || 'openai-compatible';
+  const provider = env.EMBEDDING_PROVIDER?.trim().toLowerCase() || 'compatible';
+  const judgeEnabled = env.RAG_JUDGE_ENABLED?.trim().toLowerCase() === 'true';
   const issues = validateEnvMap('rag-service/.env', env, ragRules);
 
-  if (!['openai-compatible', 'local'].includes(provider)) {
-    issues.push('rag-service/.env EMBEDDING_PROVIDER must be either openai-compatible or local');
+  if (!['compatible', 'local'].includes(provider)) {
+    issues.push('rag-service/.env EMBEDDING_PROVIDER must be either compatible or local');
     return issues;
   }
 
   if (provider !== 'local') {
     issues.push(...validateEnvMap('rag-service/.env', env, {
       required: ['EMBEDDING_API_KEY', 'EMBEDDING_BASE_URL', 'EMBEDDING_MODEL'],
+    }));
+  }
+
+  if (judgeEnabled) {
+    issues.push(...validateEnvMap('rag-service/.env', env, {
+      required: ['RAG_JUDGE_API_KEY', 'RAG_JUDGE_BASE_URL', 'RAG_JUDGE_MODEL'],
     }));
   }
 

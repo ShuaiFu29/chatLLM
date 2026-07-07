@@ -21,6 +21,7 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   const cancelMigrationSource = readOptionalSource('migrations/0011_rag_eval_cancelled_runs.sql');
   const queueMigrationSource = readOptionalSource('migrations/0012_rag_eval_job_queue.sql');
   const historyIndexMigrationSource = readOptionalSource('migrations/0014_rag_history_indexes.sql');
+  const strictMetricsMigrationSource = readOptionalSource('migrations/0015_rag_eval_strict_metrics.sql');
 
   assert.match(migrationSource, /create table if not exists rag_eval_datasets/i);
   assert.match(migrationSource, /create table if not exists rag_eval_cases/i);
@@ -48,6 +49,15 @@ test('RAG eval migration creates datasets cases runs and results', () => {
   assert.match(queueMigrationSource, /rag_eval_runs_claimed_idx/i);
   assert.match(historyIndexMigrationSource, /rag_runs_user_created_idx/i);
   assert.match(historyIndexMigrationSource, /on rag_runs \(user_id, created_at desc\)/i);
+  assert.match(strictMetricsMigrationSource, /average_source_recall_score/i);
+  assert.match(strictMetricsMigrationSource, /average_source_precision_score/i);
+  assert.match(strictMetricsMigrationSource, /average_citation_accuracy_score/i);
+  assert.match(strictMetricsMigrationSource, /average_grounding_score/i);
+  assert.match(strictMetricsMigrationSource, /source_recall_score/i);
+  assert.match(strictMetricsMigrationSource, /source_precision_score/i);
+  assert.match(strictMetricsMigrationSource, /citation_accuracy_score/i);
+  assert.match(strictMetricsMigrationSource, /grounding_score/i);
+  assert.match(strictMetricsMigrationSource, /latency_ms/i);
 });
 
 test('RAG eval API exposes authenticated dataset case and run endpoints', () => {
@@ -122,10 +132,18 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(repositorySource, /where d\.user_id = \$1/i);
   assert.match(repositorySource, /average_answer_score/);
   assert.match(repositorySource, /answer_score/);
+  assert.match(repositorySource, /average_source_recall_score/);
+  assert.match(repositorySource, /source_recall_score/);
+  assert.match(repositorySource, /average_citation_accuracy_score/);
+  assert.match(repositorySource, /citation_accuracy_score/);
+  assert.match(repositorySource, /average_grounding_score/);
+  assert.match(repositorySource, /grounding_score/);
 
   assert.match(ragClientSource, /runRagEvaluation/);
   assert.match(ragClientSource, /\/eval\/run/);
   assert.match(ragClientSource, /expected_answer\?: string/);
+  assert.match(ragClientSource, /average_source_recall_score/);
+  assert.match(ragClientSource, /citation_accuracy_score/);
 });
 
 test('RAG eval exposes dataset quality trend and low-score case summaries', () => {
@@ -191,7 +209,7 @@ test('RAG eval queue worker claims persisted jobs and retries safely', () => {
   assert.match(repositorySource, /next_attempt_at/);
   assert.match(repositorySource, /last_error/);
   assert.match(repositorySource, /status = 'running'/);
-  assert.match(repositorySource, /worker_id = \$12/);
+  assert.match(repositorySource, /worker_id = \$18/);
   assert.match(repositorySource, /worker_id = \$8/);
 
   assert.match(maintenanceSource, /resetStaleRagEvalRunJobs/);

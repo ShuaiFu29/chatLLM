@@ -30,7 +30,7 @@ const DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS = 60000;
 const DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
-const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 10000;
+const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 5 * 60 * 1000;
 const DEFAULT_FILE_QUEUE_MAX_ATTEMPTS = 3;
 const DEFAULT_FILE_QUEUE_RETRY_BASE_DELAY_MS = 60000;
 const DEFAULT_FILE_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
@@ -70,7 +70,7 @@ export interface ServerEnv {
   QWEN_API_KEY?: string;
   QWEN_BASE_URL: string;
   QWEN_CHAT_MODEL: string;
-  OPENAI_API_KEY?: string;
+  DEFAULT_CHAT_MODEL: string | null;
   EMBEDDING_API_KEY?: string;
   EMBEDDING_BASE_URL: string;
   EMBEDDING_MODEL: string;
@@ -148,6 +148,8 @@ const getStringList = (value: string | undefined, defaultValue: string[]) => {
   return Array.from(new Set(values));
 };
 
+const isOfficialProviderModelName = (model: string) => /^(gpt-|o\d)/i.test(model);
+
 export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv => {
   const requiredKeys = ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'];
   const missing = requiredKeys.filter((key) => !getRequired(env, key));
@@ -157,9 +159,18 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     errors.push(`Missing required server environment variables: ${missing.join(', ')}`);
   }
 
-  const chatKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY', 'OPENAI_API_KEY'];
+  if (getRequired(env, 'OPENAI_API_KEY')) {
+    errors.push('OPENAI_API_KEY is not supported; use DEEPSEEK_API_KEY, MOONSHOT_API_KEY, or QWEN_API_KEY');
+  }
+
+  const chatKeys = ['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY'];
   if (!chatKeys.some((key) => getRequired(env, key))) {
     errors.push(`At least one chat provider key is required: ${chatKeys.join(', ')}`);
+  }
+
+  const defaultChatModel = env.DEFAULT_CHAT_MODEL?.trim() || '';
+  if (defaultChatModel && isOfficialProviderModelName(defaultChatModel)) {
+    errors.push('DEFAULT_CHAT_MODEL must use a supported provider model such as deepseek-chat, moonshot-v1-8k, or qwen-plus');
   }
 
   const jwtSecret = getRequired(env, 'JWT_SECRET');
@@ -233,7 +244,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     QWEN_API_KEY: env.QWEN_API_KEY?.trim() || undefined,
     QWEN_BASE_URL: env.QWEN_BASE_URL?.trim() || 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     QWEN_CHAT_MODEL: env.QWEN_CHAT_MODEL?.trim() || 'qwen-plus',
-    OPENAI_API_KEY: env.OPENAI_API_KEY?.trim() || undefined,
+    DEFAULT_CHAT_MODEL: env.DEFAULT_CHAT_MODEL?.trim() || null,
     EMBEDDING_API_KEY: env.EMBEDDING_API_KEY?.trim() || undefined,
     EMBEDDING_BASE_URL: env.EMBEDDING_BASE_URL?.trim() || 'https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
     EMBEDDING_MODEL: env.EMBEDDING_MODEL?.trim() || 'text-embedding-v4',

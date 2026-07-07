@@ -103,7 +103,7 @@ assert len(vectors) == 12
 print("ok")
 """
         result = run_script(script, local_env({
-            "EMBEDDING_PROVIDER": "openai-compatible",
+            "EMBEDDING_PROVIDER": "compatible",
             "EMBEDDING_API_KEY": "embedding-key",
             "EMBEDDING_BASE_URL": "https://example.test/compatible-mode/v1",
             "EMBEDDING_MODEL": "text-embedding-v4",

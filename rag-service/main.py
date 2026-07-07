@@ -8,7 +8,7 @@ from config import settings
 from agentic_retrieval import agentic_retrieve
 from db import check_database_ready
 from eval_runner import run_eval_cases
-from graph_store import check_graph_store_ready, delete_file_graph, ensure_graph_schema, search_graph
+from graph_store import check_graph_store_ready, delete_file_graph, ensure_graph_schema, list_graph, search_graph
 from ingestion import process_file
 from keyword_store import check_keyword_store_ready, delete_file_keywords, ensure_keyword_index
 from retrieval import retrieve_documents
@@ -63,6 +63,17 @@ class RetrieveRequest(BaseModel):
 
 class AgenticRetrieveRequest(RetrieveRequest):
     pass
+
+
+class GraphListRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, max_length=128)
+    project_space_id: str | None = Field(default=None, max_length=128)
+    limit: int = Field(default=30, ge=1, le=50)
+
+    @field_validator("user_id", "project_space_id")
+    @classmethod
+    def strip_and_reject_blank(cls, value: str | None):
+        return strip_and_reject_blank_value(value)
 
 
 class EvalCaseRequest(BaseModel):
@@ -177,6 +188,24 @@ async def ingest_endpoint(request: IngestRequest, background_tasks: BackgroundTa
     background_tasks.add_task(process_file_with_guard, request.file_id)
     return {"status": "processing_started", "file_id": request.file_id}
 
+
+@app.post("/ingest-sync")
+def ingest_sync_endpoint(request: IngestRequest):
+    """
+    Process file ingestion within the request so the durable server-side queue
+    can retry failures and timeouts instead of only confirming task acceptance.
+    """
+    if not ingest_semaphore.acquire(blocking=False):
+        raise HTTPException(status_code=429, detail="Too many ingestion jobs")
+
+    try:
+        result = process_file(request.file_id)
+        return {"status": "completed", "file_id": request.file_id, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        ingest_semaphore.release()
+
 @app.post("/retrieve")
 def retrieve_endpoint(request: RetrieveRequest):
     """
@@ -214,6 +243,19 @@ def graph_search_endpoint(request: RetrieveRequest):
     try:
         results = search_graph(
             query=request.query,
+            user_id=request.user_id,
+            project_space_id=request.project_space_id,
+            limit=request.limit,
+        )
+        return {"results": results}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/graph/list")
+def graph_list_endpoint(request: GraphListRequest):
+    try:
+        results = list_graph(
             user_id=request.user_id,
             project_space_id=request.project_space_id,
             limit=request.limit,

@@ -40,6 +40,7 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   const ragEvalConcurrency = asInt(serverEnv, 'RAG_EVAL_QUEUE_CONCURRENCY', 1);
   const ragRetrieveTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TIMEOUT_MS', 10000);
   const ragCircuitThreshold = asInt(serverEnv, 'RAG_CIRCUIT_FAILURE_THRESHOLD', 5);
+  const ragIngestConcurrency = asInt(ragEnv, 'RAG_INGEST_CONCURRENCY', 2);
 
   if (enterprise) {
     addThresholdWarning(warnings, checks, 'DB_POOL_MAX', dbPoolMax, '>=', 20, `DB_POOL_MAX=${dbPoolMax}`);
@@ -69,6 +70,17 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
 
   checks.push({ label: 'FILE_QUEUE_MAX_ATTEMPTS', status: 'ok', detail: `FILE_QUEUE_MAX_ATTEMPTS=${fileQueueMaxAttempts}` });
   checks.push({ label: 'RAG_EVAL_QUEUE_CONCURRENCY', status: 'ok', detail: `RAG_EVAL_QUEUE_CONCURRENCY=${ragEvalConcurrency}` });
+  const ragIngestMatchesFileQueue = ragIngestConcurrency >= fileQueueConcurrency;
+  checks.push({
+    label: 'RAG_INGEST_CONCURRENCY',
+    status: ragIngestMatchesFileQueue ? 'ok' : 'warn',
+    detail: `RAG_INGEST_CONCURRENCY=${ragIngestConcurrency}, FILE_QUEUE_CONCURRENCY=${fileQueueConcurrency}`,
+  });
+  if (enterprise && !ragIngestMatchesFileQueue) {
+    warnings.push(
+      `RAG_INGEST_CONCURRENCY should be >= FILE_QUEUE_CONCURRENCY for enterprise profile (RAG_INGEST_CONCURRENCY=${ragIngestConcurrency}, FILE_QUEUE_CONCURRENCY=${fileQueueConcurrency})`
+    );
+  }
   checks.push({ label: 'RAG_RETRIEVE_TIMEOUT_MS', status: 'ok', detail: `RAG_RETRIEVE_TIMEOUT_MS=${ragRetrieveTimeoutMs}` });
   checks.push({ label: 'RAG_CIRCUIT_FAILURE_THRESHOLD', status: 'ok', detail: `RAG_CIRCUIT_FAILURE_THRESHOLD=${ragCircuitThreshold}` });
 
@@ -77,7 +89,8 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   const milvusSearchEf = asInt(ragEnv, 'MILVUS_SEARCH_EF', 64);
   const milvusBatchSize = asInt(ragEnv, 'MILVUS_INSERT_BATCH_SIZE', 500);
   const esBatchSize = asInt(ragEnv, 'ELASTICSEARCH_BULK_BATCH_SIZE', 500);
-  const neo4jBatchSize = asInt(ragEnv, 'NEO4J_BATCH_SIZE', 500);
+  const neo4jTimeoutMs = asInt(ragEnv, 'NEO4J_TIMEOUT_MS', 15000);
+  const neo4jBatchSize = asInt(ragEnv, 'NEO4J_BATCH_SIZE', 100);
 
   if (enterprise && !esEnabled) warnings.push('ELASTICSEARCH_ENABLED should be true for enterprise hybrid retrieval');
   checks.push({
@@ -110,7 +123,13 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   }
 
   checks.push({ label: 'ELASTICSEARCH_BULK_BATCH_SIZE', status: 'ok', detail: `ELASTICSEARCH_BULK_BATCH_SIZE=${esBatchSize}` });
-  checks.push({ label: 'NEO4J_BATCH_SIZE', status: 'ok', detail: `NEO4J_BATCH_SIZE=${neo4jBatchSize}` });
+  if (enterprise) {
+    addThresholdWarning(warnings, checks, 'NEO4J_TIMEOUT_MS', neo4jTimeoutMs, '>=', 10000, `NEO4J_TIMEOUT_MS=${neo4jTimeoutMs}`);
+    addThresholdWarning(warnings, checks, 'NEO4J_BATCH_SIZE', neo4jBatchSize, '<=', 200, `NEO4J_BATCH_SIZE=${neo4jBatchSize}`);
+  } else {
+    checks.push({ label: 'NEO4J_TIMEOUT_MS', status: 'ok', detail: `NEO4J_TIMEOUT_MS=${neo4jTimeoutMs}` });
+    checks.push({ label: 'NEO4J_BATCH_SIZE', status: 'ok', detail: `NEO4J_BATCH_SIZE=${neo4jBatchSize}` });
+  }
 
   const hasEsHeap = /ES_JAVA_OPTS=-Xms\d+[gGmM]\s+-Xmx\d+[gGmM]/.test(composeText);
   const hasEsMemlock = /bootstrap\.memory_lock=true/.test(composeText) && /memlock:/.test(composeText);

@@ -20,6 +20,38 @@ STOP_TERMS = {
     "文档",
 }
 
+RELATION_PATTERNS = [
+    (
+        "DEPENDS_ON",
+        [
+            re.compile(r"(?P<left>[^。；;.!?\n]{2,40}?)(?:依赖|取决于|依靠|depends on|requires)(?P<right>[^。；;.!?\n]{2,40})", re.I),
+        ],
+        0.78,
+    ),
+    (
+        "CONFLICTS_WITH",
+        [
+            re.compile(r"(?P<left>[^。；;.!?\n]{2,40}?)(?:与|和|同|versus|vs\.?)(?P<right>[^。；;.!?\n]{2,40}?)(?:冲突|矛盾|不一致|conflicts?|contradicts?)", re.I),
+            re.compile(r"(?P<left>[^。；;.!?\n]{2,40}?)(?:冲突于|contradicts?|conflicts? with)(?P<right>[^。；;.!?\n]{2,40})", re.I),
+        ],
+        0.82,
+    ),
+    (
+        "SUPPORTS",
+        [
+            re.compile(r"(?P<left>[^。；;.!?\n]{2,40}?)(?:支持|证明|佐证|evidences?|supports?|proves?)(?P<right>[^。；;.!?\n]{2,40})", re.I),
+        ],
+        0.74,
+    ),
+    (
+        "REPLACES",
+        [
+            re.compile(r"(?P<left>[^。；;.!?\n]{2,40}?)(?:替代|取代|废止|replaces?|deprecates?)(?P<right>[^。；;.!?\n]{2,40})", re.I),
+        ],
+        0.72,
+    ),
+]
+
 
 def _term_candidates(text: str) -> list[str]:
     terms = []
@@ -34,6 +66,49 @@ def _term_candidates(text: str) -> list[str]:
         seen.add(normalized)
         terms.append(term)
     return terms[:16]
+
+
+def _compact_text(value: str, limit: int = 220) -> str:
+    compacted = re.sub(r"\s+", " ", value).strip()
+    return compacted[:limit]
+
+
+def _clean_entity_phrase(value: str) -> str:
+    phrase = re.sub(r"[#>*`|()\[\]{}]", " ", value)
+    phrase = re.sub(r"\s+", " ", phrase).strip(" ：:，,。；;.!?、-")
+    phrase = re.sub(r"^(?:和|与|同|新版|旧版)\s*", "", phrase)
+    phrase = phrase.strip(" ：:，,。；;.!?、-")
+    if len(phrase) > 36:
+        phrase = phrase[-36:]
+    return phrase
+
+
+def _relation_candidates(text: str) -> list[dict]:
+    relations = []
+    seen = set()
+    for sentence in re.split(r"(?<=[。；;.!?])|\n+", text):
+        evidence = _compact_text(sentence)
+        if not evidence:
+            continue
+        for relation_type, patterns, confidence in RELATION_PATTERNS:
+            for pattern in patterns:
+                for match in pattern.finditer(sentence):
+                    source = _clean_entity_phrase(match.group("left"))
+                    target = _clean_entity_phrase(match.group("right"))
+                    if not source or not target or source == target:
+                        continue
+                    key = (relation_type, source.lower(), target.lower(), evidence)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    relations.append({
+                        "type": relation_type,
+                        "from": source,
+                        "to": target,
+                        "confidence": confidence,
+                        "evidence": evidence,
+                    })
+    return relations[:24]
 
 
 def _batched(rows: list[dict], batch_size: int):
@@ -70,7 +145,8 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
             "to": chunk["chunk_id"],
         })
 
-        for term in _term_candidates(row.get("content") or ""):
+        content = row.get("content") or ""
+        for term in _term_candidates(content):
             entities_by_name[term] = {
                 "name": term,
                 "user_id": document["user_id"],
@@ -80,6 +156,21 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
                 "type": "MENTIONS",
                 "from": chunk["chunk_id"],
                 "to": term,
+            })
+
+        for relation in _relation_candidates(content):
+            for entity_name in (relation["from"], relation["to"]):
+                entities_by_name[entity_name] = {
+                    "name": entity_name,
+                    "user_id": document["user_id"],
+                    "project_space_id": document["project_space_id"],
+                }
+            relationships.append({
+                **relation,
+                "chunk_id": chunk["chunk_id"],
+                "file_id": document["file_id"],
+                "user_id": document["user_id"],
+                "project_space_id": document["project_space_id"],
             })
 
     return {
@@ -157,6 +248,13 @@ def delete_file_graph(file_id: str):
         return
     _run_cypher(
         """
+        MATCH ()-[r:RELATED_TO {file_id: $file_id}]-()
+        DELETE r
+        """,
+        {"file_id": file_id},
+    )
+    _run_cypher(
+        """
         MATCH (d:Document {file_id: $file_id})
         OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
         DETACH DELETE d, c
@@ -192,6 +290,17 @@ def index_graph_chunks(file_data: dict, chunk_rows: list[dict]):
               FOREACH (_ IN CASE WHEN rel.type = 'MENTIONS' AND c IS NOT NULL AND e IS NOT NULL THEN [1] ELSE [] END |
                 MERGE (c)-[:MENTIONS]->(e)
               )
+            WITH d
+            UNWIND $relationships AS rel
+              OPTIONAL MATCH (fromEntity:Entity {name: rel.from, user_id: $document.user_id, project_space_id: $document.project_space_id})
+              OPTIONAL MATCH (toEntity:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})
+              FOREACH (_ IN CASE WHEN rel.type <> 'MENTIONS' AND rel.type <> 'HAS_CHUNK' AND fromEntity IS NOT NULL AND toEntity IS NOT NULL THEN [1] ELSE [] END |
+                MERGE (fromEntity)-[typed:RELATED_TO {relation_type: rel.type, chunk_id: rel.chunk_id, file_id: rel.file_id}]->(toEntity)
+                SET typed.confidence = rel.confidence,
+                    typed.evidence = rel.evidence,
+                    typed.user_id = rel.user_id,
+                    typed.project_space_id = rel.project_space_id
+              )
             RETURN {ok: true} AS row
             """,
             facts,
@@ -215,6 +324,14 @@ def search_graph(
           AND ($project_space_id IS NULL OR e.project_space_id = $project_space_id)
           AND any(term IN $terms WHERE toLower(e.name) CONTAINS toLower(term) OR toLower(term) CONTAINS toLower(e.name))
         WITH c, collect(distinct e.name) AS entities, count(distinct e) AS graph_score
+        OPTIONAL MATCH (fromEntity:Entity)-[rel:RELATED_TO {chunk_id: c.chunk_id}]->(toEntity:Entity)
+        WITH c, entities, graph_score, collect(distinct {
+          type: rel.relation_type,
+          from: fromEntity.name,
+          to: toEntity.name,
+          confidence: rel.confidence,
+          evidence: rel.evidence
+        }) AS relations
         RETURN {
           chunk_id: c.chunk_id,
           file_id: c.file_id,
@@ -222,6 +339,7 @@ def search_graph(
           chunk_index: c.chunk_index,
           content: c.content,
           entities: entities,
+          relations: relations,
           graph_score: graph_score
         } AS row
         ORDER BY graph_score DESC
@@ -249,6 +367,79 @@ def search_graph(
                 "chunk_index": row.get("chunk_index"),
                 "retrieval_mode": "graph",
                 "graph_entities": row.get("entities") or [],
+                "graph_relations": [
+                    relation for relation in (row.get("relations") or [])
+                    if relation.get("type") and relation.get("from") and relation.get("to")
+                ],
+            },
+            "similarity": retrieval_score,
+            "retrieval_score": retrieval_score,
+            "graph_score": graph_score,
+        })
+
+    return documents
+
+
+def list_graph(
+    user_id: str,
+    project_space_id: str | None = None,
+    limit: int = 30,
+) -> list[dict]:
+    if not settings.neo4j_enabled:
+        return []
+
+    rows = _run_cypher(
+        """
+        MATCH (e:Entity)<-[:MENTIONS]-(c:Chunk)
+        WHERE e.user_id = $user_id
+          AND ($project_space_id IS NULL OR e.project_space_id = $project_space_id)
+        WITH c, collect(distinct e.name) AS entities, count(distinct e) AS graph_score
+        OPTIONAL MATCH (fromEntity:Entity)-[rel:RELATED_TO {chunk_id: c.chunk_id}]->(toEntity:Entity)
+        WITH c, entities, graph_score, collect(distinct {
+          type: rel.relation_type,
+          from: fromEntity.name,
+          to: toEntity.name,
+          confidence: rel.confidence,
+          evidence: rel.evidence
+        }) AS relations
+        RETURN {
+          chunk_id: c.chunk_id,
+          file_id: c.file_id,
+          filename: c.filename,
+          chunk_index: c.chunk_index,
+          content: c.content,
+          entities: entities,
+          relations: relations,
+          graph_score: graph_score
+        } AS row
+        ORDER BY graph_score DESC, c.filename ASC, c.chunk_index ASC
+        LIMIT $limit
+        """,
+        {
+            "user_id": user_id,
+            "project_space_id": project_space_id,
+            "limit": limit,
+        },
+    )
+
+    max_score = max([float(row.get("graph_score") or 0) for row in rows] or [0])
+    documents = []
+    for row in rows:
+        graph_score = float(row.get("graph_score") or 0)
+        retrieval_score = graph_score / max_score if max_score > 0 else 0.0
+        documents.append({
+            "id": str(row.get("chunk_id")),
+            "content": row.get("content") or "",
+            "metadata": {
+                "filename": row.get("filename"),
+                "file_id": row.get("file_id"),
+                "chunk_index": row.get("chunk_index"),
+                "retrieval_mode": "graph_overview",
+                "graph_entities": row.get("entities") or [],
+                "graph_relations": [
+                    relation for relation in (row.get("relations") or [])
+                    if relation.get("type") and relation.get("from") and relation.get("to")
+                ],
             },
             "similarity": retrieval_score,
             "retrieval_score": retrieval_score,

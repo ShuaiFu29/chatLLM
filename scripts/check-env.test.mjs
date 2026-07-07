@@ -45,6 +45,62 @@ test('validateEnvMap rejects forbidden Supabase keys', () => {
   ]);
 });
 
+test('validateProjectEnvMaps rejects official OpenAI keys as unsupported provider config', () => {
+  const issues = validateProjectEnvMaps({
+    'server/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      OPENAI_API_KEY: 'sk-test',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_PROVIDER: 'local',
+      EMBEDDING_DIMENSION: '1024',
+    },
+  });
+
+  assert.deepEqual(issues, [
+    'server/.env contains unsupported keys: OPENAI_API_KEY',
+    'server/.env must define at least one of: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY',
+  ]);
+});
+
+test('validateProjectEnvMaps rejects official provider model names as defaults', () => {
+  const issues = validateProjectEnvMaps({
+    'server/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      MOONSHOT_API_KEY: 'sk-test',
+      DEFAULT_CHAT_MODEL: 'gpt-4o',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_PROVIDER: 'local',
+      EMBEDDING_DIMENSION: '1024',
+    },
+  });
+
+  assert.deepEqual(issues, [
+    'server/.env DEFAULT_CHAT_MODEL must use a supported provider model such as deepseek-chat, moonshot-v1-8k, or qwen-plus',
+  ]);
+});
+
 test('validateEnvMap rejects weak JWT placeholder secrets', () => {
   const issues = validateEnvMap('server/.env', {
     DATABASE_URL: 'postgres://localhost/db',
@@ -57,7 +113,7 @@ test('validateEnvMap rejects weak JWT placeholder secrets', () => {
     required: ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'],
     forbiddenPrefixes: ['SUPABASE_'],
     jwtSecretKey: 'JWT_SECRET',
-    atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'OPENAI_API_KEY']],
+    atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY']],
   });
 
   assert.deepEqual(issues, [
@@ -142,6 +198,44 @@ test('validateProjectEnvMaps accepts explicit local RAG embeddings without exter
   });
 
   assert.deepEqual(issues, []);
+});
+
+test('validateProjectEnvMaps requires Kimi judge settings only when RAG judge is enabled', () => {
+  const base = {
+    'server/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      MOONSHOT_API_KEY: 'sk-test',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_PROVIDER: 'local',
+      EMBEDDING_DIMENSION: '1024',
+      RAG_JUDGE_ENABLED: 'true',
+    },
+  };
+
+  assert.deepEqual(validateProjectEnvMaps(base), [
+    'rag-service/.env is missing required keys: RAG_JUDGE_API_KEY, RAG_JUDGE_BASE_URL, RAG_JUDGE_MODEL',
+  ]);
+
+  assert.deepEqual(validateProjectEnvMaps({
+    ...base,
+    'rag-service/.env': {
+      ...base['rag-service/.env'],
+      RAG_JUDGE_API_KEY: 'sk-test',
+      RAG_JUDGE_BASE_URL: 'https://api.moonshot.cn/v1',
+      RAG_JUDGE_MODEL: 'moonshot-v1-8k',
+    },
+  }), []);
 });
 
 test('validateProjectEnvMaps rejects mismatched localhost backend port', () => {

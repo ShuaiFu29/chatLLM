@@ -9,6 +9,7 @@ import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
 import { useProjectSpaceStore, type ProjectSpace } from '../stores/useProjectSpaceStore';
+import { getAvatarUrl } from '../lib/avatar';
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -98,6 +99,8 @@ export default function MainLayout() {
 
   const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
   const currentWorkspaceName = currentProjectSpace?.name || t('workspace.fallbackName');
+  const userDisplayName = user?.display_name || user?.username || 'User';
+  const userAvatarUrl = getAvatarUrl(user?.avatar_url, userDisplayName, 64);
 
   const fetchKnowledgeFiles = useCallback(async () => {
     try {
@@ -1092,11 +1095,13 @@ export default function MainLayout() {
             title={t('profile.title')}
           >
             <img
-              src={user?.avatar_url}
+              src={userAvatarUrl}
               alt={user?.username}
               loading="lazy"
               className="w-8 h-8 rounded-full bg-bg-surface group-hover:scale-105 transition-transform object-cover"
-              onError={(e) => (e.currentTarget.src = `https://ui-avatars.com/api/?name=${user?.display_name || user?.username || 'User'}`)}
+              onError={(e) => {
+                e.currentTarget.src = getAvatarUrl(null, userDisplayName, 64);
+              }}
             />
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium truncate text-text-main">{user?.display_name || user?.username}</p>

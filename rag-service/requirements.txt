@@ -6,4 +6,3 @@ boto3
 pymilvus
 langchain
 langchain-text-splitters
-openai

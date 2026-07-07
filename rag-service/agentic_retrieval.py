@@ -1,3 +1,4 @@
+import re
 import time
 import uuid
 from typing import Callable
@@ -5,13 +6,15 @@ from typing import Callable
 from evaluation import evaluate_retrieval_quality
 from query_planner import plan_queries
 from db import list_files_for_inventory
-from reranker import rerank_documents
+from reranker import classify_source_role, rerank_documents
 from retrieval import retrieve_documents
 
 
 RetrieveFn = Callable[[str, str, str | None, int, float], list[dict]]
 RerankFn = Callable[[str, list[dict]], list[dict]]
 InventoryFn = Callable[[str, str | None, int], list[dict]]
+
+INVENTORY_RESULT_LIMIT = 500
 
 
 def _now_ms() -> int:
@@ -37,9 +40,109 @@ def _document_key(document: dict) -> str:
     )
 
 
+def _source_key(document: dict) -> str:
+    metadata = document.get("metadata") or {}
+    return str(metadata.get("file_id") or metadata.get("filename") or document.get("id") or "")
+
+
+def _document_facet(document: dict) -> str:
+    metadata = document.get("metadata") or {}
+    explicit_domain = str(metadata.get("source_domain") or "").strip().lower()
+    if explicit_domain:
+        return explicit_domain
+
+    filename = str(metadata.get("filename") or document.get("filename") or "").lower()
+    content = str(document.get("content") or "").lower()
+
+    filename_markers = [
+        ("model", ("model", "triage", "change", "feature", "模型", "特征")),
+        ("privacy", ("patient", "consent", "privacy", "cn-er", "eu-hds", "cross-border", "患者", "授权", "跨境")),
+        ("payment", ("payment", "insurance", "claim", "clinical", "lab", "quality", "医保", "支付", "临床", "检验", "质控")),
+        ("operations", ("sre", "incident", "observability", "cyber", "redteam", "事故", "安全", "观测")),
+        ("governance", ("governance", "audit", "retention", "board", "deprecation", "conflict", "vendor", "审计", "董事会", "法律保全", "废止")),
+        ("regional", ("regional", "appendix", "asia", "eu", "us-state", "区域", "附件", "欧盟", "亚洲")),
+    ]
+    for facet, markers in filename_markers:
+        if any(marker in filename for marker in markers):
+            return facet
+
+    content_markers = [
+        ("model", ("model", "模型", "triage", "change", "feature", "drift", "特征")),
+        ("privacy", ("patient", "consent", "privacy", "cn-er", "eu-hds", "cross-border", "患者", "授权", "跨境", "假名化")),
+        ("payment", ("payment", "insurance", "claim", "clinical", "lab", "quality", "医保", "支付", "临床", "检验", "质控")),
+        ("operations", ("sre", "incident", "observability", "cyber", "redteam", "事故", "扩容", "取证", "安全", "观测")),
+        ("governance", ("governance", "audit", "retention", "board", "deprecation", "conflict", "vendor", "审计", "董事会", "法律保全", "废止")),
+        ("regional", ("regional", "appendix", "asia", "eu", "us-state", "区域", "附件", "欧盟", "亚洲")),
+    ]
+
+    for facet, markers in content_markers:
+        if any(marker in content for marker in markers):
+            return facet
+    return "general"
+
+
+def _select_diverse_documents(ranked_documents: list[dict], limit: int) -> list[dict]:
+    if limit <= 0:
+        return []
+
+    primary_documents = [document for document in ranked_documents if classify_source_role(document) != "evaluation_guide"]
+    guide_documents = [document for document in ranked_documents if classify_source_role(document) == "evaluation_guide"]
+    ordered_documents = primary_documents + guide_documents
+
+    selected: list[dict] = []
+    selected_keys: set[str] = set()
+    selected_document_keys: set[str] = set()
+
+    if limit >= 4:
+        selected_facets: set[str] = set()
+        available_facets = {_document_facet(document) for document in primary_documents}
+        target_facet_count = min(limit, len(available_facets), 6)
+        for document in primary_documents:
+            source_key = _source_key(document)
+            document_key = _document_key(document)
+            facet = _document_facet(document)
+            if (
+                source_key in selected_keys
+                or document_key in selected_document_keys
+                or facet in selected_facets
+            ):
+                continue
+            selected.append(document)
+            selected_keys.add(source_key)
+            selected_document_keys.add(document_key)
+            selected_facets.add(facet)
+            if len(selected) >= target_facet_count:
+                break
+
+    for document in ordered_documents:
+        source_key = _source_key(document)
+        document_key = _document_key(document)
+        if source_key in selected_keys or document_key in selected_document_keys:
+            continue
+        selected.append(document)
+        selected_keys.add(source_key)
+        selected_document_keys.add(document_key)
+        if len(selected) >= limit:
+            return selected
+
+    for document in ordered_documents:
+        document_key = _document_key(document)
+        if document_key in selected_document_keys:
+            continue
+        selected.append(document)
+        selected_document_keys.add(document_key)
+        if len(selected) >= limit:
+            return selected
+
+    return selected
+
+
 def _looks_like_inventory_query(query: str) -> bool:
     normalized = "".join(query.lower().split())
     if not normalized:
+        return False
+
+    if re.search(r"《[^》]{2,}》", query) and any(term in normalized for term in ("原文", "概述", "总结", "分析", "核心内容")):
         return False
 
     scope_terms = ("知识库", "文档", "文件", "资料", "knowledgebase", "knowledge", "document", "documents", "file", "files")
@@ -56,7 +159,41 @@ def _looks_like_inventory_query(query: str) -> bool:
         "内容概览",
         "列出",
         "列表",
-        "清单",
+        "文档清单",
+        "文件清单",
+        "资料清单",
+        "知识库清单",
+        "几篇文档",
+        "多少篇文档",
+        "几文档",
+        "多少文档",
+        "有几篇文档",
+        "有多少篇文档",
+        "有几个文档",
+        "有多少个文档",
+        "有多少文档",
+        "几篇资料",
+        "多少篇资料",
+        "多少资料",
+        "有多少资料",
+        "几个文档",
+        "多少个文档",
+        "几个文件",
+        "多少个文件",
+        "多少文件",
+        "有几个文件",
+        "有多少个文件",
+        "有多少文件",
+        "文档数量",
+        "文件数量",
+        "一共有几篇",
+        "一共几篇",
+        "一共有多少",
+        "一共多少",
+        "共有几篇",
+        "共有多少",
+        "总共有几篇",
+        "总共有多少",
         "uploaded",
         "whatfiles",
         "whatdocuments",
@@ -125,7 +262,7 @@ def _build_inventory_documents(files: list[dict]) -> list[dict]:
 def _classify_question(query: str) -> dict:
     normalized = "".join(query.lower().split())
     relationship_terms = ("关系", "关联", "依赖", "影响", "链路", "为什么", "如何协作", "connect", "relate", "relationship", "depend")
-    comparison_terms = ("对比", "区别", "差异", "compare", "difference")
+    comparison_terms = ("对比", "区别", "差异", "区分", "是否", "能否", "还是", "compare", "difference")
     inventory = _looks_like_inventory_query(query)
 
     if inventory:
@@ -220,7 +357,7 @@ def agentic_retrieve(
     if _looks_like_inventory_query(query):
         intent = _classify_question(query)
         started_at = _now_ms()
-        inventory_limit = min(max(limit, 20), 100)
+        inventory_limit = INVENTORY_RESULT_LIMIT
         trace_steps.append(_trace_step(
             "intent_route",
             "success",
@@ -232,12 +369,13 @@ def agentic_retrieve(
         started_at = _now_ms()
         files = inventory_fn(user_id, project_space_id, inventory_limit)
         documents = _build_inventory_documents(files)
+        inventory_total = len(files)
         trace_steps.append(_trace_step(
             "metadata_lookup",
             "success",
             started_at,
             {"user_id": user_id, "project_space_id": project_space_id, "limit": inventory_limit},
-            {"file_count": len(files)},
+            {"file_count": inventory_total, "complete_within_limit": inventory_total < inventory_limit},
         ))
 
         started_at = _now_ms()
@@ -245,14 +383,15 @@ def agentic_retrieve(
         insufficient_evidence, answer_guidance = _build_answer_guidance(quality)
         if documents:
             answer_guidance = (
-                "Use the document inventory context to answer. List the uploaded documents by filename "
-                "and mention processing status if useful."
+                f"这是文档清单问题。请先明确回答当前知识库共 {inventory_total} 篇文档，"
+                "然后按文件名逐条列出所有已返回的文档；不要只列一部分，不要改写文件名。"
+                "如果用户询问上传了哪些文档，优先回答文档清单，而不是做内容摘要。"
             )
         trace_steps.append(_trace_step(
             "evidence_check",
             "partial" if insufficient_evidence else "success",
             started_at,
-            {"selected_count": len(documents)},
+            {"selected_count": len(documents), "inventory_total": inventory_total},
             {**quality, "insufficient_evidence": insufficient_evidence},
         ))
 
@@ -264,6 +403,8 @@ def agentic_retrieve(
             "results": documents,
             "trace_steps": trace_steps,
             "quality": quality,
+            "inventory_total": inventory_total,
+            "inventory_limit": inventory_limit,
             "insufficient_evidence": insufficient_evidence,
             "answer_guidance": answer_guidance,
         }
@@ -345,9 +486,9 @@ def agentic_retrieve(
             merged_by_key[key] = merged
 
     started_at = _now_ms()
-    reranker_name = "local-overlap" if rerank_fn is default_rerank_documents else "custom"
+    reranker_name = "local-evidence" if rerank_fn is default_rerank_documents else "custom"
     ranked_documents = rerank_fn(query, list(merged_by_key.values()))
-    selected_documents = ranked_documents[:limit]
+    selected_documents = _select_diverse_documents(ranked_documents, limit)
     trace_steps.append(_trace_step(
         "rerank",
         "success",
@@ -357,6 +498,16 @@ def agentic_retrieve(
             "reranker": reranker_name,
             "selected_count": len(selected_documents),
             "selected_ids": [document.get("id") for document in selected_documents],
+            "selected_sources": [
+                {
+                    "id": document.get("id"),
+                    "filename": (document.get("metadata") or {}).get("filename"),
+                    "source_role": document.get("source_role") or classify_source_role(document),
+                    "agentic_score": document.get("agentic_score") or document.get("rerank_score") or 0,
+                    "matched_terms": document.get("matched_terms") or [],
+                }
+                for document in selected_documents
+            ],
         },
     ))
 

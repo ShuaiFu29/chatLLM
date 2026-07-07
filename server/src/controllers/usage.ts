@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { getModelProviderHealth } from '../lib/openai';
+import { getModelProviderHealth } from '../lib/llmProviders';
 import {
   findUsageConversationForUser,
   getFileQueueSummaryForUser,

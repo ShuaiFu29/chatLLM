@@ -43,7 +43,8 @@ test('usage page renders document processing queue state with i18n coverage', ()
   assert.match(usagePageSource, /fetchFileQueue/);
   assert.match(usagePageSource, /\/usage\/file-queue/);
   assert.match(usagePageSource, /fileQueue\?\.summary\.processing/);
-  assert.match(usagePageSource, /fileQueue\?\.files\.map/);
+  assert.match(usagePageSource, /isFileJobsModalOpen/);
+  assert.match(usagePageSource, /fileQueue\.files\.map/);
 
   for (const key of [
     'documentProcessing',
@@ -52,6 +53,7 @@ test('usage page renders document processing queue state with i18n coverage', ()
     'processingDocuments',
     'retryableDocuments',
     'recentDocumentJobs',
+    'viewRecentDocumentJobs',
     'attempts',
     'nextRetry',
     'queueLoadFailed',
@@ -59,4 +61,16 @@ test('usage page renders document processing queue state with i18n coverage', ()
     assert.equal(typeof en.usage[key], 'string', `missing English usage.${key}`);
     assert.equal(typeof zh.usage[key], 'string', `missing Chinese usage.${key}`);
   }
+});
+
+test('file queue waits for durable synchronous RAG ingestion instead of fire-and-forget background tasks', () => {
+  const queueSource = readSource('src/services/fileQueue.ts');
+  const envSource = readSource('src/lib/env.ts');
+  const envExampleSource = readSource('.env.example');
+
+  assert.match(queueSource, /\/ingest-sync/);
+  assert.doesNotMatch(queueSource, /\/ingest['"`]/);
+  assert.match(queueSource, /FILE_QUEUE_INGEST_TIMEOUT_MS/);
+  assert.match(envSource, /DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 5 \* 60 \* 1000/);
+  assert.match(envExampleSource, /FILE_QUEUE_INGEST_TIMEOUT_MS=300000/);
 });

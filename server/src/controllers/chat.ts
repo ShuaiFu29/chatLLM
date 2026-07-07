@@ -1,5 +1,10 @@
 import { Request, Response } from 'express';
-import { createChatClientForModel, ModelProviderConfigurationError, openai } from '../lib/openai';
+import {
+  createChatClientForModel,
+  getDefaultChatModel,
+  ModelProviderConfigurationError,
+  UnsupportedOfficialModelError,
+} from '../lib/llmProviders';
 import { buildChatSources, ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { normalizeChatMessageContent } from '../lib/chatInput';
 import { normalizeMessagePageQuery } from '../lib/messagePagination';
@@ -231,8 +236,9 @@ export const deleteMessage = async (req: Request, res: Response) => {
 
 const generateConversationTitle = async (conversationId: string, firstMessage: string) => {
   try {
-    const response = await openai.chat.completions.create({
-      model: 'deepseek-chat',
+    const { client: titleClient, resolvedModel } = createChatClientForModel(getDefaultChatModel());
+    const response = await titleClient.chat.completions.create({
+      model: resolvedModel,
       messages: [
         {
           role: 'system',
@@ -307,7 +313,7 @@ export const sendMessage = async (req: Request, res: Response) => {
   let failed = false;
 
   try {
-    const model = conversation.model || 'deepseek-chat';
+    const model = conversation.model || getDefaultChatModel();
     const { client: chatClient, resolvedModel } = createChatClientForModel(model);
     const userMessage = await insertMessage(conversationId, 'user', content);
 
@@ -395,7 +401,7 @@ export const sendMessage = async (req: Request, res: Response) => {
       const lastMsgIndex = messages.length - 1;
       if (lastMsgIndex >= 0 && messages[lastMsgIndex].role === 'user') {
         const originalContent = messages[lastMsgIndex].content;
-        const evidenceGuidance = insufficientEvidence && answerGuidance
+        const evidenceGuidance = answerGuidance
           ? `${answerGuidance}\n\n`
           : '';
         messages[lastMsgIndex].content = `${evidenceGuidance}Based on the following context, please answer the user's question.
@@ -463,7 +469,9 @@ ${originalContent}`;
       res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
       res.end();
     } else {
-      const statusCode = error instanceof ModelProviderConfigurationError ? error.statusCode : 500;
+      const statusCode = error instanceof ModelProviderConfigurationError || error instanceof UnsupportedOfficialModelError
+        ? error.statusCode
+        : 500;
       res.status(statusCode).json({ error: 'Failed to generate response' });
     }
   } finally {

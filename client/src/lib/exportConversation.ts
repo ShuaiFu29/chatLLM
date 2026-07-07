@@ -3,6 +3,9 @@ import type { Conversation, Message } from '../stores/useChatStore';
 const MODEL_LABELS: Record<string, string> = {
   'deepseek-chat': 'DeepSeek-V3',
   'deepseek-reasoner': 'DeepSeek-R1',
+  'moonshot-v1-8k': 'Kimi · moonshot-v1-8k',
+  'moonshot-v1-32k': 'Kimi · moonshot-v1-32k',
+  'moonshot-v1-128k': 'Kimi · moonshot-v1-128k',
 };
 
 interface BuildConversationMarkdownInput {

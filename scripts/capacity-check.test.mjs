@@ -48,12 +48,13 @@ const enterpriseRagEnv = {
   NEO4J_URL: 'http://localhost:7474',
   NEO4J_USER: 'neo4j',
   NEO4J_PASSWORD: 'chatllm-password',
-  NEO4J_BATCH_SIZE: '500',
+  NEO4J_TIMEOUT_MS: '15000',
+  NEO4J_BATCH_SIZE: '100',
   EMBEDDING_API_KEY: 'embedding-key',
   EMBEDDING_BASE_URL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
   EMBEDDING_MODEL: 'text-embedding-v4',
   EMBEDDING_DIMENSION: '1024',
-  RAG_INGEST_CONCURRENCY: '4',
+  RAG_INGEST_CONCURRENCY: '6',
   RAG_READINESS_TIMEOUT_MS: '2000',
 };
 
@@ -101,13 +102,16 @@ test('validateCapacityConfig reports risky bottleneck settings for enterprise mo
       'server/.env': {
         ...enterpriseServerEnv,
         DB_POOL_MAX: '5',
-        FILE_QUEUE_CONCURRENCY: '1',
+        FILE_QUEUE_CONCURRENCY: '4',
         CHAT_STREAM_MAX_CONCURRENT: '10',
       },
       'rag-service/.env': {
         ...enterpriseRagEnv,
         ELASTICSEARCH_ENABLED: 'false',
         NEO4J_ENABLED: 'false',
+        RAG_INGEST_CONCURRENCY: '2',
+        NEO4J_TIMEOUT_MS: '3000',
+        NEO4J_BATCH_SIZE: '500',
         MILVUS_SEARCH_EF: '16',
         MILVUS_INSERT_BATCH_SIZE: '5000',
       },
@@ -118,12 +122,14 @@ test('validateCapacityConfig reports risky bottleneck settings for enterprise mo
 
   assert.deepEqual(report.errors, []);
   assert.match(report.warnings.join('\n'), /DB_POOL_MAX should be >= 20/);
-  assert.match(report.warnings.join('\n'), /FILE_QUEUE_CONCURRENCY should be >= 4/);
   assert.match(report.warnings.join('\n'), /CHAT_STREAM_MAX_CONCURRENT should be >= 50/);
   assert.match(report.warnings.join('\n'), /ELASTICSEARCH_ENABLED should be true/);
   assert.match(report.warnings.join('\n'), /NEO4J_ENABLED should be true/);
   assert.match(report.warnings.join('\n'), /MILVUS_SEARCH_EF should be >= 64/);
   assert.match(report.warnings.join('\n'), /MILVUS_INSERT_BATCH_SIZE should be <= 1000/);
+  assert.match(report.warnings.join('\n'), /RAG_INGEST_CONCURRENCY should be >= FILE_QUEUE_CONCURRENCY/);
+  assert.match(report.warnings.join('\n'), /NEO4J_TIMEOUT_MS should be >= 10000/);
+  assert.match(report.warnings.join('\n'), /NEO4J_BATCH_SIZE should be <= 200/);
   assert.match(report.warnings.join('\n'), /docker-compose.yml should tune Elasticsearch JVM heap/);
   assert.match(report.warnings.join('\n'), /docker-compose.yml should tune Neo4j heap and page cache/);
 });

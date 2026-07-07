@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { normalizeChatMessageContent } from '../lib/chatInput';
-import { retrieveAgenticRagDocuments, searchRagGraphDocuments } from '../lib/ragClient';
+import { listRagGraphDocuments, retrieveAgenticRagDocuments, searchRagGraphDocuments } from '../lib/ragClient';
 import { findProjectSpaceForUser } from '../repositories/projectSpaces';
 
 const readProjectSpaceId = (value: unknown) => {
@@ -76,5 +76,25 @@ export const searchRagGraph = async (req: Request, res: Response) => {
   } catch (error) {
     console.error('Error searching RAG graph:', error);
     res.status(500).json({ error: 'Failed to search RAG graph' });
+  }
+};
+
+export const listRagGraph = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const projectSpaceId = await resolveProjectSpaceId(req);
+    if (projectSpaceId === null) return res.status(404).json({ error: 'Project space not found' });
+
+    const results = await listRagGraphDocuments({
+      user_id: req.user.id,
+      project_space_id: projectSpaceId || undefined,
+      limit: readLimit(req.body.limit, 30),
+    });
+
+    res.json({ results });
+  } catch (error) {
+    console.error('Error listing RAG graph:', error);
+    res.status(500).json({ error: 'Failed to list RAG graph' });
   }
 };

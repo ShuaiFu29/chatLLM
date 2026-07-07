@@ -22,7 +22,7 @@ flowchart LR
   Rag -->|SQL metadata/chunks| Postgres
   Rag -->|Download source files| MinIO
   Rag -->|Vector insert/search| Milvus["Milvus"]
-  Server -->|Streaming chat completion| LLM["DeepSeek/OpenAI-compatible API"]
+  Server -->|Streaming chat completion| LLM["DeepSeek / Kimi / Qwen compatible APIs"]
 ```
 
 ## 目录结构
@@ -59,7 +59,7 @@ chatLLM/
 ### RAG Service
 
 - FastAPI
-- OpenAI-compatible Embeddings API
+- Qwen/Bailian compatible Embeddings API
 - PostgreSQL chunk metadata
 - MinIO source document download
 - Milvus vector storage and retrieval
@@ -117,7 +117,7 @@ RAG_CLEANUP_TIMEOUT_MS=10000
 FILE_QUEUE_INGEST_TIMEOUT_MS=10000
 HTTP_PROXY=http://127.0.0.1:7897
 HTTPS_PROXY=http://127.0.0.1:7897
-EMBEDDING_PROVIDER=openai-compatible
+EMBEDDING_PROVIDER=compatible
 EMBEDDING_API_KEY=
 EMBEDDING_BASE_URL=https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
 EMBEDDING_MODEL=text-embedding-v4
@@ -126,7 +126,7 @@ EMBEDDING_DIMENSION=1024
 
 `HTTP_PROXY` / `HTTPS_PROXY` 是可选项。只有当浏览器能打开 GitHub、但后端 OAuth callback 报 `fetch failed` 或 `Connect Timeout Error` 时才需要配置，值应与你本机系统代理端口一致。
 
-`EMBEDDING_PROVIDER=local` 只建议用于本地 smoke / 开发验证。生产或真实语义检索仍应使用 OpenAI-compatible embedding provider。
+`EMBEDDING_PROVIDER=local` 只建议用于本地 smoke / 开发验证。生产或真实语义检索仍应使用千问百炼等供应商的兼容 embedding 接口。
 
 ### 访问地址
 

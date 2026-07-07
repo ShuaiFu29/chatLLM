@@ -21,8 +21,12 @@ const retrievalLabPagePath = path.join(clientDir, 'src/pages/RetrievalLab.tsx');
 const retrievalLabPageSource = existsSync(retrievalLabPagePath) ? readFileSync(retrievalLabPagePath, 'utf8') : '';
 const graphExplorerPagePath = path.join(clientDir, 'src/pages/GraphExplorer.tsx');
 const graphExplorerPageSource = existsSync(graphExplorerPagePath) ? readFileSync(graphExplorerPagePath, 'utf8') : '';
+const ragTraceLabelsPath = path.join(clientDir, 'src/lib/ragTraceLabels.ts');
+const ragTraceLabelsSource = existsSync(ragTraceLabelsPath) ? readFileSync(ragTraceLabelsPath, 'utf8') : '';
 const usagePageSource = readFileSync(path.join(clientDir, 'src/pages/Usage.tsx'), 'utf8');
 const modalSource = readFileSync(path.join(clientDir, 'src/components/Modal.tsx'), 'utf8');
+const avatarUtilsPath = path.join(clientDir, 'src/lib/avatar.ts');
+const avatarUtilsSource = existsSync(avatarUtilsPath) ? readFileSync(avatarUtilsPath, 'utf8') : '';
 const selectFieldPath = path.join(clientDir, 'src/components/SelectField.tsx');
 const selectFieldSource = existsSync(selectFieldPath) ? readFileSync(selectFieldPath, 'utf8') : '';
 const chatHeaderSource = readFileSync(path.join(clientDir, 'src/components/ChatHeader.tsx'), 'utf8');
@@ -230,6 +234,16 @@ test('visible dropdowns use shared SelectField with an app-native chevron', () =
   }
 });
 
+test('user avatar images use a non-empty fallback src', () => {
+  assert.ok(existsSync(avatarUtilsPath), 'avatar URL helper should exist');
+  assert.match(avatarUtilsSource, /getAvatarUrl/);
+  assert.match(avatarUtilsSource, /ui-avatars\.com/);
+  assert.match(mainLayoutSource, /getAvatarUrl\(/);
+  assert.match(profilePageSource, /getAvatarUrl\(/);
+  assert.equal(mainLayoutSource.includes('src={user?.avatar_url}'), false);
+  assert.equal(profilePageSource.includes('src={avatarUrl || user?.avatar_url}'), false);
+});
+
 test('workspace list exposes rename and delete actions for non-default workspaces', () => {
   assert.match(projectSpaceStoreSource, /renameProjectSpace/);
   assert.match(projectSpaceStoreSource, /deleteProjectSpace/);
@@ -327,9 +341,13 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /qualitySummary\.low_score_cases/);
   assert.match(ragEvaluationPageSource, /historyItems/);
   assert.match(ragEvaluationPageSource, /selectedHistoryItem/);
+  assert.match(ragEvaluationPageSource, /isHistoryBrowserOpen/);
+  assert.match(ragEvaluationPageSource, /isBenchmarkModalOpen/);
   assert.match(ragEvaluationPageSource, /openCreateCaseFromHistory/);
   assert.match(ragEvaluationPageSource, /ragEval\.historyTitle/);
   assert.match(ragEvaluationPageSource, /ragEval\.historyHint/);
+  assert.match(ragEvaluationPageSource, /ragEval\.openHistoryBrowser/);
+  assert.match(ragEvaluationPageSource, /ragEval\.openBenchmarkLab/);
   assert.match(ragEvaluationPageSource, /ragEval\.historyDetails/);
   assert.match(ragEvaluationPageSource, /ragEval\.benchmarkTitle/);
   assert.match(ragEvaluationPageSource, /ragEval\.benchmarkHint/);
@@ -369,6 +387,10 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
     assert.ok(locale.ragEval?.qualityLoadFailed, `${localeFile.locale}.json needs ragEval.qualityLoadFailed`);
     assert.ok(locale.ragEval?.historyTitle, `${localeFile.locale}.json needs ragEval.historyTitle`);
     assert.ok(locale.ragEval?.historyHint, `${localeFile.locale}.json needs ragEval.historyHint`);
+    assert.ok(locale.ragEval?.openHistoryBrowser, `${localeFile.locale}.json needs ragEval.openHistoryBrowser`);
+    assert.ok(locale.ragEval?.openBenchmarkLab, `${localeFile.locale}.json needs ragEval.openBenchmarkLab`);
+    assert.ok(locale.ragEval?.historySummary, `${localeFile.locale}.json needs ragEval.historySummary`);
+    assert.ok(locale.ragEval?.benchmarkSummary, `${localeFile.locale}.json needs ragEval.benchmarkSummary`);
     assert.ok(locale.ragEval?.historyEmpty, `${localeFile.locale}.json needs ragEval.historyEmpty`);
     assert.ok(locale.ragEval?.historyLoadFailed, `${localeFile.locale}.json needs ragEval.historyLoadFailed`);
     assert.ok(locale.ragEval?.historyDetails, `${localeFile.locale}.json needs ragEval.historyDetails`);
@@ -425,8 +447,11 @@ test('RAG graph explorer is routed, reachable from navigation, and localized', (
   assert.match(graphExplorerPageSource, /graphExplorer\.title/);
   assert.match(graphExplorerPageSource, /graphExplorer\.queryLabel/);
   assert.match(graphExplorerPageSource, /graphExplorer\.search/);
-  assert.match(graphExplorerPageSource, /graphExplorer\.entities/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.chunkLimit/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.visibleGraphStats/);
   assert.match(graphExplorerPageSource, /graph_entities/);
+  assert.match(graphExplorerPageSource, /graph_relations/);
+  assert.match(graphExplorerPageSource, /relationTypes/);
   assert.match(graphExplorerPageSource, /project_space_id/);
   assert.match(graphExplorerPageSource, /URLSearchParams\(window\.location\.search\)/);
   assert.match(graphExplorerPageSource, /hasAutoRunFromUrl/);
@@ -439,9 +464,30 @@ test('RAG graph explorer is routed, reachable from navigation, and localized', (
     assert.ok(locale.graphExplorer?.subtitle, `${localeFile.locale}.json needs graphExplorer.subtitle`);
     assert.ok(locale.graphExplorer?.queryLabel, `${localeFile.locale}.json needs graphExplorer.queryLabel`);
     assert.ok(locale.graphExplorer?.search, `${localeFile.locale}.json needs graphExplorer.search`);
-    assert.ok(locale.graphExplorer?.entities, `${localeFile.locale}.json needs graphExplorer.entities`);
+    assert.ok(locale.graphExplorer?.chunkLimit, `${localeFile.locale}.json needs graphExplorer.chunkLimit`);
+    assert.ok(locale.graphExplorer?.chunkLimitHint, `${localeFile.locale}.json needs graphExplorer.chunkLimitHint`);
+    assert.ok(locale.graphExplorer?.visibleGraphStats, `${localeFile.locale}.json needs graphExplorer.visibleGraphStats`);
+    assert.ok(locale.graphExplorer?.relationTypes?.dependsOn, `${localeFile.locale}.json needs graphExplorer.relationTypes.dependsOn`);
+    assert.ok(locale.graphExplorer?.relationTypes?.conflictsWith, `${localeFile.locale}.json needs graphExplorer.relationTypes.conflictsWith`);
+    assert.ok(locale.graphExplorer?.relationTypes?.supports, `${localeFile.locale}.json needs graphExplorer.relationTypes.supports`);
     assert.ok(locale.graphExplorer?.loadFailed, `${localeFile.locale}.json needs graphExplorer.loadFailed`);
+    assert.equal(
+      /例如|JSBridge|such as/i.test(locale.graphExplorer?.queryPlaceholder || ''),
+      false,
+      `${localeFile.locale}.json graphExplorer.queryPlaceholder should not include domain-specific examples`,
+    );
   }
+});
+
+test('RAG evaluation keeps dense history and benchmark content behind modals', () => {
+  assert.match(ragEvaluationPageSource, /isHistoryBrowserOpen/);
+  assert.match(ragEvaluationPageSource, /setIsHistoryBrowserOpen\(true\)/);
+  assert.match(ragEvaluationPageSource, /isBenchmarkModalOpen/);
+  assert.match(ragEvaluationPageSource, /setIsBenchmarkModalOpen\(true\)/);
+  assert.match(ragEvaluationPageSource, /title=\{t\('ragEval\.historyTitle'\)\}/);
+  assert.match(ragEvaluationPageSource, /title=\{t\('ragEval\.benchmarkTitle'\)\}/);
+  assert.match(ragEvaluationPageSource, /ragEval\.historySummary/);
+  assert.match(ragEvaluationPageSource, /ragEval\.benchmarkSummary/);
 });
 
 test('conversation list supports pinning, archiving, and archived filtering in localized UI', () => {
@@ -780,6 +826,77 @@ test('assistant messages expose Agentic RAG trace and quality summaries in local
     assert.ok(locale.chat?.ragEvidencePartial, `${localeFile.locale}.json needs chat.ragEvidencePartial`);
     assert.ok(locale.chat?.ragEvidenceWeak, `${localeFile.locale}.json needs chat.ragEvidenceWeak`);
   }
+});
+
+test('RAG trace steps use readable localized labels instead of internal step ids', () => {
+  assert.ok(existsSync(ragTraceLabelsPath), 'ragTraceLabels.ts should define user-facing trace labels');
+  assert.match(ragTraceLabelsSource, /getRagTraceStepLabel/);
+  assert.match(ragTraceLabelsSource, /getRagTraceStatusLabel/);
+
+  const traceConsumers = [
+    ['ChatMessage.tsx', chatMessageSource],
+    ['Usage.tsx', usagePageSource],
+    ['RetrievalLab.tsx', retrievalLabPageSource],
+    ['RagEvaluation.tsx', ragEvaluationPageSource],
+  ];
+
+  for (const [filename, source] of traceConsumers) {
+    assert.match(source, /getRagTraceStepLabel\(t, step\.step_type\)/, `${filename} should translate trace step ids`);
+    assert.match(source, /getRagTraceStatusLabel\(t, step\.status\)/, `${filename} should translate trace statuses`);
+    assert.doesNotMatch(source, />\{step\.step_type\}/, `${filename} should not render raw step ids`);
+    assert.doesNotMatch(source, /\{step\.step_type \|\| t\('ragEval\.traceStep'\)\}/, `${filename} should not use raw step ids as fallback labels`);
+  }
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.ragTrace?.steps?.intent_route, `${localeFile.locale}.json needs ragTrace.steps.intent_route`);
+    assert.ok(locale.ragTrace?.steps?.metadata_lookup, `${localeFile.locale}.json needs ragTrace.steps.metadata_lookup`);
+    assert.ok(locale.ragTrace?.steps?.question_classify, `${localeFile.locale}.json needs ragTrace.steps.question_classify`);
+    assert.ok(locale.ragTrace?.steps?.retriever_route, `${localeFile.locale}.json needs ragTrace.steps.retriever_route`);
+    assert.ok(locale.ragTrace?.steps?.query_rewrite, `${localeFile.locale}.json needs ragTrace.steps.query_rewrite`);
+    assert.ok(locale.ragTrace?.steps?.retrieve, `${localeFile.locale}.json needs ragTrace.steps.retrieve`);
+    assert.ok(locale.ragTrace?.steps?.retrieve_retry, `${localeFile.locale}.json needs ragTrace.steps.retrieve_retry`);
+    assert.ok(locale.ragTrace?.steps?.rerank, `${localeFile.locale}.json needs ragTrace.steps.rerank`);
+    assert.ok(locale.ragTrace?.steps?.evidence_check, `${localeFile.locale}.json needs ragTrace.steps.evidence_check`);
+    assert.ok(locale.ragTrace?.steps?.unknown, `${localeFile.locale}.json needs ragTrace.steps.unknown`);
+    assert.ok(locale.ragTrace?.statuses?.success, `${localeFile.locale}.json needs ragTrace.statuses.success`);
+    assert.ok(locale.ragTrace?.statuses?.partial, `${localeFile.locale}.json needs ragTrace.statuses.partial`);
+    assert.ok(locale.ragTrace?.statuses?.failed, `${localeFile.locale}.json needs ragTrace.statuses.failed`);
+    assert.ok(locale.ragTrace?.statuses?.unknown, `${localeFile.locale}.json needs ragTrace.statuses.unknown`);
+  }
+});
+
+test('knowledge graph result limit controls visible node budget with clear copy', () => {
+  assert.match(graphExplorerPageSource, /getMaxEntityNodes/);
+  assert.match(graphExplorerPageSource, /getMaxEntityNodes\(resultLimit\)/);
+  assert.match(graphExplorerPageSource, /buildGraphViewData\(\s*results,\s*\{/);
+  assert.match(graphExplorerPageSource, /,\s*limit\s*\)/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.chunkLimit/);
+  assert.match(graphExplorerPageSource, /graphExplorer\.chunkLimitHint/);
+  assert.equal(
+    graphExplorerPageSource.includes('const MAX_ENTITY_NODES = 16;'),
+    false,
+    'graph should not keep a fixed 16-node cap when the user changes the result count',
+  );
+});
+
+test('RAG evaluation details show readable source names and colored status badges', () => {
+  assert.match(ragEvaluationPageSource, /getEvidenceStatusClass/);
+  assert.match(ragEvaluationPageSource, /getResultStatusClass/);
+  assert.match(ragEvaluationPageSource, /getEvidenceLabel\(result\.evidence_label\)/);
+  assert.match(ragEvaluationPageSource, /className=\{`[^`]*getEvidenceStatusClass\(result\.evidence_label\)/);
+  assert.match(ragEvaluationPageSource, /className=\{`[^`]*getResultStatusClass\(result\.status\)/);
+  assert.match(ragEvaluationPageSource, /source_recall_score/);
+  assert.match(ragEvaluationPageSource, /source_precision_score/);
+  assert.match(ragEvaluationPageSource, /citation_accuracy_score/);
+  assert.match(ragEvaluationPageSource, /grounding_score/);
+  assert.match(ragEvaluationPageSource, /break-words text-text-main/);
+  assert.equal(
+    ragEvaluationPageSource.includes('<div className="truncate text-text-main">'),
+    false,
+    'RAG evaluation matched source filenames should wrap instead of being truncated',
+  );
 });
 
 test('markdown image references show a localized fallback when the uploaded markdown did not include image assets', () => {

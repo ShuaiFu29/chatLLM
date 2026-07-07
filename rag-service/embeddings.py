@@ -2,12 +2,12 @@ import hashlib
 import math
 import re
 
-from openai import OpenAI
+from compatible_api import CompatibleEmbeddingClient
 from config import settings
 
 client = None
 if settings.embedding_provider != "local":
-    client = OpenAI(api_key=settings.embedding_api_key, base_url=settings.embedding_base_url)
+    client = CompatibleEmbeddingClient(api_key=settings.embedding_api_key, base_url=settings.embedding_base_url)
 
 
 REMOTE_EMBEDDING_BATCH_SIZE = 10

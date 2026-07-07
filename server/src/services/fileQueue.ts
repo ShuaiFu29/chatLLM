@@ -68,7 +68,7 @@ class FileQueueService {
     metrics.recordFileQueueStarted();
     let status: 'completed' | 'failed' = 'failed';
     try {
-      await axios.post(`${this.ragServiceUrl}/ingest`, {
+      await axios.post(`${this.ragServiceUrl}/ingest-sync`, {
         file_id: file.id,
       }, { timeout: this.ingestTimeoutMs });
       status = 'completed';

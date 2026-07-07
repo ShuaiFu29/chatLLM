@@ -22,6 +22,7 @@ import Modal from '../components/Modal';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import { downloadTextFile } from '../lib/exportConversation';
+import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 
 interface RagEvalCase {
   id: string;
@@ -60,7 +61,13 @@ interface RagEvalResult {
   retrieval_score: number;
   answer_score: number;
   source_score: number;
+  source_recall_score?: number;
+  source_precision_score?: number;
+  citation_accuracy_score?: number;
   keyword_score: number;
+  answer_keyword_score?: number;
+  grounding_score?: number;
+  latency_ms?: number;
   evidence_label: string;
   matched_sources?: RagEvalMatchedSource[];
   trace_summary?: RagEvalTraceSummary;
@@ -76,7 +83,13 @@ interface RagEvalRun {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score?: number;
+  average_source_precision_score?: number;
+  average_citation_accuracy_score?: number;
   average_keyword_score: number;
+  average_answer_keyword_score?: number;
+  average_grounding_score?: number;
+  average_judge_score?: number;
   duration_ms: number;
   created_at: string;
   results?: RagEvalResult[];
@@ -91,7 +104,12 @@ interface RagEvalQualityTrendRun {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score?: number;
+  average_source_precision_score?: number;
+  average_citation_accuracy_score?: number;
   average_keyword_score: number;
+  average_answer_keyword_score?: number;
+  average_grounding_score?: number;
   duration_ms: number;
   created_at: string;
 }
@@ -105,7 +123,12 @@ interface RagEvalLowScoreCase {
   retrieval_score: number;
   answer_score: number;
   source_score: number;
+  source_recall_score?: number;
+  source_precision_score?: number;
+  citation_accuracy_score?: number;
   keyword_score: number;
+  answer_keyword_score?: number;
+  grounding_score?: number;
   evidence_label: string;
   error_message: string;
 }
@@ -119,7 +142,12 @@ interface RagEvalQualitySummary {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score?: number;
+  average_source_precision_score?: number;
+  average_citation_accuracy_score?: number;
   average_keyword_score: number;
+  average_answer_keyword_score?: number;
+  average_grounding_score?: number;
   trend: RagEvalQualityTrendRun[];
   low_score_cases: RagEvalLowScoreCase[];
 }
@@ -222,6 +250,7 @@ const createRagEvalRunExportFilename = (
 const buildRagEvalRunMarkdown = (
   dataset: RagEvalDataset | null | undefined,
   run: RagEvalRun,
+  t: Parameters<typeof getRagTraceStepLabel>[0],
   exportedAt: string | Date = new Date()
 ) => {
   const lines = [
@@ -239,7 +268,11 @@ const buildRagEvalRunMarkdown = (
     `- Retrieval score: ${formatScore(run.average_retrieval_score)}`,
     `- Answer score: ${formatScore(run.average_answer_score)}`,
     `- Source score: ${formatScore(run.average_source_score)}`,
+    `- Source recall: ${formatScore(run.average_source_recall_score ?? run.average_source_score)}`,
+    `- Source precision: ${formatScore(run.average_source_precision_score)}`,
+    `- Citation accuracy: ${formatScore(run.average_citation_accuracy_score)}`,
     `- Keyword score: ${formatScore(run.average_keyword_score)}`,
+    `- Grounding score: ${formatScore(run.average_grounding_score)}`,
     `- Duration: ${run.duration_ms}ms`,
     '',
     '---',
@@ -258,7 +291,12 @@ const buildRagEvalRunMarkdown = (
     lines.push(`- Retrieval: ${formatScore(result.retrieval_score)}`);
     lines.push(`- Answer: ${formatScore(result.answer_score)}`);
     lines.push(`- Sources: ${formatScore(result.source_score)}`);
+    lines.push(`- Source recall: ${formatScore(result.source_recall_score ?? result.source_score)}`);
+    lines.push(`- Source precision: ${formatScore(result.source_precision_score)}`);
+    lines.push(`- Citation accuracy: ${formatScore(result.citation_accuracy_score)}`);
     lines.push(`- Keywords: ${formatScore(result.keyword_score)}`);
+    lines.push(`- Grounding: ${formatScore(result.grounding_score)}`);
+    lines.push(`- Latency: ${result.latency_ms ?? 0}ms`);
     lines.push(`- Evidence: ${result.evidence_label}`);
     if (result.error_message) lines.push(`- Error: ${result.error_message}`);
     lines.push('');
@@ -283,7 +321,7 @@ const buildRagEvalRunMarkdown = (
     if (traceSteps.length > 0) {
       lines.push('### Trace Steps');
       traceSteps.forEach((step, index) => {
-        lines.push(`${index + 1}. ${step.step_type || 'step'} · ${step.status || '-'} · ${step.duration_ms ?? 0}ms`);
+        lines.push(`${index + 1}. ${getRagTraceStepLabel(t, step.step_type)} · ${getRagTraceStatusLabel(t, step.status)} · ${step.duration_ms ?? 0}ms`);
       });
       lines.push('');
     }
@@ -315,6 +353,8 @@ export default function RagEvaluationPage() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [selectedHistoryItem, setSelectedHistoryItem] = useState<RagEvalHistoryItem | null>(null);
+  const [isHistoryBrowserOpen, setIsHistoryBrowserOpen] = useState(false);
+  const [isBenchmarkModalOpen, setIsBenchmarkModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const selectedDataset = useMemo(
@@ -428,6 +468,31 @@ export default function RagEvaluationPage() {
     if (label === 'partial') return t('chat.ragEvidencePartial');
     if (label === 'weak') return t('chat.ragEvidenceWeak');
     return label || t('usage.notAvailable');
+  };
+
+  const getHistoryStatusClass = (status?: string) => {
+    const normalized = (status || '').toLowerCase();
+    if (normalized === 'success' || normalized === 'completed') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+    if (normalized === 'running' || normalized === 'processing') return 'border-blue-500/30 bg-blue-500/10 text-blue-300';
+    if (normalized === 'partial') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+    if (normalized === 'failed' || normalized === 'error') return 'border-red-500/30 bg-red-500/10 text-red-300';
+    return 'border-border bg-bg-sidebar text-text-muted';
+  };
+
+  const getEvidenceStatusClass = (label?: string) => {
+    const normalized = (label || '').toLowerCase();
+    if (normalized === 'strong') return 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300';
+    if (normalized === 'partial') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
+    if (normalized === 'weak') return 'border-red-500/30 bg-red-500/10 text-red-300';
+    return 'border-border bg-bg-sidebar text-text-muted';
+  };
+
+  const getResultStatusClass = (status?: string) => getHistoryStatusClass(status);
+
+  const getResultStatusLabel = (status?: string) => {
+    if (status === 'success') return t('ragEval.completedStatus');
+    if (status === 'failed') return t('ragEval.failedStatus');
+    return status || t('usage.notAvailable');
   };
 
   const formatHistorySourceName = (source: RagEvalHistorySource) => (
@@ -690,7 +755,7 @@ export default function RagEvaluationPage() {
     if (!selectedRun) return;
 
     try {
-      const markdown = buildRagEvalRunMarkdown(selectedDataset, selectedRun);
+      const markdown = buildRagEvalRunMarkdown(selectedDataset, selectedRun, t);
       const filename = createRagEvalRunExportFilename(selectedDataset, selectedRun);
       downloadTextFile(filename, markdown);
       setError(null);
@@ -706,7 +771,12 @@ export default function RagEvaluationPage() {
   const qualityTrendDeltaLabel = qualityTrendDelta === null
     ? t('ragEval.notEnoughRuns')
     : `${qualityTrendDelta >= 0 ? '+' : ''}${formatScore(qualityTrendDelta)}`;
-  const visibleHistoryItems = historyItems.slice(0, 8);
+  const historyAverageScore = historyItems.length
+    ? historyItems.reduce((sum, item) => sum + getHistoryScore(item), 0) / historyItems.length
+    : 0;
+  const latestHistoryItem = historyItems[0] || null;
+  const benchmarkCaseCount = selectedDataset?.cases.length || 0;
+  const benchmarkRunCount = selectedDataset?.runs.length || 0;
 
   return (
     <div className="flex h-full flex-col bg-bg-base text-text-main">
@@ -801,7 +871,7 @@ export default function RagEvaluationPage() {
 
           <div className="mx-auto max-w-6xl space-y-4">
             <section className="rounded-lg border border-border bg-bg-sidebar p-4">
-              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
                   <h2 className="flex items-center gap-2 font-semibold">
                     <MessageSquare className="h-4 w-4 text-primary" />
@@ -809,93 +879,53 @@ export default function RagEvaluationPage() {
                   </h2>
                   <p className="mt-1 text-xs text-text-muted">{t('ragEval.historyHint')}</p>
                 </div>
-                <button
-                  onClick={fetchHistory}
-                  disabled={isHistoryLoading}
-                  className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <RefreshCw className={`h-4 w-4 ${isHistoryLoading ? 'animate-spin' : ''}`} />
-                  {t('usage.refresh')}
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={fetchHistory}
+                    disabled={isHistoryLoading}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isHistoryLoading ? 'animate-spin' : ''}`} />
+                    {t('usage.refresh')}
+                  </button>
+                  <button
+                    onClick={() => setIsHistoryBrowserOpen(true)}
+                    className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+                  >
+                    <Eye className="h-4 w-4" />
+                    {t('ragEval.openHistoryBrowser')}
+                  </button>
+                </div>
               </div>
 
               {historyError && (
-                <div className="mb-3 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+                <div className="mt-3 flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
                   <AlertCircle className="h-4 w-4 shrink-0" />
                   {historyError}
                 </div>
               )}
 
-              {isHistoryLoading ? (
-                <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-text-muted">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  {t('common.loading')}
+              <div className="mt-4 grid gap-3 md:grid-cols-3">
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.historyTitle')}</p>
+                  <p className="mt-1 text-lg font-semibold">{isHistoryLoading ? '-' : historyItems.length}</p>
                 </div>
-              ) : visibleHistoryItems.length === 0 ? (
-                <div className="flex min-h-28 flex-col items-center justify-center gap-2 text-center text-sm text-text-muted">
-                  <MessageSquare className="h-8 w-8 opacity-30" />
-                  <p>{t('ragEval.historyEmpty')}</p>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.overallScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{isHistoryLoading ? '-' : formatScore(historyAverageScore)}</p>
                 </div>
-              ) : (
-                <div className="grid gap-3 xl:grid-cols-2">
-                  {visibleHistoryItems.map((item) => {
-                    const retrievedSources = item.retrieved_sources || [];
-                    const plannedQueries = item.planned_queries || [];
-                    const score = getHistoryScore(item);
-
-                    return (
-                      <div key={item.id} className="min-w-0 rounded-lg border border-border bg-bg-base p-4">
-                        <div className="mb-3 flex items-start justify-between gap-3">
-                          <div className="min-w-0">
-                            <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
-                              <span className="rounded border border-primary/30 bg-primary/10 px-2 py-0.5 uppercase text-primary">
-                                {item.mode}
-                              </span>
-                              <span className="rounded border border-border px-2 py-0.5">
-                                {getEvidenceLabel(item.quality?.evidence_label)}
-                              </span>
-                              <span className="rounded border border-border px-2 py-0.5">
-                                {formatScore(score)}
-                              </span>
-                            </div>
-                            <p className="line-clamp-2 break-words text-sm font-medium">{item.query}</p>
-                          </div>
-                          <span className="shrink-0 text-xs text-text-muted">{formatDate(item.created_at).slice(0, 10)}</span>
-                        </div>
-
-                        <p className="line-clamp-2 break-words text-xs leading-5 text-text-muted">
-                          {item.answer_preview || t('usage.notAvailable')}
-                        </p>
-
-                        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
-                          <span>{t('ragEval.historyConversation')}: {item.conversation_title || t('sidebar.newChat')}</span>
-                          <span>{t('usage.workspace')}: {getHistoryWorkspaceName(item)}</span>
-                          <span>{t('ragEval.historySources')}: {retrievedSources.length}</span>
-                          <span>{t('ragEval.historyTrace')}: {plannedQueries.length}</span>
-                        </div>
-
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            onClick={() => setSelectedHistoryItem(item)}
-                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main"
-                          >
-                            <Eye className="h-3.5 w-3.5" />
-                            {t('ragEval.historyOpenDetails')}
-                          </button>
-                          <button
-                            onClick={() => openCreateCaseFromHistory(item)}
-                            disabled={!selectedDataset || isSelectedDatasetAtCaseLimit}
-                            className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
-                          >
-                            <Plus className="h-3.5 w-3.5" />
-                            {t('ragEval.historyAddToDataset')}
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="min-w-0 rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.question')}</p>
+                  <p className="mt-1 truncate text-sm font-medium">
+                    {isHistoryLoading
+                      ? t('common.loading')
+                      : latestHistoryItem?.query || t('ragEval.historyEmpty')}
+                  </p>
                 </div>
-              )}
+              </div>
+              <p className="mt-3 text-xs text-text-muted">
+                {isHistoryLoading ? t('common.loading') : t('ragEval.historySummary', { count: historyItems.length })}
+              </p>
             </section>
 
             {!selectedDataset ? (
@@ -906,6 +936,86 @@ export default function RagEvaluationPage() {
               </section>
             ) : (
               <>
+              <section className="rounded-lg border border-border bg-bg-sidebar p-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                  <div className="min-w-0">
+                    <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                      {t('ragEval.benchmarkTitle')}
+                    </p>
+                    <h2 className="truncate text-lg font-semibold">{selectedDataset.name}</h2>
+                    <p className="mt-1 text-sm text-text-muted">
+                      {selectedDataset.description || t('ragEval.noDescription')}
+                    </p>
+                    <p className="mt-2 text-xs text-text-muted">
+                      {t('ragEval.benchmarkSummary', { cases: benchmarkCaseCount, runs: benchmarkRunCount })}
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => setIsBenchmarkModalOpen(true)}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+                    >
+                      <Eye className="h-4 w-4" />
+                      {t('ragEval.openBenchmarkLab')}
+                    </button>
+                    <button
+                      onClick={() => handleRunEval(selectedDataset.id)}
+                      disabled={runningDatasetId === selectedDataset.id || isSelectedDatasetRunning || selectedDataset.cases.length === 0}
+                      className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {runningDatasetId === selectedDataset.id || isSelectedDatasetRunning
+                        ? <Loader2 className="h-4 w-4 animate-spin" />
+                        : <Play className="h-4 w-4" />}
+                      {runningDatasetId === selectedDataset.id || isSelectedDatasetRunning
+                        ? t('ragEval.runningStatus')
+                        : t('ragEval.runEval')}
+                    </button>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-4">
+                  <div className="rounded-lg border border-border bg-bg-base p-3">
+                    <p className="text-xs text-text-muted">{t('ragEval.cases')}</p>
+                    <p className="mt-1 text-lg font-semibold">{benchmarkCaseCount}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-bg-base p-3">
+                    <p className="text-xs text-text-muted">{t('ragEval.runHistory')}</p>
+                    <p className="mt-1 text-lg font-semibold">{benchmarkRunCount}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-bg-base p-3">
+                    <p className="text-xs text-text-muted">{t('ragEval.latestOverall')}</p>
+                    <p className="mt-1 text-lg font-semibold">{formatScore(qualitySummary?.average_overall_score)}</p>
+                  </div>
+                  <div className="rounded-lg border border-border bg-bg-base p-3">
+                    <p className="text-xs text-text-muted">{t('ragEval.trendDelta')}</p>
+                    <p className={`mt-1 text-lg font-semibold ${
+                      qualityTrendDelta === null
+                        ? 'text-text-muted'
+                        : qualityTrendDelta >= 0
+                          ? 'text-emerald-300'
+                          : 'text-red-300'
+                    }`}
+                    >
+                      {qualityTrendDeltaLabel}
+                    </p>
+                  </div>
+                </div>
+              </section>
+
+              <Modal
+                isOpen={isBenchmarkModalOpen}
+                onClose={() => setIsBenchmarkModalOpen(false)}
+                title={t('ragEval.benchmarkTitle')}
+                maxWidth="5xl"
+                footer={
+                  <button
+                    onClick={() => setIsBenchmarkModalOpen(false)}
+                    className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+                  >
+                    {t('common.close')}
+                  </button>
+                }
+              >
+                <div className="space-y-4">
               <section className="rounded-lg border border-border bg-bg-sidebar p-4">
                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                   <div>
@@ -1246,6 +1356,8 @@ export default function RagEvaluationPage() {
                   </div>
                 )}
               </section>
+                </div>
+              </Modal>
               </>
             )}
           </div>
@@ -1253,10 +1365,123 @@ export default function RagEvaluationPage() {
       </div>
 
       <Modal
+        isOpen={isHistoryBrowserOpen}
+        onClose={() => setIsHistoryBrowserOpen(false)}
+        title={t('ragEval.historyTitle')}
+        maxWidth="5xl"
+        footer={
+          <button
+            onClick={() => setIsHistoryBrowserOpen(false)}
+            className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+          >
+            {t('common.close')}
+          </button>
+        }
+      >
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-sm text-text-muted">
+              {t('ragEval.historySummary', { count: historyItems.length })}
+            </p>
+            <button
+              onClick={fetchHistory}
+              disabled={isHistoryLoading}
+              className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-sm text-text-muted transition-colors hover:bg-bg-base hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <RefreshCw className={`h-4 w-4 ${isHistoryLoading ? 'animate-spin' : ''}`} />
+              {t('usage.refresh')}
+            </button>
+          </div>
+
+          {historyError && (
+            <div className="flex items-center gap-2 rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-300">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              {historyError}
+            </div>
+          )}
+
+          {isHistoryLoading ? (
+            <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-text-muted">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              {t('common.loading')}
+            </div>
+          ) : historyItems.length === 0 ? (
+            <div className="flex min-h-40 flex-col items-center justify-center gap-2 text-center text-sm text-text-muted">
+              <MessageSquare className="h-8 w-8 opacity-30" />
+              <p>{t('ragEval.historyEmpty')}</p>
+            </div>
+          ) : (
+            <div className="grid gap-3 xl:grid-cols-2">
+              {historyItems.map((item) => {
+                const retrievedSources = item.retrieved_sources || [];
+                const plannedQueries = item.planned_queries || [];
+                const score = getHistoryScore(item);
+
+                return (
+                  <div key={item.id} className="min-w-0 rounded-lg border border-border bg-bg-base p-4">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="mb-2 flex flex-wrap items-center gap-2 text-[11px] text-text-muted">
+                          <span className="rounded border border-primary/30 bg-primary/10 px-2 py-0.5 uppercase text-primary">
+                            {item.mode}
+                          </span>
+                          <span className={`rounded border px-2 py-0.5 ${getEvidenceStatusClass(item.quality?.evidence_label)}`}>
+                            {getEvidenceLabel(item.quality?.evidence_label)}
+                          </span>
+                          <span className="rounded border border-border px-2 py-0.5">
+                            {formatScore(score)}
+                          </span>
+                          <span className={`rounded border px-2 py-0.5 ${getHistoryStatusClass(item.status)}`}>
+                            {item.status || t('usage.notAvailable')}
+                          </span>
+                        </div>
+                        <p className="line-clamp-2 break-words text-sm font-medium">{item.query}</p>
+                      </div>
+                      <span className="shrink-0 text-xs text-text-muted">{formatDate(item.created_at).slice(0, 10)}</span>
+                    </div>
+
+                    <p className="line-clamp-2 break-words text-xs leading-5 text-text-muted">
+                      {item.answer_preview || t('usage.notAvailable')}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
+                      <span>{t('ragEval.historyConversation')}: {item.conversation_title || t('sidebar.newChat')}</span>
+                      <span>{t('usage.workspace')}: {getHistoryWorkspaceName(item)}</span>
+                      <span>{t('usage.model')}: {item.model || t('ragEval.defaultModel')}</span>
+                      <span>{t('ragEval.historySources')}: {retrievedSources.length}</span>
+                      <span>{t('ragEval.historyTrace')}: {plannedQueries.length}</span>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => setSelectedHistoryItem(item)}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main"
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        {t('ragEval.historyOpenDetails')}
+                      </button>
+                      <button
+                        onClick={() => openCreateCaseFromHistory(item)}
+                        disabled={!selectedDataset || isSelectedDatasetAtCaseLimit}
+                        className="inline-flex items-center justify-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                        {t('ragEval.historyAddToDataset')}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
         isOpen={!!selectedHistoryItem}
         onClose={() => setSelectedHistoryItem(null)}
         title={t('ragEval.historyDetails')}
-        maxWidth="3xl"
+        maxWidth="4xl"
         footer={
           <button
             onClick={() => setSelectedHistoryItem(null)}
@@ -1275,20 +1500,20 @@ export default function RagEvaluationPage() {
               </p>
             </div>
 
-            <div className="grid grid-cols-2 gap-3 text-xs md:grid-cols-4">
+            <div className="grid grid-cols-1 gap-3 text-xs sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('ragEval.historyConversation')}</p>
-                <p className="mt-1 truncate text-text-main">
+                <p className="mt-1 break-words text-text-main">
                   {selectedHistoryItem.conversation_title || t('sidebar.newChat')}
                 </p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('usage.workspace')}</p>
-                <p className="mt-1 truncate text-text-main">{getHistoryWorkspaceName(selectedHistoryItem)}</p>
+                <p className="mt-1 break-words text-text-main">{getHistoryWorkspaceName(selectedHistoryItem)}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('ragEval.overallScore')}</p>
-                <p className="mt-1 text-text-main">{formatScore(selectedHistoryItem.quality?.overall_score)}</p>
+                <p className="mt-1 font-semibold text-text-main">{formatScore(selectedHistoryItem.quality?.overall_score)}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('ragEval.evidence')}</p>
@@ -1296,15 +1521,19 @@ export default function RagEvaluationPage() {
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('usage.model')}</p>
-                <p className="mt-1 truncate text-text-main">{selectedHistoryItem.model || t('usage.notAvailable')}</p>
+                <p className="mt-1 break-words text-text-main">{selectedHistoryItem.model || t('ragEval.defaultModel')}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('ragEval.status')}</p>
-                <p className="mt-1 text-text-main">{selectedHistoryItem.status}</p>
+                <p className="mt-1">
+                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold uppercase tracking-wide ${getHistoryStatusClass(selectedHistoryItem.status)}`}>
+                    {selectedHistoryItem.status || t('usage.notAvailable')}
+                  </span>
+                </p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('ragEval.createdAt')}</p>
-                <p className="mt-1 text-text-main">{formatDate(selectedHistoryItem.created_at).slice(0, 19)}</p>
+                <p className="mt-1 break-words text-text-main">{formatDate(selectedHistoryItem.created_at).slice(0, 19)}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-text-muted">{t('ragEval.historySources')}</p>
@@ -1328,7 +1557,7 @@ export default function RagEvaluationPage() {
                   <div className="space-y-2">
                     {selectedHistoryItem.retrieved_sources.slice(0, 8).map((source, index) => (
                       <div key={`${source.file_id || source.chunk_id || source.filename || index}`} className="text-xs">
-                        <div className="truncate text-text-main">{formatHistorySourceName(source)}</div>
+                        <div className="break-words text-text-main">{formatHistorySourceName(source)}</div>
                         <div className="mt-1 text-text-muted">
                           {source.chunk_index !== undefined && source.chunk_index !== null ? `#${source.chunk_index} · ` : ''}
                           {formatScore(source.agentic_score ?? source.similarity ?? 0)}
@@ -1348,7 +1577,7 @@ export default function RagEvaluationPage() {
                 {selectedHistoryItem.planned_queries?.length ? (
                   <div className="mb-3 flex flex-wrap gap-1.5">
                     {selectedHistoryItem.planned_queries.map((query, index) => (
-                      <span key={`${selectedHistoryItem.id}-planned-${index}`} className="max-w-full truncate rounded-full bg-bg-sidebar px-2 py-1 text-[11px] text-text-muted">
+                      <span key={`${selectedHistoryItem.id}-planned-${index}`} className="max-w-full break-words rounded-full bg-bg-sidebar px-2 py-1 text-[11px] text-text-muted">
                         {query}
                       </span>
                     ))}
@@ -1357,10 +1586,10 @@ export default function RagEvaluationPage() {
                 {selectedHistoryItem.trace_steps?.length ? (
                   <div className="space-y-1.5">
                     {selectedHistoryItem.trace_steps.map((step, index) => (
-                      <div key={`${step.step_type || 'step'}-${index}`} className="flex items-center justify-between gap-3 text-xs">
-                        <span className="truncate text-text-main">{step.step_type || t('ragEval.traceStep')}</span>
-                        <span className="shrink-0 text-text-muted">
-                          {step.status || '-'} · {step.duration_ms ?? 0}ms
+                      <div key={`${step.step_type || 'step'}-${index}`} className="flex items-center justify-between gap-3 rounded border border-border bg-bg-sidebar px-2 py-1 text-xs">
+                        <span className="min-w-0 break-words text-text-main">{getRagTraceStepLabel(t, step.step_type)}</span>
+                        <span className={`shrink-0 rounded-full border px-2 py-0.5 ${getHistoryStatusClass(step.status)}`}>
+                          {getRagTraceStatusLabel(t, step.status)} · {step.duration_ms ?? 0}ms
                         </span>
                       </div>
                     ))}
@@ -1560,11 +1789,11 @@ export default function RagEvaluationPage() {
             {t('common.loading')}
           </div>
         ) : selectedRun ? (
-          <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-              <div className="rounded-lg border border-border bg-bg-base p-3">
-                <p className="text-xs text-text-muted">{t('ragEval.overallScore')}</p>
-                <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_overall_score)}</p>
+            <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
+              <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.overallScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_overall_score)}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('ragEval.retrievalScore')}</p>
@@ -1574,17 +1803,29 @@ export default function RagEvaluationPage() {
                 <p className="text-xs text-text-muted">{t('ragEval.answerScore')}</p>
                 <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_answer_score)}</p>
               </div>
-              <div className="rounded-lg border border-border bg-bg-base p-3">
-                <p className="text-xs text-text-muted">{t('ragEval.sourceScore')}</p>
-                <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_source_score)}</p>
-              </div>
-              <div className="rounded-lg border border-border bg-bg-base p-3">
-                <p className="text-xs text-text-muted">{t('ragEval.keywordScore')}</p>
-                <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_keyword_score)}</p>
-              </div>
-              <div className="rounded-lg border border-border bg-bg-base p-3">
-                <p className="text-xs text-text-muted">{t('ragEval.duration')}</p>
-                <p className="mt-1 text-lg font-semibold">{selectedRun.duration_ms}ms</p>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.sourceScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_source_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.sourceRecallScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_source_recall_score ?? selectedRun.average_source_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.citationAccuracyScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_citation_accuracy_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.keywordScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_keyword_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.groundingScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_grounding_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.duration')}</p>
+                  <p className="mt-1 text-lg font-semibold">{selectedRun.duration_ms}ms</p>
               </div>
             </div>
 
@@ -1617,14 +1858,26 @@ export default function RagEvaluationPage() {
                           <span className="rounded-full border border-border px-2 py-1">
                             {t('ragEval.overallScore')}: {formatScore(result.overall_score)}
                           </span>
-                          <span className="rounded-full border border-border px-2 py-1">
-                            {t('ragEval.answerScore')}: {formatScore(result.answer_score)}
-                          </span>
-                          <span className="rounded-full border border-border px-2 py-1">
-                            {t('ragEval.evidence')}: {result.evidence_label}
-                          </span>
-                          <span className="rounded-full border border-border px-2 py-1">
-                            {t('ragEval.status')}: {result.status}
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.answerScore')}: {formatScore(result.answer_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.sourceRecallScore')}: {formatScore(result.source_recall_score ?? result.source_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.sourcePrecisionScore')}: {formatScore(result.source_precision_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.citationAccuracyScore')}: {formatScore(result.citation_accuracy_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.groundingScore')}: {formatScore(result.grounding_score)}
+                              </span>
+                              <span className={`rounded-full border px-2 py-1 font-semibold ${getEvidenceStatusClass(result.evidence_label)}`}>
+                                {t('ragEval.evidence')}: {getEvidenceLabel(result.evidence_label)}
+                              </span>
+                          <span className={`rounded-full border px-2 py-1 font-semibold ${getResultStatusClass(result.status)}`}>
+                            {t('ragEval.status')}: {getResultStatusLabel(result.status)}
                           </span>
                         </div>
                       </div>
@@ -1638,7 +1891,7 @@ export default function RagEvaluationPage() {
                             <div className="space-y-2">
                               {matchedSources.slice(0, 5).map((source, index) => (
                                 <div key={`${source.file_id || source.chunk_id || source.filename || index}`} className="text-xs">
-                                  <div className="truncate text-text-main">
+                                  <div className="break-words text-text-main">
                                     {source.filename || source.file_id || source.chunk_id || t('ragEval.unknownSource')}
                                   </div>
                                   <div className="mt-1 text-text-muted">
@@ -1662,7 +1915,7 @@ export default function RagEvaluationPage() {
                           {plannedQueries.length > 0 && (
                             <div className="mb-3 flex flex-wrap gap-1.5">
                               {plannedQueries.map((query) => (
-                                <span key={query} className="rounded-full bg-bg-sidebar px-2 py-1 text-[11px] text-text-muted">
+                                <span key={query} className="max-w-full break-words rounded-md bg-bg-sidebar px-2 py-1 text-[11px] text-text-muted">
                                   {query}
                                 </span>
                               ))}
@@ -1672,9 +1925,9 @@ export default function RagEvaluationPage() {
                             <div className="space-y-1.5">
                               {traceSteps.map((step, index) => (
                                 <div key={`${step.step_type || 'step'}-${index}`} className="flex items-center justify-between gap-3 text-xs">
-                                  <span className="truncate text-text-main">{step.step_type || t('ragEval.traceStep')}</span>
-                                  <span className="shrink-0 text-text-muted">
-                                    {step.status || '-'} · {step.duration_ms ?? 0}ms
+                                  <span className="truncate text-text-main">{getRagTraceStepLabel(t, step.step_type)}</span>
+                                  <span className={`shrink-0 rounded-full border px-2 py-0.5 ${getResultStatusClass(step.status)}`}>
+                                    {getRagTraceStatusLabel(t, step.status)} · {step.duration_ms ?? 0}ms
                                   </span>
                                 </div>
                               ))}

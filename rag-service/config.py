@@ -45,6 +45,11 @@ class Settings:
     embedding_base_url: str
     embedding_model: str
     embedding_dimension: int
+    rag_judge_enabled: bool
+    rag_judge_api_key: str
+    rag_judge_base_url: str
+    rag_judge_model: str
+    rag_judge_timeout_ms: int
     rag_readiness_timeout_ms: int
     rag_ingest_concurrency: int
     rag_allowed_origins: list[str]
@@ -82,9 +87,9 @@ def _string_list(name: str, default: list[str]) -> list[str]:
 
 
 def load_settings() -> Settings:
-    embedding_provider = os.environ.get("EMBEDDING_PROVIDER", "openai-compatible").strip().lower() or "openai-compatible"
-    if embedding_provider not in {"openai-compatible", "local"}:
-        raise ValueError("EMBEDDING_PROVIDER must be either openai-compatible or local")
+    embedding_provider = os.environ.get("EMBEDDING_PROVIDER", "compatible").strip().lower() or "compatible"
+    if embedding_provider not in {"compatible", "local"}:
+        raise ValueError("EMBEDDING_PROVIDER must be either compatible or local")
 
     required_keys = [
         "DATABASE_URL",
@@ -136,13 +141,18 @@ def load_settings() -> Settings:
         neo4j_user=os.environ.get("NEO4J_USER", "neo4j").strip() or "neo4j",
         neo4j_password=os.environ.get("NEO4J_PASSWORD", "chatllm-password").strip() or "chatllm-password",
         neo4j_database=os.environ.get("NEO4J_DATABASE", "neo4j").strip() or "neo4j",
-        neo4j_timeout_ms=_positive_int("NEO4J_TIMEOUT_MS", "3000"),
-        neo4j_batch_size=_positive_int("NEO4J_BATCH_SIZE", "500"),
+        neo4j_timeout_ms=_positive_int("NEO4J_TIMEOUT_MS", "15000"),
+        neo4j_batch_size=_positive_int("NEO4J_BATCH_SIZE", "100"),
         embedding_provider=embedding_provider,
         embedding_api_key=_required("EMBEDDING_API_KEY"),
         embedding_base_url=_required("EMBEDDING_BASE_URL"),
         embedding_model="local-hash" if embedding_provider == "local" else _required("EMBEDDING_MODEL"),
         embedding_dimension=_positive_int("EMBEDDING_DIMENSION"),
+        rag_judge_enabled=_bool("RAG_JUDGE_ENABLED", False),
+        rag_judge_api_key=os.environ.get("RAG_JUDGE_API_KEY", "").strip(),
+        rag_judge_base_url=os.environ.get("RAG_JUDGE_BASE_URL", "https://api.moonshot.cn/v1").strip() or "https://api.moonshot.cn/v1",
+        rag_judge_model=os.environ.get("RAG_JUDGE_MODEL", "moonshot-v1-8k").strip() or "moonshot-v1-8k",
+        rag_judge_timeout_ms=_positive_int("RAG_JUDGE_TIMEOUT_MS", "10000"),
         rag_readiness_timeout_ms=_positive_int("RAG_READINESS_TIMEOUT_MS", "2000"),
         rag_ingest_concurrency=_positive_int("RAG_INGEST_CONCURRENCY", "2"),
         rag_allowed_origins=_string_list(

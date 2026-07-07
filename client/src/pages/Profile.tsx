@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import Modal from '../components/Modal';
 import api from '../lib/api';
 import { toast } from 'sonner';
+import { getAvatarUrl } from '../lib/avatar';
 
 const PRESET_COLORS = [
   '#2563eb', // Blue (Default)
@@ -38,6 +39,8 @@ export default function ProfilePage() {
   const [isSaving, setIsSaving] = useState(false);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const profileDisplayName = displayName || user?.display_name || user?.username || 'User';
+  const profileAvatarUrl = getAvatarUrl(avatarUrl || user?.avatar_url, profileDisplayName, 96);
 
   // Delete Account State
   const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
@@ -208,11 +211,13 @@ export default function ProfilePage() {
                     <div className="flex items-center gap-4">
                       <div className="relative group shrink-0">
                         <img
-                          src={avatarUrl || user?.avatar_url}
+                          src={profileAvatarUrl}
                           alt="Avatar Preview"
                           loading="lazy"
                           className="w-16 h-16 md:w-20 md:h-20 rounded-full bg-bg-surface border-4 border-bg-base object-cover cursor-pointer hover:opacity-80 transition-opacity"
-                          onError={(e) => (e.currentTarget.src = `https://ui-avatars.com/api/?name=${displayName || 'User'}`)}
+                          onError={(e) => {
+                            e.currentTarget.src = getAvatarUrl(null, profileDisplayName, 96);
+                          }}
                           onClick={() => fileInputRef.current?.click()}
                         />
                         <div

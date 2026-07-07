@@ -3,6 +3,7 @@ import { AlertTriangle, Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, F
 import type { Message } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
+import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
@@ -149,8 +150,8 @@ const ChatMessage = memo(({
                       <div className="grid gap-1">
                         {traceSteps.map((step, index) => (
                           <div key={`${step.step_type}-${index}`} className="flex items-center justify-between gap-3">
-                            <span className="truncate">{step.step_type}</span>
-                            <span className="shrink-0">{step.status} · {step.duration_ms}ms</span>
+                            <span className="truncate">{getRagTraceStepLabel(t, step.step_type)}</span>
+                            <span className="shrink-0">{getRagTraceStatusLabel(t, step.status)} · {step.duration_ms}ms</span>
                           </div>
                         ))}
                       </div>

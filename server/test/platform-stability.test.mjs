@@ -304,16 +304,16 @@ test('RAG cleanup uses the shared client and configurable timeout', () => {
 
 test('embedding client debug logging is opt-in rather than unconditional', () => {
   const envSource = readSource('src/lib/env.ts');
-  const openAiSource = readSource('src/lib/openai.ts');
+  const llmProviderSource = readSource('src/lib/llmProviders.ts');
 
   assert.match(envSource, /EMBEDDING_DEBUG_LOGS/);
-  assert.match(openAiSource, /EMBEDDING_DEBUG_LOGS/);
-  assert.doesNotMatch(openAiSource, /console\.log/);
+  assert.match(llmProviderSource, /EMBEDDING_DEBUG_LOGS/);
+  assert.doesNotMatch(llmProviderSource, /console\.log/);
 });
 
 test('model provider health exposes configured chat providers without leaking keys', () => {
   const envSource = readSource('src/lib/env.ts');
-  const openAiSource = readSource('src/lib/openai.ts');
+  const llmProviderSource = readSource('src/lib/llmProviders.ts');
   const usageRoutesSource = readSource('src/routes/usage.ts');
   const usageControllerSource = readSource('src/controllers/usage.ts');
   const chatSource = readSource('src/controllers/chat.ts');
@@ -323,15 +323,22 @@ test('model provider health exposes configured chat providers without leaking ke
   assert.match(envSource, /QWEN_BASE_URL/);
   assert.match(envSource, /QWEN_CHAT_MODEL/);
 
-  assert.match(openAiSource, /getModelProviderHealth/);
-  assert.match(openAiSource, /createChatClientForModel/);
-  assert.match(openAiSource, /resolveChatModelProvider/);
-  assert.match(openAiSource, /quota_status/);
-  assert.match(openAiSource, /has_api_key/);
-  assert.doesNotMatch(openAiSource, /api_key:/);
+  assert.match(llmProviderSource, /getModelProviderHealth/);
+  assert.match(llmProviderSource, /createChatClientForModel/);
+  assert.match(llmProviderSource, /getDefaultChatModel/);
+  assert.match(llmProviderSource, /resolveChatModelProvider/);
+  assert.match(llmProviderSource, /quota_status/);
+  assert.match(llmProviderSource, /has_api_key/);
+  assert.doesNotMatch(llmProviderSource, /api_key:/);
+  assert.doesNotMatch(llmProviderSource, /id:\s*'openai'/i);
+  assert.doesNotMatch(llmProviderSource, /name:\s*'OpenAI'/);
+  assert.doesNotMatch(llmProviderSource, /https:\/\/api\.openai\.com\/v1/);
+  assert.doesNotMatch(llmProviderSource, /OPENAI_API_KEY/);
+  assert.doesNotMatch(llmProviderSource, /gpt-4o/);
 
   assert.match(usageRoutesSource, /\/provider-health/);
   assert.match(usageControllerSource, /getProviderHealth/);
+  assert.match(chatSource, /getDefaultChatModel\(\)/);
   assert.match(chatSource, /createChatClientForModel\(model\)/);
   assert.match(chatSource, /resolvedModel/);
 });

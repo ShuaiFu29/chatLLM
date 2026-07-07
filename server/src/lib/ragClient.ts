@@ -11,6 +11,12 @@ interface RetrieveRagDocumentsInput {
   threshold: number;
 }
 
+interface ListRagGraphDocumentsInput {
+  user_id: string;
+  project_space_id?: string;
+  limit: number;
+}
+
 export interface AgenticRagResponse {
   run_id: string;
   mode: string;
@@ -23,6 +29,8 @@ export interface AgenticRagResponse {
   results: RagDocument[];
   trace_steps: RagTraceStep[];
   quality: RagQualitySummary;
+  inventory_total?: number;
+  inventory_limit?: number;
   insufficient_evidence?: boolean;
   answer_guidance?: string;
 }
@@ -43,7 +51,13 @@ export interface RagEvalRunResponse {
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
+  average_source_recall_score?: number;
+  average_source_precision_score?: number;
+  average_citation_accuracy_score?: number;
   average_keyword_score: number;
+  average_answer_keyword_score?: number;
+  average_grounding_score?: number;
+  average_judge_score?: number;
   results: Array<{
     case_id: string;
     question: string;
@@ -52,7 +66,14 @@ export interface RagEvalRunResponse {
     retrieval_score: number;
     answer_score: number;
     source_score: number;
+    source_recall_score?: number;
+    source_precision_score?: number;
+    citation_accuracy_score?: number;
     keyword_score: number;
+    answer_keyword_score?: number;
+    grounding_score?: number;
+    judge_score?: number;
+    latency_ms?: number;
     evidence_label: string;
     matched_sources: unknown[];
     trace_summary: Record<string, unknown>;
@@ -121,6 +142,16 @@ export const retrieveAgenticRagDocuments = async (input: RetrieveRagDocumentsInp
 export const searchRagGraphDocuments = async (input: RetrieveRagDocumentsInput): Promise<RagDocument[]> => {
   const response = await postRagService<{ results?: RagDocument[] }>(
     '/graph/search',
+    input,
+    serverEnv.RAG_RETRIEVE_TIMEOUT_MS
+  );
+
+  return response.results || [];
+};
+
+export const listRagGraphDocuments = async (input: ListRagGraphDocumentsInput): Promise<RagDocument[]> => {
+  const response = await postRagService<{ results?: RagDocument[] }>(
+    '/graph/list',
     input,
     serverEnv.RAG_RETRIEVE_TIMEOUT_MS
   );

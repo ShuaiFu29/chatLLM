@@ -197,7 +197,7 @@ async function main() {
     );
     await db.query('commit');
 
-    const ingestResponse = await fetch(`${ragUrl}/ingest`, {
+    const ingestResponse = await fetch(`${ragUrl}/ingest-sync`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ file_id: fileId }),

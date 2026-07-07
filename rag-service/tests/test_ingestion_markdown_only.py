@@ -171,6 +171,54 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         self.assertEqual(index_graph_mock.call_args.args[0], get_file_mock.return_value)
         self.assertEqual(index_graph_mock.call_args.args[1][0]["metadata"]["project_space_id"], "space-1")
 
+    def test_process_file_keeps_core_ingestion_when_graph_index_times_out(self):
+        status_updates = []
+        chunk_rows = [{
+            "id": "chunk-1",
+            "file_id": "file-1",
+            "user_id": "user-1",
+            "chunk_index": 0,
+            "content": "T+5 is the default response confirmation window.",
+            "metadata": {"filename": "notes.md"},
+        }]
+
+        def capture_status(file_id, status, progress=None, error_message=None):
+            status_updates.append({
+                "file_id": file_id,
+                "status": status,
+                "progress": progress,
+                "error_message": error_message,
+            })
+
+        with patch("ingestion.get_file", return_value={
+            "id": "file-1",
+            "user_id": "user-1",
+            "filename": "notes.md",
+            "file_type": "text/markdown",
+            "object_key": "uploads/notes.md",
+            "project_space_id": "space-1",
+        }), patch("ingestion.download_object", return_value=b"# Notes"), patch(
+            "ingestion.extract_text", return_value=("# Notes", True)
+        ), patch("ingestion.split_text", return_value=["chunk"]), patch(
+            "ingestion.delete_file_vectors"
+        ), patch("ingestion.delete_file_keywords"), patch(
+            "ingestion.delete_file_graph"
+        ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
+            "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
+        ), patch("ingestion.insert_vectors") as insert_vectors_mock, patch(
+            "ingestion.index_chunks"
+        ), patch("ingestion.index_graph_chunks", side_effect=TimeoutError("timed out")), patch(
+            "ingestion.logger.warning"
+        ) as warning_mock, patch(
+            "ingestion.update_file_status", side_effect=capture_status
+        ), patch("ingestion.update_file_progress"):
+            result = process_file("file-1")
+
+        self.assertEqual(result, {"status": "success", "chunks": 1})
+        self.assertEqual(status_updates[-1]["status"], "completed")
+        insert_vectors_mock.assert_called_once()
+        warning_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ import api from '../lib/api';
 import Skeleton from '../components/Skeleton';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 
 interface RetrievalTraceStep {
   step_type?: string;
@@ -332,9 +333,9 @@ export default function RetrievalLabPage() {
                       <div className="space-y-2">
                         {traceSteps.map((step, index) => (
                           <div key={`${step.step_type || 'step'}-${index}`} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg-base px-3 py-2 text-xs">
-                            <span className="min-w-0 truncate text-text-main">{step.step_type || t('ragEval.traceStep')}</span>
+                            <span className="min-w-0 truncate text-text-main">{getRagTraceStepLabel(t, step.step_type)}</span>
                             <span className="shrink-0 text-text-muted">
-                              {step.status || '-'} · {step.duration_ms ?? 0}ms
+                              {getRagTraceStatusLabel(t, step.status)} · {step.duration_ms ?? 0}ms
                             </span>
                           </div>
                         ))}

@@ -42,6 +42,11 @@ test('server has an agentic RAG client and persists trace runs for assistant mes
   assert.match(chatSource, /insufficientEvidence/);
   assert.match(chatSource, /answer_guidance/);
   assert.match(chatSource, /insertRagRunForMessage/);
+  assert.match(
+    chatSource,
+    /const evidenceGuidance = answerGuidance\s*\?/,
+    'chat prompt should pass answer_guidance for inventory and other grounded RAG modes, not only weak-evidence cases',
+  );
 
   assert.match(ragRunsRepositorySource, /insertRagRunForMessage/);
   assert.match(ragRunsRepositorySource, /insert into rag_runs/i);
@@ -61,12 +66,17 @@ test('server exposes authenticated RAG workbench endpoints for inspection and gr
   assert.match(indexSource, /ragWorkbenchRoutes/);
   assert.match(indexSource, /\/api\/rag-workbench/);
   assert.match(routesSource, /router\.post\('\/inspect'/);
+  assert.match(routesSource, /router\.post\('\/graph\/list'/);
   assert.match(routesSource, /router\.post\('\/graph\/search'/);
   assert.match(routesSource, /requireAuth/);
   assert.match(controllerSource, /inspectRagRetrieval/);
+  assert.match(controllerSource, /listRagGraph/);
   assert.match(controllerSource, /searchRagGraph/);
   assert.match(controllerSource, /retrieveAgenticRagDocuments/);
+  assert.match(controllerSource, /listRagGraphDocuments/);
   assert.match(controllerSource, /searchRagGraphDocuments/);
+  assert.match(ragClientSource, /listRagGraphDocuments/);
   assert.match(ragClientSource, /searchRagGraphDocuments/);
+  assert.match(ragClientSource, /\/graph\/list/);
   assert.match(ragClientSource, /\/graph\/search/);
 });

@@ -1,3 +1,5 @@
+import logging
+
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
 from db import get_file, replace_file_chunks, update_file_progress, update_file_status
@@ -9,6 +11,7 @@ from vector_store import delete_file_vectors, insert_vectors
 
 
 EMBEDDING_BATCH_SIZE = 10
+logger = logging.getLogger(__name__)
 
 
 def format_ingestion_error(error: Exception) -> str:
@@ -109,7 +112,14 @@ def process_file(file_id: str):
             indexed_chunk_rows.append(indexed_row)
 
         index_chunks(indexed_chunk_rows)
-        index_graph_chunks(file_data, indexed_chunk_rows)
+        try:
+            index_graph_chunks(file_data, indexed_chunk_rows)
+        except Exception as graph_error:
+            logger.warning(
+                "Optional graph indexing failed for file %s: %s",
+                file_id,
+                graph_error,
+            )
 
         batch_size = EMBEDDING_BATCH_SIZE
         processed_count = 0

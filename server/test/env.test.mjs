@@ -48,7 +48,41 @@ test('server env fails fast when required keys are missing', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /Missing required server environment variables: DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, JWT_SECRET/);
-  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY, OPENAI_API_KEY/);
+  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY/);
+  assert.doesNotMatch(result.stderr, /OPENAI_API_KEY/);
+});
+
+test('server env does not accept official OpenAI key as a chat provider', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: '',
+    MOONSHOT_API_KEY: '',
+    QWEN_API_KEY: '',
+    OPENAI_API_KEY: 'sk-test',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY/);
+  assert.doesNotMatch(result.stderr, /gpt-|api\.openai\.com|OpenAI/);
+});
+
+test('server env rejects official provider model names as defaults', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    MOONSHOT_API_KEY: 'sk-test',
+    DEFAULT_CHAT_MODEL: 'gpt-4o',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /DEFAULT_CHAT_MODEL must use a supported provider model/);
 });
 
 test('server env rejects weak JWT placeholder secrets', () => {
@@ -139,6 +173,34 @@ test('server env defaults embedding debug logs off and parses explicit opt-in', 
 
   assert.equal(enabledResult.status, 0, enabledResult.stderr);
   assert.equal(parseLastJsonLine(enabledResult.stdout), true);
+});
+
+test('server env exposes configurable default chat model', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    DEFAULT_CHAT_MODEL: '',
+  }, 'serverEnv.DEFAULT_CHAT_MODEL');
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), null);
+
+  const kimiResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    MOONSHOT_API_KEY: 'sk-test',
+    DEFAULT_CHAT_MODEL: 'moonshot-v1-8k',
+  }, 'serverEnv.DEFAULT_CHAT_MODEL');
+
+  assert.equal(kimiResult.status, 0, kimiResult.stderr);
+  assert.equal(parseLastJsonLine(kimiResult.stdout), 'moonshot-v1-8k');
 });
 
 test('server env parses comma-separated CORS allowed origins', () => {
