@@ -4,6 +4,7 @@ import { AlertCircle, Save, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import api from '../lib/api';
+import SelectField from './SelectField';
 
 interface ChatSettingsDialogProps {
   isOpen: boolean;
@@ -33,6 +34,8 @@ interface ProviderHealthResponse {
   providers: ProviderHealthItem[];
 }
 
+const FALLBACK_CHAT_MODEL = 'moonshot-v1-8k';
+
 export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDialogProps) {
   const { t } = useTranslation();
   const { currentConversationId, conversations, updateConversation } = useChatStore();
@@ -44,9 +47,10 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
   const [providerHealthError, setProviderHealthError] = useState<string | null>(null);
 
   const conversation = conversations.find(c => c.id === currentConversationId);
+  const defaultChatModel = providerHealth?.default_model || FALLBACK_CHAT_MODEL;
 
   const initialSettings = useMemo(() => ({
-    model: conversation?.model || 'deepseek-chat',
+    model: conversation?.model || defaultChatModel,
     temperature: conversation?.temperature ?? 0.7,
     system_prompt: conversation?.system_prompt || 'You are a helpful AI assistant.',
     enable_rag: conversation?.enable_rag ?? true,
@@ -54,14 +58,14 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     tags: conversation?.tags || [],
     note: conversation?.note || '',
     promptTemplate: ''
-  }), [conversation, currentProjectSpaceId]);
+  }), [conversation, currentProjectSpaceId, defaultChatModel]);
 
   const [draftSettings, setDraftSettings] = useState<typeof initialSettings | null>(null);
 
   const settings = draftSettings || initialSettings;
 
   const defaultSettings = {
-    model: 'deepseek-chat',
+    model: defaultChatModel,
     temperature: 0.7,
     system_prompt: 'You are a helpful AI assistant.',
     enable_rag: true,
@@ -134,6 +138,8 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     )) || [
       { model: 'deepseek-chat', provider: null, label: 'DeepSeek · deepseek-chat' },
       { model: 'deepseek-reasoner', provider: null, label: 'DeepSeek · deepseek-reasoner' },
+      { model: 'moonshot-v1-8k', provider: null, label: 'Moonshot · moonshot-v1-8k' },
+      { model: 'moonshot-v1-32k', provider: null, label: 'Moonshot · moonshot-v1-32k' },
       { model: 'qwen-plus', provider: null, label: 'Qwen · qwen-plus' },
     ];
 
@@ -210,28 +216,21 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           {/* Model Selection */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-main">{t('settings.model')}</label>
-            <div className="relative">
-              <select
-                value={settings.model}
-                onChange={(e) => handleChange({ ...settings, model: e.target.value })}
-                className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 pr-8 focus:ring-2 focus:ring-primary focus:outline-none appearance-none"
-              >
-                {modelOptions.map((option) => (
-                  <option
-                    key={`${option.provider?.id || 'custom'}-${option.model}`}
-                    value={option.model}
-                    disabled={option.provider ? !option.provider['has_api_key'] : false}
-                  >
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-text-muted">
-                <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
-                  <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" />
-                </svg>
-              </div>
-            </div>
+            <SelectField
+              value={settings.model}
+              onChange={(e) => handleChange({ ...settings, model: e.target.value })}
+              className="w-full"
+            >
+              {modelOptions.map((option) => (
+                <option
+                  key={`${option.provider?.id || 'custom'}-${option.model}`}
+                  value={option.model}
+                  disabled={option.provider ? !option.provider['has_api_key'] : false}
+                >
+                  {option.label}
+                </option>
+              ))}
+            </SelectField>
             <p className="text-xs text-text-muted">
               {t('settings.selectModel')}
             </p>
@@ -272,23 +271,23 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           {/* Project Space */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-main">{t('settings.projectSpace')}</label>
-            <select
+            <SelectField
               value={settings.project_space_id}
               onChange={(e) => handleChange({ ...settings, project_space_id: e.target.value })}
-              className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none"
+              className="w-full"
             >
               {projectSpaces.map((space) => (
                 <option key={space.id} value={space.id}>
                   {space.name}
                 </option>
               ))}
-            </select>
+            </SelectField>
           </div>
 
           {/* Prompt Template */}
           <div className="space-y-2">
             <label className="text-sm font-medium text-text-main">{t('settings.promptTemplate')}</label>
-            <select
+            <SelectField
               value={settings.promptTemplate}
               onChange={(e) => {
                 const template = promptTemplates.find((item) => item.id === e.target.value);
@@ -298,7 +297,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
                   system_prompt: template?.content || settings.system_prompt,
                 });
               }}
-              className="w-full bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none"
+              className="w-full"
             >
               <option value="">{isLoadingPromptTemplates ? t('common.loading') : t('settings.noPromptTemplate')}</option>
               {promptTemplates.map((template) => (
@@ -306,7 +305,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
                   {template.name}
                 </option>
               ))}
-            </select>
+            </SelectField>
             <p className="text-xs text-text-muted">{t('settings.promptTemplateHint')}</p>
           </div>
 

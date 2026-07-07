@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../lib/api';
 import Modal from '../components/Modal';
+import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import { downloadTextFile } from '../lib/exportConversation';
 
@@ -1410,16 +1411,16 @@ export default function RagEvaluationPage() {
             className="min-h-24 w-full rounded-lg border border-border bg-bg-base px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             placeholder={t('ragEval.datasetDescription')}
           />
-          <select
+          <SelectField
             value={datasetDraft.project_space_id}
             onChange={(event) => setDatasetDraft((draft) => ({ ...draft, project_space_id: event.target.value }))}
-            className="w-full rounded-lg border border-border bg-bg-base px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+            className="w-full"
           >
             <option value="">{t('ragEval.allWorkspaces')}</option>
             {projectSpaces.map((space) => (
               <option key={space.id} value={space.id}>{space.name}</option>
             ))}
-          </select>
+          </SelectField>
         </div>
       </Modal>
 

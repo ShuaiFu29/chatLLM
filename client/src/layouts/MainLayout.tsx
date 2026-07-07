@@ -2,13 +2,13 @@ import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
-import { useChatStore } from '../stores/useChatStore';
+import { useChatStore, type Conversation } from '../stores/useChatStore';
 import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network } from 'lucide-react';
 import api from '../lib/api';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
-import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useProjectSpaceStore, type ProjectSpace } from '../stores/useProjectSpaceStore';
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -66,6 +66,8 @@ export default function MainLayout() {
   const [deleteProjectSpaceError, setDeleteProjectSpaceError] = useState<string | null>(null);
   const [isDeletingProjectSpace, setIsDeletingProjectSpace] = useState(false);
   const [conversationFilter, setConversationFilter] = useState<'active' | 'archived'>('active');
+  const [isWorkspaceBrowserOpen, setIsWorkspaceBrowserOpen] = useState(false);
+  const [isConversationBrowserOpen, setIsConversationBrowserOpen] = useState(false);
 
   const baseProjectConversations = useMemo(
     () => conversations
@@ -84,6 +86,15 @@ export default function MainLayout() {
       }),
     [baseProjectConversations]
   );
+
+  const spaceConversationCounts = useMemo(() => {
+    const counts = new Map<string | null | undefined, number>();
+    conversations.forEach((conv) => {
+      counts.set(conv.project_space_id, (counts.get(conv.project_space_id) || 0) + 1);
+    });
+    return counts;
+  }, [conversations]);
+  const currentWorkspaceTotalConversations = spaceConversationCounts.get(currentProjectSpaceId) || 0;
 
   const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
   const currentWorkspaceName = currentProjectSpace?.name || t('workspace.fallbackName');
@@ -151,6 +162,7 @@ export default function MainLayout() {
     if (editingId) return; // Prevent selection while editing
     selectConversation(id);
     navigate('/');
+    setIsConversationBrowserOpen(false);
     setIsMobileMenuOpen(false); // Close sidebar on mobile
   };
 
@@ -164,6 +176,7 @@ export default function MainLayout() {
   const handleOpenCreateProjectSpace = () => {
     setNewProjectSpaceName('');
     setCreateProjectSpaceError(null);
+    setIsWorkspaceBrowserOpen(false);
     setIsCreateProjectSpaceOpen(true);
   };
 
@@ -195,11 +208,13 @@ export default function MainLayout() {
 
   const handleSelectProjectSpace = (id: string) => {
     selectProjectSpace(id);
+    setIsWorkspaceBrowserOpen(false);
     setIsMobileMenuOpen(false);
   };
 
   const handleOpenRenameProjectSpace = (e: React.MouseEvent, id: string, name: string) => {
     e.stopPropagation();
+    setIsWorkspaceBrowserOpen(false);
     setRenamingProjectSpaceId(id);
     setRenamingProjectSpaceName(name);
     setRenameProjectSpaceError(null);
@@ -231,6 +246,7 @@ export default function MainLayout() {
 
   const handleOpenDeleteProjectSpace = (e: React.MouseEvent, id: string, name: string) => {
     e.stopPropagation();
+    setIsWorkspaceBrowserOpen(false);
     setDeleteProjectSpaceTarget({ id, name });
     setDeleteProjectSpaceError(null);
   };
@@ -319,6 +335,208 @@ export default function MainLayout() {
     document.addEventListener('click', handleSearchClick);
     return () => document.removeEventListener('click', handleSearchClick);
   }, [setSearchOpen]);
+
+  const getConversationTitle = (conv: Conversation) => (
+    conv.title === 'New Chat' ? t('sidebar.newChat') : conv.title
+  );
+
+  const renderConversationRow = (conv: Conversation, mode: 'sidebar' | 'modal') => {
+    const isActive = currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/';
+    const actionVisibility = mode === 'modal'
+      ? 'flex opacity-100'
+      : 'hidden md:flex md:opacity-0 md:group-hover:opacity-100';
+
+    return (
+      <div
+        key={conv.id}
+        className={`group relative flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors ${
+          isActive
+            ? 'bg-primary text-white shadow-sm'
+            : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+        }`}
+      >
+        <MessageSquare className="h-4 w-4 shrink-0" />
+        {conv.is_pinned && conversationFilter === 'active' && (
+          <Pin className={`h-3 w-3 shrink-0 ${isActive ? 'text-white/80' : 'text-primary'}`} />
+        )}
+
+        {editingId === conv.id ? (
+          <form onSubmit={handleRenameSubmit} className="flex min-w-0 flex-1 items-center gap-1">
+            <input
+              ref={editInputRef}
+              type="text"
+              value={editTitle}
+              onChange={(e) => setEditTitle(e.target.value)}
+              className="min-w-0 flex-1 rounded border border-primary bg-bg-base px-1 py-0.5 text-sm text-text-main outline-none"
+              onClick={(e) => e.stopPropagation()}
+              onBlur={() => handleRenameSubmit()}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setEditingId(null);
+                  e.stopPropagation();
+                }
+              }}
+            />
+          </form>
+        ) : (
+          <button
+            type="button"
+            className="min-w-0 flex-1 cursor-pointer text-left"
+            onClick={() => handleSelectConversation(conv.id)}
+          >
+            <span className="block truncate text-sm">
+              {getConversationTitle(conv)}
+            </span>
+            {((conv.tags && conv.tags.length > 0) || conv.note) && (
+              <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
+                {conv.tags?.slice(0, 2).map((tag) => (
+                  <span
+                    key={tag}
+                    className={`max-w-20 truncate rounded border px-1.5 py-0.5 text-[10px] ${
+                      isActive
+                        ? 'border-white/25 text-white/80'
+                        : 'border-border text-text-muted'
+                    }`}
+                  >
+                    {tag}
+                  </span>
+                ))}
+                {conv.note && (
+                  <span
+                    className={`inline-flex items-center rounded border px-1 py-0.5 ${
+                      isActive
+                        ? 'border-white/25 text-white/80'
+                        : 'border-border text-text-muted'
+                    }`}
+                    title={`${t('chat.conversationNote')}: ${conv.note}`}
+                    aria-label={t('chat.conversationNote')}
+                  >
+                    <StickyNote className="h-3 w-3" />
+                  </span>
+                )}
+              </span>
+            )}
+          </button>
+        )}
+
+        {!editingId && (
+          <div className={`${actionVisibility} shrink-0 items-center gap-1 transition-opacity ${isActive ? 'text-white' : 'text-text-muted'}`}>
+            {conversationFilter === 'active' && (
+              <button
+                onClick={(e) => handleTogglePinClick(e, conv.id)}
+                className="rounded p-1 transition-colors hover:bg-white/20"
+                title={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
+                aria-label={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
+              >
+                <Pin className={`h-3 w-3 ${conv.is_pinned ? 'fill-current' : ''}`} />
+              </button>
+            )}
+            <button
+              onClick={(e) => handleEditClick(e, conv.id, conv.title)}
+              className="rounded p-1 transition-colors hover:bg-white/20"
+              title={t('common.edit')}
+              aria-label={t('common.edit')}
+            >
+              <Pencil className="h-3 w-3" />
+            </button>
+            {conversationFilter === 'archived' ? (
+              <button
+                onClick={(e) => handleUnarchiveClick(e, conv.id)}
+                className="rounded p-1 transition-colors hover:bg-white/20"
+                title={t('chat.unarchiveConversation')}
+                aria-label={t('chat.unarchiveConversation')}
+              >
+                <ArchiveRestore className="h-3 w-3" />
+              </button>
+            ) : (
+              <button
+                onClick={(e) => handleArchiveClick(e, conv.id)}
+                className="rounded p-1 transition-colors hover:bg-white/20"
+                title={t('chat.archiveConversation')}
+                aria-label={t('chat.archiveConversation')}
+              >
+                <Archive className="h-3 w-3" />
+              </button>
+            )}
+            <button
+              onClick={(e) => handleDeleteClick(e, conv.id)}
+              className="rounded p-1 transition-colors hover:bg-red-500/80 hover:text-white"
+              title={t('common.delete')}
+              aria-label={t('common.delete')}
+            >
+              <Trash2 className="h-3 w-3" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderWorkspaceRow = (space: ProjectSpace) => {
+    const isCurrent = space.id === currentProjectSpaceId;
+    const conversationCount = spaceConversationCounts.get(space.id) || 0;
+
+    return (
+      <div
+        key={space.id}
+        className={`group flex items-center gap-3 rounded-xl border p-3 transition-colors ${
+          isCurrent
+            ? 'border-primary/50 bg-primary/10'
+            : 'border-border bg-bg-base hover:border-primary/40 hover:bg-bg-surface'
+        }`}
+      >
+        <button
+          type="button"
+          onClick={() => handleSelectProjectSpace(space.id)}
+          className="flex min-w-0 flex-1 items-center gap-3 text-left"
+          aria-current={isCurrent ? 'true' : undefined}
+        >
+          <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${isCurrent ? 'bg-primary text-white' : 'bg-bg-surface text-primary'}`}>
+            <Folder className="h-4 w-4" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-medium text-text-main">{space.name}</span>
+            <span className="mt-0.5 block truncate text-xs text-text-muted">
+              {t('workspace.conversationCount', { count: conversationCount })}
+            </span>
+          </span>
+          <span className="flex shrink-0 items-center gap-1">
+            {isCurrent && (
+              <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
+                {t('workspace.currentBadge')}
+              </span>
+            )}
+            {space.is_default && (
+              <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted">
+                {t('workspace.defaultBadge')}
+              </span>
+            )}
+          </span>
+        </button>
+
+        {!space.is_default && (
+          <div className="flex shrink-0 items-center gap-1 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
+            <button
+              onClick={(e) => handleOpenRenameProjectSpace(e, space.id, space.name)}
+              className="rounded-lg p-2 text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main"
+              title={t('common.edit')}
+              aria-label={t('common.edit')}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={(e) => handleOpenDeleteProjectSpace(e, space.id, space.name)}
+              className="rounded-lg p-2 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-300"
+              title={t('common.delete')}
+              aria-label={t('common.delete')}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-main transition-colors duration-300">
@@ -515,6 +733,89 @@ export default function MainLayout() {
         </p>
       </Modal>
 
+      <Modal
+        isOpen={isWorkspaceBrowserOpen}
+        onClose={() => setIsWorkspaceBrowserOpen(false)}
+        title={t('workspace.workspaceBrowserTitle')}
+        maxWidth="2xl"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setIsWorkspaceBrowserOpen(false)}
+              className="px-4 py-2 text-sm text-text-muted hover:text-text-main hover:bg-bg-surface border border-border rounded-lg transition-colors"
+            >
+              {t('common.close')}
+            </button>
+            <button
+              type="button"
+              onClick={handleOpenCreateProjectSpace}
+              className="inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
+            >
+              <Plus className="h-4 w-4" />
+              {t('workspace.createAction')}
+            </button>
+          </>
+        }
+      >
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-medium text-text-main">
+              {t('workspace.allWorkspacesCount', { count: projectSpaces.length })}
+            </p>
+          </div>
+          <div className="max-h-[58vh] space-y-2 overflow-y-auto pr-1">
+            {projectSpaces.map(renderWorkspaceRow)}
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={isConversationBrowserOpen}
+        onClose={() => setIsConversationBrowserOpen(false)}
+        title={t('workspace.conversationBrowserTitle')}
+        maxWidth="3xl"
+      >
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-medium text-text-main">{currentWorkspaceName}</p>
+              <p className="mt-1 text-xs text-text-muted">
+                {t('workspace.conversationCount', { count: currentProjectConversations.length })}
+              </p>
+            </div>
+            <div className="flex shrink-0 rounded-lg border border-border bg-bg-base p-0.5">
+              <button
+                onClick={() => setConversationFilter('active')}
+                className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
+                  conversationFilter === 'active' ? 'bg-primary text-white' : 'text-text-muted hover:text-text-main'
+                }`}
+              >
+                {t('chat.showActive')}
+              </button>
+              <button
+                onClick={() => setConversationFilter('archived')}
+                className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
+                  conversationFilter === 'archived' ? 'bg-primary text-white' : 'text-text-muted hover:text-text-main'
+                }`}
+              >
+                {t('chat.showArchived')}
+              </button>
+            </div>
+          </div>
+
+          {currentProjectConversations.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-border bg-bg-base px-4 py-8 text-center text-sm text-text-muted">
+              {conversationFilter === 'archived' ? t('sidebar.noArchivedConversations') : t('sidebar.noConversations')}
+            </div>
+          ) : (
+            <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
+              {currentProjectConversations.map((conv) => renderConversationRow(conv, 'modal'))}
+            </div>
+          )}
+        </div>
+      </Modal>
+
       {/* Mobile Sidebar Overlay */}
       {isMobileMenuOpen && (
         <div
@@ -588,53 +889,44 @@ export default function MainLayout() {
                 <Plus className="w-3.5 h-3.5" />
               </button>
             </div>
-            <div className="space-y-1.5">
-              {projectSpaces.map((space) => (
-                <div
-                  key={space.id}
-                  className={`group/workspace flex items-center rounded-xl transition-colors ${
-                    currentProjectSpaceId === space.id
-                      ? 'border border-border bg-bg-surface text-text-main shadow-sm'
-                      : 'text-text-muted hover:text-text-main hover:bg-bg-surface'
-                  }`}
-                >
-                  <button
-                    onClick={() => handleSelectProjectSpace(space.id)}
-                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2.5 text-left"
-                  >
-                    <Folder className="w-4 h-4 shrink-0" />
-                    <span className="truncate text-sm flex-1">{space.name}</span>
-                    {space.is_default && <span className="text-[10px] text-text-muted">{t('workspace.defaultBadge')}</span>}
-                  </button>
-                  {!space.is_default && (
-                    <div className="flex shrink-0 items-center gap-1 pr-2 opacity-0 transition-opacity group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100">
-                      <button
-                        onClick={(event) => handleOpenRenameProjectSpace(event, space.id, space.name)}
-                        className="rounded p-1 text-text-muted transition-colors hover:bg-bg-base hover:text-text-main"
-                        title={t('workspace.renameAction')}
-                        aria-label={t('workspace.renameAction')}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
-                      <button
-                        onClick={(event) => handleOpenDeleteProjectSpace(event, space.id, space.name)}
-                        className="rounded p-1 text-text-muted transition-colors hover:bg-red-500/20 hover:text-red-300"
-                        title={t('workspace.deleteAction')}
-                        aria-label={t('workspace.deleteAction')}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ))}
+            <div className="space-y-2">
+              <button
+                type="button"
+                onClick={() => setIsWorkspaceBrowserOpen(true)}
+                className="group flex w-full items-center gap-3 rounded-xl border border-border bg-bg-surface px-3 py-3 text-left shadow-sm transition-colors hover:border-primary/40"
+              >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-bg-base text-primary">
+                  <Folder className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-text-main">{currentWorkspaceName}</span>
+                  <span className="mt-0.5 block truncate text-[11px] text-text-muted">
+                    {t('workspace.workspaceSummary', {
+                      conversations: currentWorkspaceTotalConversations,
+                      documents: knowledgeFiles.length,
+                    })}
+                  </span>
+                </span>
+                {currentProjectSpace?.is_default && (
+                  <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted">
+                    {t('workspace.defaultBadge')}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsWorkspaceBrowserOpen(true)}
+                className="flex h-8 w-full items-center justify-center rounded-lg text-xs font-medium text-text-muted transition-colors hover:bg-bg-surface hover:text-text-main"
+              >
+                {t('workspace.viewAllWorkspaces', { count: projectSpaces.length })}
+              </button>
             </div>
           </div>
 
           <div className="space-y-2 rounded-xl bg-bg-base/40 p-2">
             <div className="flex items-center justify-between gap-2 px-2 pb-1">
               <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-text-muted">
-                {t('workspace.conversationsLabel', { name: currentWorkspaceName })}
+                {t('workspace.conversationSummaryTitle')}
               </span>
               <div className="flex shrink-0 rounded-lg border border-border bg-bg-sidebar p-0.5">
                 <button
@@ -655,138 +947,35 @@ export default function MainLayout() {
                 </button>
               </div>
             </div>
-            <div className="space-y-1.5">
-              {currentProjectConversations.map((conv) => (
-                <div
-                  key={conv.id}
-                  className={`w-full flex items-center gap-3 p-3 rounded-xl text-left transition-colors group relative ${currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
-                    ? 'bg-primary text-white shadow-sm'
-                    : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
-                    }`}
-                >
-              <MessageSquare className="w-4 h-4 shrink-0" />
-              {conv.is_pinned && conversationFilter === 'active' && (
-                <Pin className="h-3 w-3 shrink-0 text-primary" />
-              )}
-
-              {editingId === conv.id ? (
-                <form onSubmit={handleRenameSubmit} className="flex-1 flex items-center gap-1 min-w-0">
-                  <input
-                    ref={editInputRef}
-                    type="text"
-                    value={editTitle}
-                    onChange={(e) => setEditTitle(e.target.value)}
-                    className="flex-1 bg-bg-base text-text-main text-sm px-1 py-0.5 rounded border border-primary outline-none min-w-0"
-                    onClick={(e) => e.stopPropagation()}
-                    onBlur={() => handleRenameSubmit()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Escape') {
-                        setEditingId(null);
-                        e.stopPropagation();
-                      }
-                    }}
-                  />
-                </form>
-              ) : (
-                <button
-                  type="button"
-                  className="min-w-0 flex-1 cursor-pointer text-left"
-                  onClick={() => handleSelectConversation(conv.id)}
-                >
-                  <span className="block truncate text-sm">
-                    {conv.title === 'New Chat' ? t('sidebar.newChat') : conv.title}
-                  </span>
-                  {((conv.tags && conv.tags.length > 0) || conv.note) && (
-                    <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-                      {conv.tags?.slice(0, 2).map((tag) => (
-                        <span
-                          key={tag}
-                          className={`max-w-20 truncate rounded border px-1.5 py-0.5 text-[10px] ${
-                            currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
-                              ? 'border-white/25 text-white/80'
-                              : 'border-border text-text-muted'
-                          }`}
-                        >
-                          {tag}
-                        </span>
-                      ))}
-                      {conv.note && (
-                        <span
-                          className={`inline-flex items-center rounded border px-1 py-0.5 ${
-                            currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/'
-                              ? 'border-white/25 text-white/80'
-                              : 'border-border text-text-muted'
-                          }`}
-                          title={`${t('chat.conversationNote')}: ${conv.note}`}
-                          aria-label={t('chat.conversationNote')}
-                        >
-                          <StickyNote className="h-3 w-3" />
-                        </span>
-                      )}
-                    </span>
-                  )}
-                </button>
-              )}
-
-              {/* Action Buttons */}
-              {!editingId && (
-                <div className={`flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ${currentConversationId === conv.id ? 'text-white' : 'text-text-muted'
-                  }`}>
-                  {conversationFilter === 'active' && (
-                    <button
-                      onClick={(e) => handleTogglePinClick(e, conv.id)}
-                      className={`p-1 hover:bg-white/20 rounded transition-colors`}
-                      title={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
-                      aria-label={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
-                    >
-                      <Pin className={`w-3 h-3 ${conv.is_pinned ? 'fill-current' : ''}`} />
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => handleEditClick(e, conv.id, conv.title)}
-                    className={`p-1 hover:bg-white/20 rounded transition-colors`}
-                    title={t('common.edit')}
-                    aria-label={t('common.edit')}
-                  >
-                    <Pencil className="w-3 h-3" />
-                  </button>
-                  {conversationFilter === 'archived' ? (
-                    <button
-                      onClick={(e) => handleUnarchiveClick(e, conv.id)}
-                      className={`p-1 hover:bg-white/20 rounded transition-colors`}
-                      title={t('chat.unarchiveConversation')}
-                      aria-label={t('chat.unarchiveConversation')}
-                    >
-                      <ArchiveRestore className="w-3 h-3" />
-                    </button>
-                  ) : (
-                    <button
-                      onClick={(e) => handleArchiveClick(e, conv.id)}
-                      className={`p-1 hover:bg-white/20 rounded transition-colors`}
-                      title={t('chat.archiveConversation')}
-                      aria-label={t('chat.archiveConversation')}
-                    >
-                      <Archive className="w-3 h-3" />
-                    </button>
-                  )}
-                  <button
-                    onClick={(e) => handleDeleteClick(e, conv.id)}
-                    className={`p-1 hover:bg-red-500/80 hover:text-white rounded transition-colors`}
-                    title={t('common.delete')}
-                    aria-label={t('common.delete')}
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              )}
-                </div>
-              ))}
-            </div>
-            {currentProjectConversations.length === 0 && (
-              <div className="px-3 py-4 text-center text-sm text-text-muted">
-                {conversationFilter === 'archived' ? t('sidebar.noArchivedConversations') : t('sidebar.noConversations')}
-              </div>
-            )}
+            <button
+              type="button"
+              onClick={() => setIsConversationBrowserOpen(true)}
+              className="group flex w-full items-center gap-3 rounded-xl border border-border bg-bg-surface px-3 py-3 text-left shadow-sm transition-colors hover:border-primary/40"
+            >
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-bg-base text-primary">
+                <MessageSquare className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-text-main">
+                  {conversationFilter === 'archived'
+                    ? t('workspace.archivedConversationSummary', { count: currentProjectConversations.length })
+                    : t('workspace.activeConversationSummary', { count: currentProjectConversations.length })}
+                </span>
+                <span className="mt-0.5 block truncate text-[11px] text-text-muted">
+                  {t('workspace.conversationsLabel', { name: currentWorkspaceName })}
+                </span>
+              </span>
+              <span className="rounded-full border border-border bg-bg-base px-2 py-0.5 text-xs text-text-muted transition-colors group-hover:border-primary/40 group-hover:text-text-main">
+                {currentProjectConversations.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setIsConversationBrowserOpen(true)}
+              className="flex h-8 w-full items-center justify-center rounded-lg text-xs font-medium text-text-muted transition-colors hover:bg-bg-surface hover:text-text-main"
+            >
+              {t('workspace.viewAllConversations', { count: currentProjectConversations.length })}
+            </button>
           </div>
 
           <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-bg-base/40 p-2">

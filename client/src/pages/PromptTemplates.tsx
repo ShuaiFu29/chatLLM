@@ -3,6 +3,7 @@ import { AlertCircle, BookOpenText, Loader2, Plus, Save, Trash2 } from 'lucide-r
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
 import Modal from '../components/Modal';
+import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 interface PromptTemplate {
@@ -361,10 +362,10 @@ export default function PromptTemplatesPage() {
             </div>
             <div className="space-y-2">
               <label className="text-sm font-medium">{t('prompts.workspaceScope')}</label>
-              <select
+              <SelectField
                 value={draft.project_space_id}
                 onChange={(event) => setDraft((currentDraft) => ({ ...currentDraft, project_space_id: event.target.value }))}
-                className="w-full rounded-lg border border-border bg-bg-base px-3 py-2 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+                className="w-full"
               >
                 <option value="">{t('prompts.globalScope')}</option>
                 {projectSpaces.map((space) => (
@@ -372,7 +373,7 @@ export default function PromptTemplatesPage() {
                     {space.name}
                   </option>
                 ))}
-              </select>
+              </SelectField>
             </div>
           </div>
 

@@ -2,6 +2,7 @@ import { Download, GitCompare, Sliders, Star } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { type Conversation } from '../stores/useChatStore';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import SelectField from './SelectField';
 
 interface ChatHeaderProps {
   conversation?: Conversation;
@@ -52,10 +53,11 @@ export default function ChatHeader({
       <div className="flex items-center gap-1">
         {conversation && relatedConversations.length > 0 && (
           <div className="hidden items-center gap-1 lg:flex">
-            <select
+            <SelectField
               value={compareTargetId}
               onChange={(event) => onCompareTargetChange?.(event.target.value)}
-              className="h-9 max-w-44 rounded-lg border border-border bg-bg-surface px-2 text-xs text-text-main outline-none focus:border-primary"
+              className="max-w-44"
+              selectClassName="h-9 bg-bg-surface text-xs"
               aria-label={t('chat.compareVersions')}
             >
               {relatedConversations.map((item) => (
@@ -63,7 +65,7 @@ export default function ChatHeader({
                   {item.title === 'New Chat' ? t('sidebar.newChat') : item.title}
                 </option>
               ))}
-            </select>
+            </SelectField>
             <button
               onClick={onCompare}
               disabled={!compareTargetId}

@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { AlertCircle, FileSearch, Loader2, Network, RefreshCw, Route, Search } from 'lucide-react';
 import api from '../lib/api';
 import Skeleton from '../components/Skeleton';
+import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
 interface RetrievalTraceStep {
@@ -207,16 +208,17 @@ export default function RetrievalLabPage() {
                 <span className="mb-2 block text-xs font-semibold uppercase tracking-wide text-text-muted">
                   {t('usage.workspace')}
                 </span>
-                <select
+                <SelectField
                   value={selectedProjectSpaceId}
                   onChange={(event) => setSelectedProjectSpaceId(event.target.value)}
-                  className="h-11 w-full rounded-lg border border-border bg-bg-base px-3 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  className="w-full"
+                  selectClassName="h-11"
                 >
                   <option value="">{t('ragEval.allWorkspaces')}</option>
                   {projectSpaces.map((space) => (
                     <option key={space.id} value={space.id}>{space.name}</option>
                   ))}
-                </select>
+                </SelectField>
               </label>
 
               <label>

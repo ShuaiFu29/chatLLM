@@ -6,6 +6,7 @@ import { useChatStore } from '../stores/useChatStore';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import SelectField from './SelectField';
 
 // We'll create a custom CommandPalette component using cmdk
 // Since we want to use our existing Modal infrastructure, we can wrap it
@@ -114,10 +115,10 @@ export default function SearchDialog() {
                 />
                 {t('search.includeArchived')}
               </label>
-              <select
+              <SelectField
                 value={filters.projectSpaceId}
                 onChange={(event) => setFilters({ projectSpaceId: event.target.value })}
-                className="rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-main outline-none focus:border-primary"
+                selectClassName="h-9 text-xs"
                 aria-label={t('search.workspace')}
               >
                 <option value="">{t('search.allWorkspaces')}</option>
@@ -126,17 +127,19 @@ export default function SearchDialog() {
                     {space.name}
                   </option>
                 ))}
-              </select>
-              <select
+              </SelectField>
+              <SelectField
                 value={filters.model}
                 onChange={(event) => setFilters({ model: event.target.value })}
-                className="rounded-lg border border-border bg-bg-base px-3 py-2 text-xs text-text-main outline-none focus:border-primary"
+                selectClassName="h-9 text-xs"
                 aria-label={t('search.model')}
               >
                 <option value="">{t('search.allModels')}</option>
                 <option value="deepseek-chat">DeepSeek-V3</option>
                 <option value="deepseek-reasoner">DeepSeek-R1</option>
-              </select>
+                <option value="moonshot-v1-8k">Moonshot · moonshot-v1-8k</option>
+                <option value="moonshot-v1-32k">Moonshot · moonshot-v1-32k</option>
+              </SelectField>
               <input
                 value={filters.tag}
                 onChange={(event) => setFilters({ tag: event.target.value })}

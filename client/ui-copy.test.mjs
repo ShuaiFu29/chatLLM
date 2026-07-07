@@ -23,6 +23,10 @@ const graphExplorerPagePath = path.join(clientDir, 'src/pages/GraphExplorer.tsx'
 const graphExplorerPageSource = existsSync(graphExplorerPagePath) ? readFileSync(graphExplorerPagePath, 'utf8') : '';
 const usagePageSource = readFileSync(path.join(clientDir, 'src/pages/Usage.tsx'), 'utf8');
 const modalSource = readFileSync(path.join(clientDir, 'src/components/Modal.tsx'), 'utf8');
+const selectFieldPath = path.join(clientDir, 'src/components/SelectField.tsx');
+const selectFieldSource = existsSync(selectFieldPath) ? readFileSync(selectFieldPath, 'utf8') : '';
+const chatHeaderSource = readFileSync(path.join(clientDir, 'src/components/ChatHeader.tsx'), 'utf8');
+const chatSettingsSource = readFileSync(path.join(clientDir, 'src/components/ChatSettingsDialog.tsx'), 'utf8');
 const chatMessageSource = readFileSync(path.join(clientDir, 'src/components/ChatMessage.tsx'), 'utf8');
 const markdownRendererSource = readFileSync(path.join(clientDir, 'src/components/MarkdownRenderer.tsx'), 'utf8');
 const localeFiles = ['en', 'zh'].map((locale) => ({
@@ -176,6 +180,54 @@ test('workspace creation uses the app modal instead of the browser prompt', () =
   assert.equal(mainLayoutSource.includes('window.prompt'), false);
   assert.match(mainLayoutSource, /workspace\.createTitle/);
   assert.match(mainLayoutSource, /isCreateProjectSpaceOpen/);
+});
+
+test('sidebar dense lists open full management modals instead of rendering every item inline', () => {
+  assert.match(mainLayoutSource, /isWorkspaceBrowserOpen/);
+  assert.match(mainLayoutSource, /isConversationBrowserOpen/);
+  assert.match(mainLayoutSource, /workspace\.viewAllWorkspaces/);
+  assert.match(mainLayoutSource, /workspace\.viewAllConversations/);
+  assert.match(mainLayoutSource, /workspace\.workspaceBrowserTitle/);
+  assert.match(mainLayoutSource, /workspace\.conversationBrowserTitle/);
+  assert.match(mainLayoutSource, /workspace\.conversationSummaryTitle/);
+  assert.equal(
+    mainLayoutSource.includes('visibleSidebarConversations.map'),
+    false,
+    'sidebar should open the conversation browser instead of rendering recent conversation rows inline',
+  );
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.workspace?.viewAllWorkspaces, `${localeFile.locale}.json needs workspace.viewAllWorkspaces`);
+    assert.ok(locale.workspace?.viewAllConversations, `${localeFile.locale}.json needs workspace.viewAllConversations`);
+    assert.ok(locale.workspace?.workspaceBrowserTitle, `${localeFile.locale}.json needs workspace.workspaceBrowserTitle`);
+    assert.ok(locale.workspace?.conversationBrowserTitle, `${localeFile.locale}.json needs workspace.conversationBrowserTitle`);
+    assert.ok(locale.workspace?.conversationSummaryTitle, `${localeFile.locale}.json needs workspace.conversationSummaryTitle`);
+    assert.ok(locale.workspace?.activeConversationSummary, `${localeFile.locale}.json needs workspace.activeConversationSummary`);
+    assert.ok(locale.workspace?.archivedConversationSummary, `${localeFile.locale}.json needs workspace.archivedConversationSummary`);
+  }
+});
+
+test('visible dropdowns use shared SelectField with an app-native chevron', () => {
+  assert.ok(existsSync(selectFieldPath), 'SelectField.tsx should exist');
+  assert.match(selectFieldSource, /ChevronDown/);
+  assert.match(selectFieldSource, /appearance-none/);
+
+  const selectConsumers = [
+    ['ChatHeader.tsx', chatHeaderSource],
+    ['ChatSettingsDialog.tsx', chatSettingsSource],
+    ['SearchDialog.tsx', searchDialogSource],
+    ['PromptTemplates.tsx', promptTemplatePageSource],
+    ['RagEvaluation.tsx', ragEvaluationPageSource],
+    ['RetrievalLab.tsx', retrievalLabPageSource],
+    ['GraphExplorer.tsx', graphExplorerPageSource],
+  ];
+
+  for (const [filename, source] of selectConsumers) {
+    assert.match(source, /SelectField/, `${filename} should import and use SelectField`);
+    assert.equal(source.includes('<select'), false, `${filename} should not render raw select controls`);
+  }
 });
 
 test('workspace list exposes rename and delete actions for non-default workspaces', () => {
@@ -436,6 +488,8 @@ test('chat workbench upgrades expose prompt templates, branches, metadata, and s
   assert.match(chatSettingsSource, /settings\.promptTemplate/);
   assert.match(chatSettingsSource, /api\.get(?:<[^>]+>)?<ProviderHealthResponse>\('\/usage\/provider-health'\)/);
   assert.match(chatSettingsSource, /providerHealth/);
+  assert.match(chatSettingsSource, /providerHealth\?\.default_model/);
+  assert.match(chatSettingsSource, /moonshot-v1-8k/);
   assert.match(chatSettingsSource, /settings\.providerHealth/);
   assert.match(chatSettingsSource, /settings\.providerUnavailable/);
   assert.match(searchDialogSource, /search\.filters/);
