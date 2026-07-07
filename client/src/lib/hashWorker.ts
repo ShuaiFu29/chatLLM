@@ -1,40 +1,39 @@
-// hashWorker.ts
-import SparkMD5 from 'spark-md5';
+import { Sha256 } from '@aws-crypto/sha256-browser';
 
-self.onmessage = (e: MessageEvent) => {
-  const file = e.data;
-  const chunkSize = 2097152; // 2MB
-  const chunks = Math.ceil(file.size / chunkSize);
-  const spark = new SparkMD5.ArrayBuffer();
-  const fileReader = new FileReader();
-  let currentChunk = 0;
+const HASH_CHUNK_SIZE = 2 * 1024 * 1024;
+const byteToHex = (byte: number) => byte.toString(16).padStart(2, '0');
 
-  fileReader.onload = (e) => {
-    if (e.target?.result) {
-      spark.append(e.target.result as ArrayBuffer);
-    }
-    currentChunk++;
+const digestToHex = (digest: ArrayBuffer | Uint8Array) => (
+  Array.from(digest instanceof Uint8Array ? digest : new Uint8Array(digest), byteToHex).join('')
+);
 
-    if (currentChunk < chunks) {
-      // Report progress
-      const progress = Math.round((currentChunk / chunks) * 100);
+self.onmessage = async (event: MessageEvent<File>) => {
+  try {
+    const file = event.data;
+    const hasher = new Sha256();
+    const totalChunks = Math.max(1, Math.ceil(file.size / HASH_CHUNK_SIZE));
+    self.postMessage({ type: 'progress', progress: 0 });
+
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex += 1) {
+      const start = chunkIndex * HASH_CHUNK_SIZE;
+      const end = Math.min(start + HASH_CHUNK_SIZE, file.size);
+      const buffer = await file.slice(start, end).arrayBuffer();
+      hasher.update(new Uint8Array(buffer));
+
+      const progress = Math.min(99, Math.round(((chunkIndex + 1) / totalChunks) * 100));
       self.postMessage({ type: 'progress', progress });
-      loadNext();
-    } else {
-      const hash = spark.end();
-      self.postMessage({ type: 'complete', hash });
     }
-  };
 
-  fileReader.onerror = () => {
-    self.postMessage({ type: 'error', error: 'Hashing failed' });
-  };
+    const digest = await hasher.digest();
+    const hash = digestToHex(digest);
 
-  function loadNext() {
-    const start = currentChunk * chunkSize;
-    const end = ((start + chunkSize) >= file.size) ? file.size : start + chunkSize;
-    fileReader.readAsArrayBuffer(file.slice(start, end));
+    if (hash.length !== 64) {
+      throw new Error('SHA-256 digest length is invalid');
+    }
+
+    self.postMessage({ type: 'complete', hash });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Hashing failed';
+    self.postMessage({ type: 'error', error: message });
   }
-
-  loadNext();
 };

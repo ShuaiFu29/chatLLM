@@ -7,6 +7,7 @@ interface RateLimitOptions {
   max: number;
   keyPrefix: string;
   message?: string;
+  skip?: (req: Parameters<RequestHandler>[0]) => boolean;
 }
 
 interface RateLimitBucket {
@@ -49,6 +50,8 @@ const pruneOldestBuckets = () => {
 
 export const createRateLimit = (options: RateLimitOptions): RequestHandler => {
   return (req, res, next) => {
+    if (options.skip?.(req)) return next();
+
     const now = Date.now();
     if (buckets.size >= MAX_RATE_LIMIT_BUCKETS) pruneExpiredBuckets(now);
 

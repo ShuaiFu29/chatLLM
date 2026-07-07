@@ -31,6 +31,7 @@ const DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
 const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 5 * 60 * 1000;
+const MIN_FILE_QUEUE_INGEST_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_FILE_QUEUE_MAX_ATTEMPTS = 3;
 const DEFAULT_FILE_QUEUE_RETRY_BASE_DELAY_MS = 60000;
 const DEFAULT_FILE_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
@@ -221,6 +222,10 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const maintenanceIntervalMs = getPositiveInteger(env, 'MAINTENANCE_INTERVAL_MS', DEFAULT_MAINTENANCE_INTERVAL_MS, errors);
   const uploadTempMaxAgeMs = getPositiveInteger(env, 'UPLOAD_TEMP_MAX_AGE_MS', DEFAULT_UPLOAD_TEMP_MAX_AGE_MS, errors);
   const shutdownTimeoutMs = getPositiveInteger(env, 'SHUTDOWN_TIMEOUT_MS', DEFAULT_SHUTDOWN_TIMEOUT_MS, errors);
+
+  if (fileQueueIngestTimeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
+    errors.push(`FILE_QUEUE_INGEST_TIMEOUT_MS must be at least ${MIN_FILE_QUEUE_INGEST_TIMEOUT_MS}`);
+  }
 
   if (errors.length > 0) {
     throw new Error(`Server configuration invalid:\n- ${errors.join('\n- ')}`);

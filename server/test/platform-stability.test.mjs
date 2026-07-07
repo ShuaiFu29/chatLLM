@@ -40,7 +40,7 @@ test('server env exposes runtime stability knobs', () => {
     UPLOAD_RATE_LIMIT_MAX: '20',
     FILE_QUEUE_INTERVAL_MS: '3000',
     FILE_QUEUE_CONCURRENCY: '4',
-    FILE_QUEUE_INGEST_TIMEOUT_MS: '45000',
+    FILE_QUEUE_INGEST_TIMEOUT_MS: '120000',
     FILE_QUEUE_MAX_ATTEMPTS: '5',
     FILE_QUEUE_RETRY_BASE_DELAY_MS: '60000',
     FILE_QUEUE_STALE_AFTER_MS: '900000',
@@ -71,7 +71,7 @@ test('server env exposes runtime stability knobs', () => {
   assert.equal(env.UPLOAD_RATE_LIMIT_MAX, 20);
   assert.equal(env.FILE_QUEUE_INTERVAL_MS, 3000);
   assert.equal(env.FILE_QUEUE_CONCURRENCY, 4);
-  assert.equal(env.FILE_QUEUE_INGEST_TIMEOUT_MS, 45000);
+  assert.equal(env.FILE_QUEUE_INGEST_TIMEOUT_MS, 120000);
   assert.equal(env.FILE_QUEUE_MAX_ATTEMPTS, 5);
   assert.equal(env.FILE_QUEUE_RETRY_BASE_DELAY_MS, 60000);
   assert.equal(env.FILE_QUEUE_STALE_AFTER_MS, 900000);

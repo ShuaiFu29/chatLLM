@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import fs from 'fs';
+import { UPLOAD_HASH_ERROR } from './uploadInput';
 
 export interface UploadDigest {
   hash: string;
@@ -41,7 +42,11 @@ export const verifyMergedUploadFile = async (
     ? null
     : Number(expectation.expectedSize);
 
-  if (expectedHash && digest.hash !== expectedHash) {
+  if (!expectedHash || !/^[a-f0-9]{64}$/.test(expectedHash)) {
+    throw new Error(UPLOAD_HASH_ERROR);
+  }
+
+  if (digest.hash !== expectedHash) {
     throw new Error(`Merged upload hash mismatch: expected ${expectedHash}, got ${digest.hash}`);
   }
 

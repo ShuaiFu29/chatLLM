@@ -97,6 +97,7 @@ app.use('/api/upload', createRateLimit({
   windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
   max: serverEnv.UPLOAD_RATE_LIMIT_MAX,
   message: 'Too many upload requests',
+  skip: (req) => req.method === 'GET',
 }), uploadRoutes);
 
 app.use(notFoundMiddleware);

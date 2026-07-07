@@ -12,6 +12,7 @@ const errorBoundarySource = readFileSync(path.join(clientDir, 'src/components/Er
 const protectedRouteSource = readFileSync(path.join(clientDir, 'src/components/ProtectedRoute.tsx'), 'utf8');
 const loginSource = readFileSync(path.join(clientDir, 'src/pages/Login.tsx'), 'utf8');
 const knowledgePageSource = readFileSync(path.join(clientDir, 'src/pages/KnowledgeBase.tsx'), 'utf8');
+const hashWorkerSource = readFileSync(path.join(clientDir, 'src/lib/hashWorker.ts'), 'utf8');
 const profilePageSource = readFileSync(path.join(clientDir, 'src/pages/Profile.tsx'), 'utf8');
 const searchDialogSource = readFileSync(path.join(clientDir, 'src/components/SearchDialog.tsx'), 'utf8');
 const promptTemplatePageSource = readFileSync(path.join(clientDir, 'src/pages/PromptTemplates.tsx'), 'utf8');
@@ -727,6 +728,26 @@ test('knowledge document names omit markdown extensions in visible lists', () =>
   assert.equal(knowledgePageSource.includes('>{file.filename}</span>'), false);
 });
 
+test('knowledge upload worker hashes files with SHA-256 to match server merge integrity checks', () => {
+  assert.match(hashWorkerSource, /Sha256/);
+  assert.match(hashWorkerSource, /file\.slice\(start,\s*end\)\.arrayBuffer\(\)/);
+  assert.match(hashWorkerSource, /hasher\.update\(new Uint8Array\(buffer\)\)/);
+  assert.match(hashWorkerSource, /hash\.length === 64|byteToHex|toString\(16\)/);
+  assert.equal(hashWorkerSource.includes('file.arrayBuffer()'), false);
+  assert.equal(hashWorkerSource.includes('SparkMD5'), false);
+  assert.equal(hashWorkerSource.includes('spark-md5'), false);
+});
+
+test('knowledge upload supports selecting or dropping multiple markdown files sequentially', () => {
+  assert.match(knowledgePageSource, /multiple/);
+  assert.match(knowledgePageSource, /Array\.from\(e\.target\.files/);
+  assert.match(knowledgePageSource, /Array\.from\(e\.dataTransfer\.files/);
+  assert.match(knowledgePageSource, /processFiles/);
+  assert.match(knowledgePageSource, /for \(const file of files\)/);
+  assert.match(knowledgePageSource, /uploadClearTimeout/);
+  assert.match(knowledgePageSource, /prev\?\.name === file\.name && prev\.status === 'error'/);
+});
+
 test('prompt templates use compact modal editing instead of a permanent oversized editor panel', () => {
   assert.match(modalSource, /maxWidth\?:/);
   assert.match(promptTemplatePageSource, /import Modal from '\.\.\/components\/Modal'/);
@@ -882,6 +903,20 @@ test('knowledge graph result limit controls visible node budget with clear copy'
     false,
     'graph should not keep a fixed 16-node cap when the user changes the result count',
   );
+});
+
+test('knowledge graph auto-load waits for the current workspace and ignores stale responses', () => {
+  assert.match(
+    graphExplorerPageSource,
+    /useState<string \| null>\(\(\) => currentProjectSpaceId\)/,
+    'graph page should initialize from the current workspace instead of first querying every workspace',
+  );
+  assert.match(graphExplorerPageSource, /graphRequestSeq/);
+  assert.match(graphExplorerPageSource, /requestId !== graphRequestSeq\.current/);
+  assert.match(graphExplorerPageSource, /selectedProjectSpaceId === null/);
+  assert.match(graphExplorerPageSource, /value=\{selectedProjectSpaceId \?\? ''\}/);
+  assert.match(graphExplorerPageSource, /if \(initialQuery \|\| selectedProjectSpaceId === null\) return/);
+  assert.match(graphExplorerPageSource, /if \(!initialQuery \|\| hasAutoRunFromUrl\.current \|\| selectedProjectSpaceId === null\) return/);
 });
 
 test('RAG evaluation details show readable source names and colored status badges', () => {

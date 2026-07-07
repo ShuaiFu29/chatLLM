@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from graph_store import extract_graph_facts, list_graph, search_graph
+from graph_store import extract_graph_facts, index_graph_chunks, list_graph, search_graph
 
 
 class GraphStoreTests(unittest.TestCase):
@@ -152,6 +152,34 @@ class GraphStoreTests(unittest.TestCase):
         self.assertIn("WITH c, entities, graph_score, collect(distinct", list_statement)
         self.assertIn("ORDER BY graph_score DESC", search_statement)
         self.assertIn("ORDER BY graph_score DESC, c.filename ASC, c.chunk_index ASC", list_statement)
+
+    def test_index_graph_chunks_deduplicates_between_unwind_stages(self):
+        file_data = {
+            "id": "file-1",
+            "user_id": "user-1",
+            "project_space_id": "space-1",
+            "filename": "risk.md",
+        }
+        chunk_rows = [
+            {
+                "id": "chunk-1",
+                "chunk_index": 0,
+                "content": "模型监控依赖灰度拒绝率，法务提示支持贷后动作。",
+            },
+            {
+                "id": "chunk-2",
+                "chunk_index": 1,
+                "content": "G3客群与G2客群冲突，审批策略依赖名单修复。",
+            },
+        ]
+
+        with patch("graph_store.ensure_graph_schema"), patch("graph_store._run_cypher") as run_cypher:
+            index_graph_chunks(file_data, chunk_rows)
+
+        write_statement = run_cypher.call_args.args[0]
+
+        self.assertIn("WITH DISTINCT d\n            UNWIND $entities AS entity", write_statement)
+        self.assertIn("WITH DISTINCT d\n            UNWIND $relationships AS rel", write_statement)
 
 
 if __name__ == "__main__":

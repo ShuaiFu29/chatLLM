@@ -83,6 +83,45 @@ test('rate limiter scopes authenticated users separately before route auth runs'
   assert.equal(second.res.statusCode, 200);
 });
 
+test('rate limiter can skip read-only routes while still limiting mutations', async () => {
+  const limiter = createRateLimit({
+    keyPrefix: `rate-limit-skip-test-${Date.now()}`,
+    windowMs: 60000,
+    max: 1,
+    skip: (req) => req.method === 'GET',
+  });
+
+  const firstRead = await invokeMiddleware(limiter, {
+    method: 'GET',
+    ip: '127.0.0.1',
+    cookies: {},
+  });
+  const secondRead = await invokeMiddleware(limiter, {
+    method: 'GET',
+    ip: '127.0.0.1',
+    cookies: {},
+  });
+  const firstWrite = await invokeMiddleware(limiter, {
+    method: 'POST',
+    ip: '127.0.0.1',
+    cookies: {},
+  });
+  const secondWrite = await invokeMiddleware(limiter, {
+    method: 'POST',
+    ip: '127.0.0.1',
+    cookies: {},
+  });
+
+  assert.equal(firstRead.nextCalled, true);
+  assert.equal(firstRead.res.headers.has('x-ratelimit-limit'), false);
+  assert.equal(secondRead.nextCalled, true);
+  assert.equal(secondRead.res.headers.has('x-ratelimit-limit'), false);
+  assert.equal(firstWrite.nextCalled, true);
+  assert.equal(firstWrite.res.statusCode, 200);
+  assert.equal(secondWrite.nextCalled, false);
+  assert.equal(secondWrite.res.statusCode, 429);
+});
+
 test('rate limiter evicts oldest active buckets when cardinality exceeds cap', async () => {
   const limiter = createRateLimit({
     keyPrefix: `rate-limit-cardinality-test-${Date.now()}`,

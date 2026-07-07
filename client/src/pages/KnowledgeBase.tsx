@@ -36,7 +36,15 @@ export default function KnowledgeBase() {
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const uploadClearTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fetchFilesRef = useRef<() => Promise<void>>(async () => undefined);
+
+  const clearUploadClearTimeout = useCallback(() => {
+    if (uploadClearTimeout.current) {
+      clearTimeout(uploadClearTimeout.current);
+      uploadClearTimeout.current = null;
+    }
+  }, []);
 
   const stopPolling = useCallback(() => {
     if (pollInterval.current) {
@@ -87,8 +95,11 @@ export default function KnowledgeBase() {
     fetchFilesRef.current = fetchFiles;
     void Promise.resolve().then(() => fetchFilesRef.current());
     startPolling();
-    return () => stopPolling();
-  }, [fetchFiles, startPolling, stopPolling]);
+    return () => {
+      stopPolling();
+      clearUploadClearTimeout();
+    };
+  }, [clearUploadClearTimeout, fetchFiles, startPolling, stopPolling]);
 
   const handleDeleteClick = (id: string, filename: string) => {
     setDeleteFileTarget({ id, filename });
@@ -137,11 +148,9 @@ export default function KnowledgeBase() {
     e.preventDefault();
     setIsDragging(false);
 
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      // Create a synthetic event or just call logic directly
-      // Reusing logic from handleFileUpload
-      processFile(file);
+    const files = Array.from(e.dataTransfer.files || []);
+    if (files.length > 0) {
+      await processFiles(files);
     }
   };
 
@@ -150,6 +159,8 @@ export default function KnowledgeBase() {
       showNotification('error', t('knowledge.unsupportedFileType'));
       return;
     }
+
+    clearUploadClearTimeout();
 
     setUploadState({
       name: file.name,
@@ -180,8 +191,19 @@ export default function KnowledgeBase() {
     } catch (error) {
       console.error('Upload failed:', error);
       setUploadState(prev => prev ? { ...prev, status: 'error', message: t('knowledge.uploadFail') } : null);
-      setTimeout(() => setUploadState(null), 5000);
+      uploadClearTimeout.current = setTimeout(() => {
+        setUploadState(prev => (
+          prev?.name === file.name && prev.status === 'error' ? null : prev
+        ));
+        uploadClearTimeout.current = null;
+      }, 5000);
       showNotification('error', t('knowledge.uploadFail'));
+    }
+  };
+
+  const processFiles = async (files: File[]) => {
+    for (const file of files) {
+      await processFile(file);
     }
   };
 
@@ -199,10 +221,10 @@ export default function KnowledgeBase() {
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
     if (fileInputRef.current) fileInputRef.current.value = '';
-    processFile(file);
+    await processFiles(files);
   };
 
   const getStatusIcon = (status: string) => {
@@ -310,6 +332,7 @@ export default function KnowledgeBase() {
           <div className="flex gap-2 w-full md:w-auto">
             <input
               type="file"
+              multiple
               ref={fileInputRef}
               onChange={handleFileUpload}
               className="hidden"

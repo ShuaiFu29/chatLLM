@@ -105,8 +105,7 @@ export default defineConfig({
             'zustand',
             'i18next',
             'react-i18next',
-            'i18next-browser-languagedetector',
-            'spark-md5'
+            'i18next-browser-languagedetector'
           ],
           'vendor-ui': [
             'lucide-react',

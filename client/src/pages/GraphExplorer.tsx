@@ -437,8 +437,9 @@ export default function GraphExplorerPage() {
   const { projectSpaces, currentProjectSpaceId, fetchProjectSpaces } = useProjectSpaceStore();
   const initialQuery = useMemo(() => new URLSearchParams(window.location.search).get('q')?.trim() || '', []);
   const hasAutoRunFromUrl = useRef(false);
+  const graphRequestSeq = useRef(0);
   const [query, setQuery] = useState(initialQuery);
-  const [selectedProjectSpaceId, setSelectedProjectSpaceId] = useState('');
+  const [selectedProjectSpaceId, setSelectedProjectSpaceId] = useState<string | null>(() => currentProjectSpaceId);
   const [limit, setLimit] = useState(12);
   const [results, setResults] = useState<GraphResult[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
@@ -454,12 +455,14 @@ export default function GraphExplorerPage() {
   }, [fetchProjectSpaces]);
 
   useEffect(() => {
-    if (!selectedProjectSpaceId && currentProjectSpaceId) {
+    if (selectedProjectSpaceId === null && currentProjectSpaceId) {
       setSelectedProjectSpaceId(currentProjectSpaceId);
     }
   }, [currentProjectSpaceId, selectedProjectSpaceId]);
 
   const loadGraphOverview = useCallback(async () => {
+    const requestId = graphRequestSeq.current + 1;
+    graphRequestSeq.current = requestId;
     setIsSearching(true);
     setError(null);
 
@@ -468,14 +471,18 @@ export default function GraphExplorerPage() {
         project_space_id: selectedProjectSpaceId || undefined,
         limit,
       });
+      if (requestId !== graphRequestSeq.current) return;
       setResults(data.results || []);
       setActiveQuery('');
       setHasSearched(true);
     } catch (searchError) {
+      if (requestId !== graphRequestSeq.current) return;
       console.error('Failed to load RAG graph overview:', searchError);
       setError(t('graphExplorer.loadFailed'));
     } finally {
-      setIsSearching(false);
+      if (requestId === graphRequestSeq.current) {
+        setIsSearching(false);
+      }
     }
   }, [limit, selectedProjectSpaceId, t]);
 
@@ -486,6 +493,8 @@ export default function GraphExplorerPage() {
       return;
     }
 
+    const requestId = graphRequestSeq.current + 1;
+    graphRequestSeq.current = requestId;
     setIsSearching(true);
     setError(null);
 
@@ -495,28 +504,32 @@ export default function GraphExplorerPage() {
         project_space_id: selectedProjectSpaceId || undefined,
         limit,
       });
+      if (requestId !== graphRequestSeq.current) return;
       setResults(data.results || []);
       setActiveQuery(trimmedQuery);
       setHasSearched(true);
     } catch (searchError) {
+      if (requestId !== graphRequestSeq.current) return;
       console.error('Failed to search RAG graph:', searchError);
       setError(t('graphExplorer.loadFailed'));
     } finally {
-      setIsSearching(false);
+      if (requestId === graphRequestSeq.current) {
+        setIsSearching(false);
+      }
     }
   }, [limit, loadGraphOverview, query, selectedProjectSpaceId, t]);
 
   useEffect(() => {
-    if (!initialQuery || hasAutoRunFromUrl.current) return;
+    if (!initialQuery || hasAutoRunFromUrl.current || selectedProjectSpaceId === null) return;
 
     hasAutoRunFromUrl.current = true;
     void searchGraph(initialQuery);
-  }, [initialQuery, searchGraph]);
+  }, [initialQuery, searchGraph, selectedProjectSpaceId]);
 
   useEffect(() => {
-    if (initialQuery) return;
+    if (initialQuery || selectedProjectSpaceId === null) return;
     void loadGraphOverview();
-  }, [initialQuery, loadGraphOverview]);
+  }, [initialQuery, loadGraphOverview, selectedProjectSpaceId]);
 
   const graphData = useMemo(() => buildGraphViewData(
     results,
@@ -630,7 +643,7 @@ export default function GraphExplorerPage() {
                   {t('usage.workspace')}
                 </span>
                 <SelectField
-                  value={selectedProjectSpaceId}
+                  value={selectedProjectSpaceId ?? ''}
                   onChange={(event) => setSelectedProjectSpaceId(event.target.value)}
                   className="w-full"
                   selectClassName="h-11"

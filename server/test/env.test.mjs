@@ -271,7 +271,7 @@ test('server env exposes configurable RAG ingest timeout for file queue jobs', (
   }, 'serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS');
 
   assert.equal(defaultResult.status, 0, defaultResult.stderr);
-  assert.equal(parseLastJsonLine(defaultResult.stdout), 10000);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), 300000);
 
   const explicitResult = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
@@ -280,11 +280,26 @@ test('server env exposes configurable RAG ingest timeout for file queue jobs', (
     S3_SECRET_KEY: 'minioadmin',
     JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
     DEEPSEEK_API_KEY: 'sk-test',
-    FILE_QUEUE_INGEST_TIMEOUT_MS: '45000',
+    FILE_QUEUE_INGEST_TIMEOUT_MS: '120000',
   }, 'serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS');
 
   assert.equal(explicitResult.status, 0, explicitResult.stderr);
-  assert.equal(parseLastJsonLine(explicitResult.stdout), 45000);
+  assert.equal(parseLastJsonLine(explicitResult.stdout), 120000);
+});
+
+test('server env rejects dangerously low RAG ingest timeout values', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    FILE_QUEUE_INGEST_TIMEOUT_MS: '10000',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /FILE_QUEUE_INGEST_TIMEOUT_MS must be at least 60000/);
 });
 
 test('server env exposes configurable RAG cleanup timeout for destructive cleanup calls', () => {

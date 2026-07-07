@@ -148,6 +148,34 @@ test('validateProjectEnvMaps accepts valid server and RAG env maps', () => {
   assert.deepEqual(issues, []);
 });
 
+test('validateProjectEnvMaps rejects dangerously low file queue ingest timeouts', () => {
+  const issues = validateProjectEnvMaps({
+    'server/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      QWEN_API_KEY: 'sk-test',
+      FILE_QUEUE_INGEST_TIMEOUT_MS: '10000',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_PROVIDER: 'local',
+      EMBEDDING_DIMENSION: '1024',
+    },
+  });
+
+  assert.deepEqual(issues, [
+    'server/.env FILE_QUEUE_INGEST_TIMEOUT_MS should be at least 60000 for synchronous RAG ingestion',
+  ]);
+});
+
 test('validateProjectEnvMaps accepts Qwen as the only configured chat provider', () => {
   const issues = validateProjectEnvMaps({
     'server/.env': {

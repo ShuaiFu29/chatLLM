@@ -17,6 +17,8 @@ const serverRules = {
   atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY']],
 };
 
+const MIN_FILE_QUEUE_INGEST_TIMEOUT_MS = 60000;
+
 const ragRules = {
   required: [
     'DATABASE_URL',
@@ -95,7 +97,22 @@ export function validateProjectEnvMaps(envMaps) {
     ...validateEnvMap('server/.env', serverEnv, serverRules),
     ...validateServerModelConfig(serverEnv),
     ...validateServerBackendUrl(serverEnv),
+    ...validateServerQueueConfig(serverEnv),
     ...validateRagEnvMap(ragEnv),
+  ];
+}
+
+function validateServerQueueConfig(env) {
+  const rawTimeout = env.FILE_QUEUE_INGEST_TIMEOUT_MS?.trim();
+  if (!rawTimeout) return [];
+
+  const timeoutMs = Number.parseInt(rawTimeout, 10);
+  if (Number.isInteger(timeoutMs) && timeoutMs >= MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
+    return [];
+  }
+
+  return [
+    `server/.env FILE_QUEUE_INGEST_TIMEOUT_MS should be at least ${MIN_FILE_QUEUE_INGEST_TIMEOUT_MS} for synchronous RAG ingestion`,
   ];
 }
 

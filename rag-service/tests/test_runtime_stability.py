@@ -308,6 +308,42 @@ print("ok")
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn("ok", result.stdout)
 
+    def test_vector_store_readiness_validates_existing_collection_schema(self):
+        script = """
+from unittest.mock import patch
+import vector_store
+
+invalid_description = {
+    "fields": [
+        {"name": "chunk_id"},
+        {"name": "file_id"},
+        {"name": "user_id"},
+        {"name": "embedding", "params": {"dim": "1024"}},
+    ]
+}
+
+class FakeClient:
+    def has_collection(self, name):
+        return True
+
+    def describe_collection(self, collection_name):
+        return invalid_description
+
+with patch("vector_store.get_client", return_value=FakeClient()):
+    try:
+        vector_store.check_vector_store_ready()
+    except RuntimeError as error:
+        assert "project_space_id" in str(error)
+    else:
+        raise SystemExit("readiness accepted invalid Milvus schema")
+
+print("ok")
+"""
+        result = run_main_script(valid_env(), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -112,8 +112,7 @@ def ensure_collection():
 
 
 def check_vector_store_ready() -> bool:
-    client = get_client()
-    client.has_collection(settings.milvus_collection)
+    ensure_collection()
     return True
 
 

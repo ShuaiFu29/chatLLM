@@ -279,18 +279,18 @@ def index_graph_chunks(file_data: dict, chunk_rows: list[dict]):
               MERGE (c:Chunk {chunk_id: chunk.chunk_id})
               SET c += chunk
               MERGE (d)-[:HAS_CHUNK]->(c)
-            WITH d
+            WITH DISTINCT d
             UNWIND $entities AS entity
               MERGE (e:Entity {name: entity.name, user_id: entity.user_id, project_space_id: entity.project_space_id})
               SET e += entity
-            WITH d
+            WITH DISTINCT d
             UNWIND $relationships AS rel
               OPTIONAL MATCH (c:Chunk {chunk_id: rel.from})
               OPTIONAL MATCH (e:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})
               FOREACH (_ IN CASE WHEN rel.type = 'MENTIONS' AND c IS NOT NULL AND e IS NOT NULL THEN [1] ELSE [] END |
                 MERGE (c)-[:MENTIONS]->(e)
               )
-            WITH d
+            WITH DISTINCT d
             UNWIND $relationships AS rel
               OPTIONAL MATCH (fromEntity:Entity {name: rel.from, user_id: $document.user_id, project_space_id: $document.project_space_id})
               OPTIONAL MATCH (toEntity:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})

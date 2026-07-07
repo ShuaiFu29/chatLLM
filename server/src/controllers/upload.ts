@@ -30,7 +30,11 @@ import { cleanupRagFileVectors } from '../lib/ragClient';
 import { verifyMergedUploadFile } from '../lib/uploadIntegrity';
 import {
   SUPPORTED_DOCUMENT_ERROR,
+  UPLOAD_HASH_ERROR,
+  UPLOAD_SIZE_ERROR,
   getSupportedDocumentContentType,
+  parseUploadFileHash,
+  parseUploadFileSize,
   parseUploadChunkIndex,
   parseUploadTotalChunks,
 } from '../lib/uploadInput';
@@ -65,6 +69,23 @@ const ensureSupportedDocumentFilename = (filename?: string) => {
 };
 
 const isUnsupportedDocumentMessage = (message: string) => message.includes(SUPPORTED_DOCUMENT_ERROR);
+const isUploadInputMessage = (message: string) => (
+  isUnsupportedDocumentMessage(message)
+  || message.includes(UPLOAD_HASH_ERROR)
+  || message.includes(UPLOAD_SIZE_ERROR)
+);
+
+const requireUploadHash = (value: unknown) => {
+  const hash = parseUploadFileHash(value);
+  if (!hash) throw new Error(UPLOAD_HASH_ERROR);
+  return hash;
+};
+
+const requireUploadSize = (value: unknown) => {
+  const size = parseUploadFileSize(value);
+  if (size === null) throw new Error(UPLOAD_SIZE_ERROR);
+  return size;
+};
 
 const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
@@ -87,15 +108,15 @@ export const checkFile = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
   const { hash, filename } = req.body;
-  if (!hash) return res.status(400).json({ error: 'Hash is required' });
 
   try {
+    const normalizedHash = requireUploadHash(hash);
     ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
-    const existingFile = await findCompletedFileByUserAndHash(req.user.id, hash, projectSpaceId);
+    const existingFile = await findCompletedFileByUserAndHash(req.user.id, normalizedHash, projectSpaceId);
 
     if (existingFile) {
       return res.json({
@@ -106,7 +127,7 @@ export const checkFile = async (req: Request, res: Response) => {
       });
     }
 
-    const pendingFile = await findUploadingFileByUserAndHash(req.user.id, hash, projectSpaceId);
+    const pendingFile = await findUploadingFileByUserAndHash(req.user.id, normalizedHash, projectSpaceId);
     const fileId = pendingFile?.id;
     let uploadedChunks: number[] = [];
 
@@ -127,7 +148,7 @@ export const checkFile = async (req: Request, res: Response) => {
     });
   } catch (err) {
     const message = stringifyError(err);
-    const status = isUnsupportedDocumentMessage(message) ? 400 : 500;
+    const status = isUploadInputMessage(message) ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Check failed', details: message });
   }
 };
@@ -137,6 +158,8 @@ export const initUpload = async (req: Request, res: Response) => {
   const { filename, hash, size, type } = req.body;
 
   try {
+    const normalizedHash = requireUploadHash(hash);
+    const normalizedSize = requireUploadSize(size);
     const contentType = ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
@@ -146,15 +169,15 @@ export const initUpload = async (req: Request, res: Response) => {
       userId: req.user.id,
       projectSpaceId,
       filename,
-      hash,
-      size,
+      hash: normalizedHash,
+      size: normalizedSize,
       type: getSupportedDocumentContentType(filename) || type || contentType,
     });
 
     res.json({ uploadId: file.id, projectSpaceId });
   } catch (err) {
     const message = stringifyError(err);
-    const status = isUnsupportedDocumentMessage(message) ? 400 : 500;
+    const status = isUploadInputMessage(message) ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Init failed', details: message });
   }
 };
@@ -265,14 +288,19 @@ export const mergeChunks = async (req: Request, res: Response) => {
     res.json({ success: true, message: 'File merged and queued for processing' });
   } catch (err) {
     const message = stringifyError(err);
-    const isIntegrityFailure = /hash mismatch|size mismatch/i.test(message);
+    const isIntegrityFailure = /hash mismatch|size mismatch|SHA-256 file hash/i.test(message);
     if (isIntegrityFailure) {
       await Promise.all([
         chunkDirToCleanup ? fs.remove(chunkDirToCleanup).catch(() => undefined) : Promise.resolve(),
         mergedFilePathToCleanup ? fs.remove(mergedFilePathToCleanup).catch(() => undefined) : Promise.resolve(),
       ]);
+      await updateFile(uploadId, {
+        status: 'failed',
+        progress: 0,
+        error_message: message,
+      }).catch(() => undefined);
     }
-    const status = isUnsupportedDocumentMessage(message) || isIntegrityFailure ? 400 : 500;
+    const status = isUploadInputMessage(message) || isIntegrityFailure ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Merge failed', details: message });
   }
 };
