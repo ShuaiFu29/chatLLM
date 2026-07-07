@@ -4,6 +4,7 @@ import type { Message } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
+import { getAvatarUrl } from '../lib/avatar';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
@@ -56,12 +57,6 @@ const ChatMessage = memo(({
     return t('chat.ragEvidenceWeak');
   };
 
-  const formatAvatarUrl = (url?: string) => {
-    if (!url) return undefined;
-    if (url.startsWith('/api/')) return url;
-    return url.includes('?') ? `${url}&s=64` : `${url}?s=64`;
-  };
-
   return (
     <>
     <div className={`flex gap-2 md:gap-4 group ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -81,7 +76,7 @@ const ChatMessage = memo(({
           ) : (
             <>
               {/* RAG Status / Thinking Indicator */}
-              {isSending && isLast && !msg.content && enableRag !== false && (
+              {isSending && isLast && !msg.content && enableRag !== false && !msg.ragSkipped && (
                 <div className="flex items-center gap-2 text-text-muted mb-2 animate-pulse">
                   <Search className="w-4 h-4" />
                   <span className="text-sm">{t('chat.searchingWorkspaceDocuments')}</span>
@@ -283,11 +278,11 @@ const ChatMessage = memo(({
 
       {msg.role === 'user' && (
         <img
-          src={formatAvatarUrl(userAvatar)}
+          src={getAvatarUrl(userAvatar, userName, 64)}
           alt="User"
           className="w-8 h-8 rounded-full bg-bg-surface shrink-0 order-3 object-cover"
           loading="lazy"
-          onError={(e) => (e.currentTarget.src = `https://ui-avatars.com/api/?name=${userName || 'User'}`)}
+          onError={(e) => (e.currentTarget.src = getAvatarUrl(null, userName, 64))}
         />
       )}
     </div>

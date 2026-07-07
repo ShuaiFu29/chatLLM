@@ -23,6 +23,7 @@ interface ChatCompletionCreateParams {
   temperature?: number;
   max_tokens?: number;
   response_format?: unknown;
+  signal?: AbortSignal;
 }
 
 type StreamingChatCompletionCreateParams = ChatCompletionCreateParams & { stream: true };
@@ -160,11 +161,12 @@ class CompatibleLlmClient {
     };
   }
 
-  private async postJson<T>(path: string, payload: unknown): Promise<T> {
+  private async postJson<T>(path: string, payload: unknown, signal?: AbortSignal): Promise<T> {
     const response = await fetch(`${this.baseURL}${path}`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(payload),
+      signal,
     });
 
     if (!response.ok) {
@@ -180,7 +182,7 @@ class CompatibleLlmClient {
     params: ChatCompletionCreateParams
   ): Promise<ChatCompletionResponse | AsyncIterable<ChatCompletionChunk>> {
     if (!params.stream) {
-      return this.postJson<ChatCompletionResponse>('/chat/completions', params);
+      return this.postJson<ChatCompletionResponse>('/chat/completions', params, params.signal);
     }
 
     return this.streamChatCompletion(params);
@@ -195,6 +197,7 @@ class CompatibleLlmClient {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(params),
+      signal: params.signal,
     });
 
     if (!response.ok) {

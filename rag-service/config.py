@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 
 
-@dataclass(frozen=True)
+@dataclass
 class Settings:
     port: int
     database_url: str
@@ -52,6 +52,9 @@ class Settings:
     rag_judge_timeout_ms: int
     rag_readiness_timeout_ms: int
     rag_ingest_concurrency: int
+    rag_service_token: str
+    rag_db_pool_max: int
+    rag_db_pool_timeout_ms: int
     rag_allowed_origins: list[str]
 
 
@@ -155,6 +158,9 @@ def load_settings() -> Settings:
         rag_judge_timeout_ms=_positive_int("RAG_JUDGE_TIMEOUT_MS", "10000"),
         rag_readiness_timeout_ms=_positive_int("RAG_READINESS_TIMEOUT_MS", "2000"),
         rag_ingest_concurrency=_positive_int("RAG_INGEST_CONCURRENCY", "2"),
+        rag_service_token=os.environ.get("RAG_SERVICE_TOKEN", "").strip(),
+        rag_db_pool_max=_positive_int("RAG_DB_POOL_MAX", "10"),
+        rag_db_pool_timeout_ms=_positive_int("RAG_DB_POOL_TIMEOUT_MS", "5000"),
         rag_allowed_origins=_string_list(
             "RAG_ALLOWED_ORIGINS",
             ["http://localhost:3000", "http://localhost:5173"],

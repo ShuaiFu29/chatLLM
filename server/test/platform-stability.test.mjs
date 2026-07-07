@@ -49,6 +49,8 @@ test('server env exposes runtime stability knobs', () => {
     RAG_CLEANUP_TIMEOUT_MS: '30000',
     RAG_CIRCUIT_FAILURE_THRESHOLD: '4',
     RAG_CIRCUIT_RESET_MS: '45000',
+    RAG_SERVICE_TOKEN: 'internal-rag-token',
+    METRICS_TOKEN: 'internal-metrics-token',
     RAG_EVAL_RATE_LIMIT_MAX: '12',
     RAG_EVAL_STALE_RUN_MS: '900000',
     CHAT_STREAM_MAX_CONCURRENT: '25',
@@ -78,6 +80,8 @@ test('server env exposes runtime stability knobs', () => {
   assert.equal(env.RAG_CLEANUP_TIMEOUT_MS, 30000);
   assert.equal(env.RAG_CIRCUIT_FAILURE_THRESHOLD, 4);
   assert.equal(env.RAG_CIRCUIT_RESET_MS, 45000);
+  assert.equal(env.RAG_SERVICE_TOKEN, 'internal-rag-token');
+  assert.equal(env.METRICS_TOKEN, 'internal-metrics-token');
   assert.equal(env.RAG_EVAL_RATE_LIMIT_MAX, 12);
   assert.equal(env.RAG_EVAL_STALE_RUN_MS, 900000);
   assert.equal(env.CHAT_STREAM_MAX_CONCURRENT, 25);
@@ -200,7 +204,8 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
   const metricsSource = readOptionalSource('src/lib/metrics.ts');
 
   assert.match(indexSource, /metricsHandler/);
-  assert.match(indexSource, /app\.get\('\/metrics', metricsHandler\)/);
+  assert.match(indexSource, /metricsAuthMiddleware/);
+  assert.match(indexSource, /app\.get\('\/metrics', metricsAuthMiddleware, metricsHandler\)/);
   assert.match(requestContextSource, /recordHttpRequestStart/);
   assert.match(requestContextSource, /recordHttpRequestComplete/);
   assert.match(requestContextSource, /res\.on\('finish'/);
@@ -249,6 +254,19 @@ test('chat streaming is protected by explicit concurrency limits', () => {
   assert.match(chatSource, /chatSlot\.release\(failed\)/);
 });
 
+test('chat streaming aborts upstream model requests when the client disconnects', () => {
+  const chatSource = readSource('src/controllers/chat.ts');
+  const providerSource = readSource('src/lib/llmProviders.ts');
+
+  assert.match(chatSource, /new AbortController\(\)/);
+  assert.match(chatSource, /req\.on\('close'/);
+  assert.match(chatSource, /streamAbortController\.abort\(\)/);
+  assert.match(chatSource, /signal:\s*streamAbortController\.signal/);
+  assert.match(chatSource, /res\.destroyed/);
+  assert.match(providerSource, /signal\?:\s*AbortSignal/);
+  assert.match(providerSource, /signal:\s*params\.signal/);
+});
+
 test('RAG retrieval uses a circuit-breaker client instead of inline axios calls', () => {
   const chatSource = readSource('src/controllers/chat.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
@@ -261,6 +279,18 @@ test('RAG retrieval uses a circuit-breaker client instead of inline axios calls'
   assert.match(ragClientSource, /RAG_CIRCUIT_RESET_MS/);
   assert.match(ragClientSource, /recordRagRetrieve/);
   assert.match(ragClientSource, /recordRagCircuitOpen/);
+});
+
+test('server protects internal RAG calls with a shared service token when configured', () => {
+  const envSource = readSource('src/lib/env.ts');
+  const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
+  const fileQueueSource = readSource('src/services/fileQueue.ts');
+
+  assert.match(envSource, /RAG_SERVICE_TOKEN/);
+  assert.match(ragClientSource, /buildRagServiceHeaders/);
+  assert.match(ragClientSource, /X-ChatLLM-RAG-Token/);
+  assert.match(ragClientSource, /headers:\s*buildRagServiceHeaders\(\)/);
+  assert.match(fileQueueSource, /buildRagServiceHeaders/);
 });
 
 test('RAG evaluation uses the shared circuit breaker and metrics', () => {
@@ -300,6 +330,26 @@ test('RAG cleanup uses the shared client and configurable timeout', () => {
   assert.match(authSource, /cleanupRagFileVectors/);
   assert.match(uploadSource, /cleanupRagFileVectors/);
   assert.match(projectSpacesSource, /cleanupRagFileVectors/);
+});
+
+test('account deletion fails visibly instead of silently orphaning external RAG indexes', () => {
+  const authSource = readSource('src/controllers/auth.ts');
+
+  assert.doesNotMatch(authSource, /Promise\.allSettled\(files\.map/);
+  assert.match(authSource, /cleanupUserExternalArtifacts/);
+  assert.match(authSource, /Failed to cleanup external artifacts/);
+});
+
+test('upload merge verifies server-side hash and final file size before ingestion', () => {
+  const uploadSource = readSource('src/controllers/upload.ts');
+  const integritySource = readOptionalSource('src/lib/uploadIntegrity.ts');
+
+  assert.match(integritySource, /computeFileSha256/);
+  assert.match(integritySource, /verifyMergedUploadFile/);
+  assert.match(integritySource, /createHash\('sha256'\)/);
+  assert.match(uploadSource, /verifyMergedUploadFile/);
+  assert.match(uploadSource, /hash mismatch/i);
+  assert.match(uploadSource, /size mismatch/i);
 });
 
 test('embedding client debug logging is opt-in rather than unconditional', () => {

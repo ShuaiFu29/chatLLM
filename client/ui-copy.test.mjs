@@ -237,7 +237,8 @@ test('visible dropdowns use shared SelectField with an app-native chevron', () =
 test('user avatar images use a non-empty fallback src', () => {
   assert.ok(existsSync(avatarUtilsPath), 'avatar URL helper should exist');
   assert.match(avatarUtilsSource, /getAvatarUrl/);
-  assert.match(avatarUtilsSource, /ui-avatars\.com/);
+  assert.match(avatarUtilsSource, /data:image\/svg\+xml/);
+  assert.equal(avatarUtilsSource.includes('ui-avatars.com'), false);
   assert.match(mainLayoutSource, /getAvatarUrl\(/);
   assert.match(profilePageSource, /getAvatarUrl\(/);
   assert.equal(mainLayoutSource.includes('src={user?.avatar_url}'), false);
@@ -616,6 +617,7 @@ test('chat runtime status copy is localized instead of hardcoded', () => {
   const chatMessageSource = readFileSync(path.join(clientDir, 'src/components/ChatMessage.tsx'), 'utf8');
 
   assert.match(chatMessageSource, /chat\.searchingWorkspaceDocuments/);
+  assert.match(chatMessageSource, /!msg\.ragSkipped/);
   assert.match(chatMessageSource, /chat\.loadingContent/);
   assert.match(chatMessageSource, /chat\.ragRetrievalFailed/);
   assert.match(chatInputSource, /chat\.sendMessage/);
@@ -646,6 +648,7 @@ test('chat runtime status copy is localized instead of hardcoded', () => {
 test('chat store optimistic placeholders are localized', () => {
   assert.match(chatStoreSource, /i18n\.t\('sidebar\.newChat'\)/);
   assert.match(chatStoreSource, /i18n\.t\('common\.loading'\)/);
+  assert.match(chatStoreSource, /ragSkipped/);
   assert.equal(chatStoreSource.includes("title: title || 'New Chat'"), false);
   assert.equal(chatStoreSource.includes("content: 'Thinking...'"), false);
 });
@@ -902,6 +905,8 @@ test('RAG evaluation details show readable source names and colored status badge
 test('markdown image references show a localized fallback when the uploaded markdown did not include image assets', () => {
   assert.match(markdownRendererSource, /MarkdownImage/);
   assert.match(markdownRendererSource, /isRemoteImageSource/);
+  assert.match(markdownRendererSource, /isRemoteImageSource\(src\)/);
+  assert.match(markdownRendererSource, /remote images are not loaded directly/i);
   assert.match(markdownRendererSource, /onError=\{\(\) => setFailedSource\(src \|\| ''\)\}/);
   assert.match(markdownRendererSource, /knowledge\.imageUnavailable/);
   assert.match(markdownRendererSource, /knowledge\.imageLocalUnavailableHint/);

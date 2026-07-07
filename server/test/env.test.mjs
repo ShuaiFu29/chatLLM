@@ -115,6 +115,43 @@ test('server env loads valid required values', () => {
   assert.match(result.stdout, /postgres:\/\/chatllm:chatllm@localhost:5432\/chatllm/);
 });
 
+test('server env exposes internal RAG and metrics tokens without requiring them in local development', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_SERVICE_TOKEN: 'rag-token',
+    METRICS_TOKEN: 'metrics-token',
+  }, '({ rag: serverEnv.RAG_SERVICE_TOKEN, metrics: serverEnv.METRICS_TOKEN })');
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(parseLastJsonLine(result.stdout), {
+    rag: 'rag-token',
+    metrics: 'metrics-token',
+  });
+});
+
+test('server env requires internal service tokens in production', () => {
+  const result = importServerEnv({
+    NODE_ENV: 'production',
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_SERVICE_TOKEN: '',
+    METRICS_TOKEN: '',
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /RAG_SERVICE_TOKEN is required in production/);
+  assert.match(result.stderr, /METRICS_TOKEN is required in production/);
+});
+
 test('server env defaults to port 3000 and matching backend URL', () => {
   const result = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',

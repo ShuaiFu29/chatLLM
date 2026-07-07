@@ -5,6 +5,7 @@ export interface RagDocument {
     filename?: string;
     file_id?: string;
     chunk_index?: number;
+    retrieval_mode?: string;
   };
   similarity?: number;
   agentic_score?: number;
@@ -59,12 +60,14 @@ const normalizeSnippet = (content = '') => {
 };
 
 export const buildChatSources = (documents: RagDocument[]): ChatSource[] => {
-  return documents.map((doc) => ({
-    chunk_id: doc.id,
-    file_id: doc.metadata?.file_id,
-    filename: doc.metadata?.filename || 'Unknown source',
-    chunk_index: doc.metadata?.chunk_index,
-    similarity: typeof doc.similarity === 'number' ? doc.similarity : 0,
-    content: normalizeSnippet(doc.content),
-  }));
+  return documents
+    .filter((doc) => doc.metadata?.retrieval_mode !== 'metadata_inventory')
+    .map((doc) => ({
+      chunk_id: doc.id,
+      file_id: doc.metadata?.file_id,
+      filename: doc.metadata?.filename || 'Unknown source',
+      chunk_index: doc.metadata?.chunk_index,
+      similarity: typeof doc.similarity === 'number' ? doc.similarity : 0,
+      content: normalizeSnippet(doc.content),
+    }));
 };

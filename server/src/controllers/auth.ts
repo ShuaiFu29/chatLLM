@@ -262,6 +262,26 @@ export const updateProfile = async (req: Request, res: Response) => {
   res.json({ user });
 };
 
+export const cleanupUserExternalArtifacts = async (
+  files: Array<{ id: string; object_key?: string | null }>,
+  avatarObjectKey?: string | null
+) => {
+  try {
+    for (const file of files) {
+      await cleanupRagFileVectors(file.id);
+      if (file.object_key) {
+        await deleteObject(file.object_key);
+      }
+    }
+
+    if (avatarObjectKey) {
+      await deleteObject(avatarObjectKey);
+    }
+  } catch (error) {
+    throw new Error(`Failed to cleanup external artifacts: ${stringifyError(error)}`);
+  }
+};
+
 export const deleteAccount = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -270,18 +290,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
     const user = await findUserById(userId);
     const files = await listFilesForUserCleanup(userId);
 
-    await Promise.allSettled(files.map(async (file) => {
-      await cleanupRagFileVectors(file.id).catch((error) => {
-        console.warn(`[Auth] Failed to cleanup vectors for file ${file.id}:`, stringifyError(error));
-      });
-      await deleteObject(file.object_key);
-    }));
-
-    if (user?.avatar_object_key) {
-      await deleteObject(user.avatar_object_key).catch((error) => {
-        console.warn('[Auth] Failed to delete avatar object:', stringifyError(error));
-      });
-    }
+    await cleanupUserExternalArtifacts(files, user?.avatar_object_key);
 
     await deleteSessionsByUser(userId);
     await deleteUser(userId);

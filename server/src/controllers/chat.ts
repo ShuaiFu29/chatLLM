@@ -11,6 +11,7 @@ import { normalizeMessagePageQuery } from '../lib/messagePagination';
 import { normalizeSearchQuery, readSearchFilters } from '../lib/searchInput';
 import { tryAcquireChatStreamSlot } from '../lib/concurrencyGate';
 import { AgenticRagResponse, retrieveAgenticRagDocuments } from '../lib/ragClient';
+import { shouldUseRagForMessage } from '../lib/ragTrigger';
 import {
   compareConversationsForUser,
   createConversationForUser,
@@ -311,6 +312,17 @@ export const sendMessage = async (req: Request, res: Response) => {
 
   let streamStarted = false;
   let failed = false;
+  const streamAbortController = new AbortController();
+  const abortUpstreamStream = () => {
+    if (!res.writableEnded) {
+      streamAbortController.abort();
+    }
+  };
+
+  req.on('close', () => {
+    if (streamStarted) abortUpstreamStream();
+  });
+  res.on('close', abortUpstreamStream);
 
   try {
     const model = conversation.model || getDefaultChatModel();
@@ -337,6 +349,7 @@ export const sendMessage = async (req: Request, res: Response) => {
       : 0.7;
     const systemPrompt = conversation.system_prompt || 'You are a helpful AI assistant.';
     const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
+    const shouldRunRag = enableRag && shouldUseRagForMessage(content);
 
     let contextText = '';
     let assistantSources: ChatSource[] = [];
@@ -345,7 +358,11 @@ export const sendMessage = async (req: Request, res: Response) => {
     let insufficientEvidence = false;
     let answerGuidance = '';
 
-    if (enableRag) {
+    if (enableRag && !shouldRunRag) {
+      res.write(`data: ${JSON.stringify({ ragSkipped: true })}\n\n`);
+    }
+
+    if (shouldRunRag) {
       try {
         agenticRagRun = await retrieveAgenticRagDocuments({
           query: content,
@@ -424,6 +441,7 @@ ${originalContent}`;
       ],
       stream: true,
       temperature,
+      signal: streamAbortController.signal,
     });
 
     let fullContent = '';
@@ -431,6 +449,7 @@ ${originalContent}`;
     res.write(`data: ${JSON.stringify({ userMessageId: userMessage.id })}\n\n`);
 
     for await (const chunk of stream) {
+      if (res.destroyed) break;
       const delta = chunk.choices[0]?.delta?.content || '';
       if (delta) {
         fullContent += delta;
@@ -463,7 +482,11 @@ ${originalContent}`;
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (error) {
-    failed = true;
+    failed = !streamAbortController.signal.aborted;
+    if (streamAbortController.signal.aborted) {
+      if (!res.writableEnded) res.end();
+      return;
+    }
     console.error('[Chat] Failed to generate response:', error);
     if (streamStarted) {
       res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);

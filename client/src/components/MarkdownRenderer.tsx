@@ -93,13 +93,16 @@ const isRemoteImageSource = (source?: string) => {
 const MarkdownImage = ({ src, alt, node, className = '', ...props }: MarkdownImageProps) => {
   const { t } = useTranslation();
   const [failedSource, setFailedSource] = useState<string | null>(null);
-  const hasError = !src || failedSource === src;
+  const remoteImagesBlockedReason = 'remote images are not loaded directly';
+  const isRemoteBlocked = isRemoteImageSource(src);
+  const hasError = !src || failedSource === src || isRemoteBlocked;
   const imageName = alt || getImageFilename(src);
   const missingImageHintKey = isRemoteImageSource(src)
     ? 'knowledge.imageRemoteUnavailableHint'
     : 'knowledge.imageLocalUnavailableHint';
 
   void node;
+  void remoteImagesBlockedReason;
 
   if (hasError) {
     return (

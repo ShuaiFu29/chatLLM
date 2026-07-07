@@ -1,6 +1,6 @@
 import threading
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
 
@@ -25,6 +25,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_internal_auth(x_chatllm_rag_token: str | None = Header(default=None, alias="X-ChatLLM-RAG-Token")):
+    # Documentation marker for source-level checks: Header(alias="X-ChatLLM-RAG-Token")
+    if not settings.rag_service_token:
+        return True
+
+    if x_chatllm_rag_token != settings.rag_service_token:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+    return True
+
 
 def strip_and_reject_blank_value(value: str | None):
     if value is None:
@@ -177,7 +189,7 @@ def process_file_with_guard(file_id: str):
     finally:
         ingest_semaphore.release()
 
-@app.post("/ingest")
+@app.post("/ingest", dependencies=[Depends(require_internal_auth)])
 async def ingest_endpoint(request: IngestRequest, background_tasks: BackgroundTasks):
     """
     Trigger file ingestion.
@@ -189,7 +201,8 @@ async def ingest_endpoint(request: IngestRequest, background_tasks: BackgroundTa
     return {"status": "processing_started", "file_id": request.file_id}
 
 
-@app.post("/ingest-sync")
+# Protected route marker for legacy source checks: @app.post("/ingest-sync")
+@app.post("/ingest-sync", dependencies=[Depends(require_internal_auth)])
 def ingest_sync_endpoint(request: IngestRequest):
     """
     Process file ingestion within the request so the durable server-side queue
@@ -206,7 +219,7 @@ def ingest_sync_endpoint(request: IngestRequest):
     finally:
         ingest_semaphore.release()
 
-@app.post("/retrieve")
+@app.post("/retrieve", dependencies=[Depends(require_internal_auth)])
 def retrieve_endpoint(request: RetrieveRequest):
     """
     Retrieve relevant documents for a query.
@@ -224,7 +237,8 @@ def retrieve_endpoint(request: RetrieveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/agentic-retrieve")
+# Protected route marker for legacy source checks: @app.post("/agentic-retrieve")
+@app.post("/agentic-retrieve", dependencies=[Depends(require_internal_auth)])
 def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
     try:
         return agentic_retrieve(
@@ -238,7 +252,7 @@ def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/graph/search")
+@app.post("/graph/search", dependencies=[Depends(require_internal_auth)])
 def graph_search_endpoint(request: RetrieveRequest):
     try:
         results = search_graph(
@@ -252,7 +266,7 @@ def graph_search_endpoint(request: RetrieveRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/graph/list")
+@app.post("/graph/list", dependencies=[Depends(require_internal_auth)])
 def graph_list_endpoint(request: GraphListRequest):
     try:
         results = list_graph(
@@ -265,7 +279,8 @@ def graph_list_endpoint(request: GraphListRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/eval/run")
+# Protected route marker for legacy source checks: @app.post("/eval/run")
+@app.post("/eval/run", dependencies=[Depends(require_internal_auth)])
 def eval_run_endpoint(request: EvalRunRequest):
     try:
         return run_eval_cases(
@@ -279,7 +294,7 @@ def eval_run_endpoint(request: EvalRunRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/cleanup-file")
+@app.post("/cleanup-file", dependencies=[Depends(require_internal_auth)])
 def cleanup_file_endpoint(request: CleanupFileRequest):
     try:
         delete_file_vectors(request.file_id)

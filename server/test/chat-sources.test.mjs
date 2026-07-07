@@ -49,3 +49,40 @@ test('buildChatSources truncates long citation snippets', () => {
   assert.equal(source.content.length, 503);
   assert.equal(source.content.endsWith('...'), true);
 });
+
+test('buildChatSources does not expose metadata inventory rows as citations', () => {
+  const sources = buildChatSources([
+    {
+      id: 'file:file-1',
+      content: '知识库文档名称: policy.md\n文件状态: completed',
+      metadata: {
+        filename: 'policy.md',
+        file_id: 'file-1',
+        chunk_index: 0,
+        retrieval_mode: 'metadata_inventory',
+      },
+      similarity: 1,
+    },
+    {
+      id: 'chunk-1',
+      content: 'This retrieved paragraph can support a grounded answer.',
+      metadata: {
+        filename: 'grounded.md',
+        file_id: 'file-2',
+        chunk_index: 2,
+      },
+      similarity: 0.73,
+    },
+  ]);
+
+  assert.deepEqual(sources, [
+    {
+      chunk_id: 'chunk-1',
+      file_id: 'file-2',
+      filename: 'grounded.md',
+      chunk_index: 2,
+      similarity: 0.73,
+      content: 'This retrieved paragraph can support a grounded answer.',
+    },
+  ]);
+});

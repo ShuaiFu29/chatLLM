@@ -35,6 +35,25 @@ def _request(method: str, path: str, body: dict | str | None = None) -> dict:
         return json.loads(raw) if raw else {}
 
 
+def _raise_for_bulk_errors(response: dict):
+    if not response.get("errors"):
+        return
+
+    failures = []
+    for item in response.get("items", [])[:5]:
+        action = next(iter(item.values()), {})
+        error = action.get("error")
+        if not error:
+            continue
+        chunk_id = action.get("_id", "unknown")
+        error_type = error.get("type", "unknown_error") if isinstance(error, dict) else "unknown_error"
+        reason = error.get("reason", "") if isinstance(error, dict) else str(error)
+        failures.append(f"{chunk_id}: {error_type} {reason}".strip())
+
+    detail = "; ".join(failures) or "unknown bulk indexing error"
+    raise RuntimeError(f"Elasticsearch bulk indexing failed: {detail}")
+
+
 def check_keyword_store_ready() -> bool:
     if not settings.elasticsearch_enabled:
         return True
@@ -107,7 +126,8 @@ def index_chunks(rows: list[dict]):
             }, ensure_ascii=False))
 
         payload = "\n".join(lines) + "\n"
-        _request("POST", bulk_path, payload)
+        response = _request("POST", bulk_path, payload)
+        _raise_for_bulk_errors(response)
 
 
 def delete_file_keywords(file_id: str):

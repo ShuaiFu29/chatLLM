@@ -97,6 +97,11 @@ const isCircuitOpen = () => {
   return true;
 };
 
+export const buildRagServiceHeaders = () => {
+  if (!serverEnv.RAG_SERVICE_TOKEN) return {};
+  return { 'X-ChatLLM-RAG-Token': serverEnv.RAG_SERVICE_TOKEN };
+};
+
 const postRagService = async <T>(path: string, payload: unknown, timeout: number): Promise<T> => {
   if (isCircuitOpen()) {
     metrics.recordRagCircuitOpen();
@@ -106,7 +111,10 @@ const postRagService = async <T>(path: string, payload: unknown, timeout: number
   const startedAt = Date.now();
 
   try {
-    const response = await axios.post(`${serverEnv.RAG_SERVICE_URL}${path}`, payload, { timeout });
+    const response = await axios.post(`${serverEnv.RAG_SERVICE_URL}${path}`, payload, {
+      timeout,
+      headers: buildRagServiceHeaders(),
+    });
 
     consecutiveFailures = 0;
     circuitOpenedAt = 0;
@@ -184,5 +192,6 @@ export const cleanupRagFileVectors = async (fileId: string) => {
     file_id: fileId,
   }, {
     timeout: serverEnv.RAG_CLEANUP_TIMEOUT_MS,
+    headers: buildRagServiceHeaders(),
   });
 };

@@ -59,6 +59,8 @@ export interface ServerEnv {
   S3_FORCE_PATH_STYLE: boolean;
   JWT_SECRET: string;
   RAG_SERVICE_URL: string;
+  RAG_SERVICE_TOKEN?: string;
+  METRICS_TOKEN?: string;
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
   HTTP_PROXY?: string;
@@ -173,6 +175,15 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     errors.push('DEFAULT_CHAT_MODEL must use a supported provider model such as deepseek-chat, moonshot-v1-8k, or qwen-plus');
   }
 
+  if (env.NODE_ENV === 'production') {
+    if (!getRequired(env, 'RAG_SERVICE_TOKEN')) {
+      errors.push('RAG_SERVICE_TOKEN is required in production');
+    }
+    if (!getRequired(env, 'METRICS_TOKEN')) {
+      errors.push('METRICS_TOKEN is required in production');
+    }
+  }
+
   const jwtSecret = getRequired(env, 'JWT_SECRET');
   if (jwtSecret && (weakJwtSecrets.has(jwtSecret) || jwtSecret.length < 32)) {
     errors.push('JWT_SECRET must be replaced with a long random secret');
@@ -233,6 +244,8 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     S3_FORCE_PATH_STYLE: getBoolean(env.S3_FORCE_PATH_STYLE, true),
     JWT_SECRET: jwtSecret,
     RAG_SERVICE_URL: env.RAG_SERVICE_URL?.trim() || 'http://localhost:8000',
+    RAG_SERVICE_TOKEN: env.RAG_SERVICE_TOKEN?.trim() || undefined,
+    METRICS_TOKEN: env.METRICS_TOKEN?.trim() || undefined,
     GITHUB_CLIENT_ID: env.GITHUB_CLIENT_ID?.trim() || undefined,
     GITHUB_CLIENT_SECRET: env.GITHUB_CLIENT_SECRET?.trim() || undefined,
     HTTP_PROXY: env.HTTP_PROXY?.trim() || undefined,

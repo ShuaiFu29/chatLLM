@@ -21,6 +21,7 @@ import { installGracefulShutdown } from './lib/gracefulShutdown';
 import { requestContextMiddleware } from './middleware/requestContext';
 import { createRateLimit } from './middleware/rateLimit';
 import { metricsHandler } from './lib/metrics';
+import { metricsAuthMiddleware } from './middleware/metricsAuth';
 import { securityHeadersMiddleware } from './middleware/securityHeaders';
 import { errorHandlerMiddleware } from './middleware/errorHandler';
 import { notFoundMiddleware } from './middleware/notFound';
@@ -56,7 +57,7 @@ app.use(cors({
 app.get('/health', liveHealthHandler);
 app.get('/health/live', liveHealthHandler);
 app.get('/health/ready', readyHealthHandler);
-app.get('/metrics', metricsHandler);
+app.get('/metrics', metricsAuthMiddleware, metricsHandler);
 
 app.use(createRateLimit({
   keyPrefix: 'global',

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -69,4 +71,41 @@ test('non-upload errors are delegated to the next handler', () => {
 
   assert.equal(nextError, error);
   assert.equal(response.statusCode, undefined);
+});
+
+test('merged upload integrity is verified with server-side sha256 and size checks', async () => {
+  const { computeFileSha256, verifyMergedUploadFile } = require(path.join(serverRoot, 'dist', 'lib', 'uploadIntegrity.js'));
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), 'chatllm-upload-integrity-'));
+  const filePath = path.join(tempDir, 'notes.md');
+
+  try {
+    writeFileSync(filePath, '# Notes\n\nhello');
+    const digest = await computeFileSha256(filePath);
+
+    assert.equal(digest.hash.length, 64);
+    assert.equal(digest.size, Buffer.byteLength('# Notes\n\nhello'));
+
+    await verifyMergedUploadFile(filePath, {
+      expectedHash: digest.hash,
+      expectedSize: digest.size,
+    });
+
+    await assert.rejects(
+      () => verifyMergedUploadFile(filePath, {
+        expectedHash: '0'.repeat(64),
+        expectedSize: digest.size,
+      }),
+      /hash mismatch/i
+    );
+
+    await assert.rejects(
+      () => verifyMergedUploadFile(filePath, {
+        expectedHash: digest.hash,
+        expectedSize: digest.size + 1,
+      }),
+      /size mismatch/i
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });

@@ -27,6 +27,7 @@ import {
 import { findUserById, updateUser } from '../repositories/users';
 import { fileQueue } from '../services/fileQueue';
 import { cleanupRagFileVectors } from '../lib/ragClient';
+import { verifyMergedUploadFile } from '../lib/uploadIntegrity';
 import {
   SUPPORTED_DOCUMENT_ERROR,
   getSupportedDocumentContentType,
@@ -191,6 +192,8 @@ export const mergeChunks = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { uploadId, filename, totalChunks } = req.body;
   const expectedChunks = parseUploadTotalChunks(totalChunks);
+  let chunkDirToCleanup: string | null = null;
+  let mergedFilePathToCleanup: string | null = null;
 
   if (!uploadId || !filename || expectedChunks === null) {
     return res.status(400).json({ error: 'Missing parameters' });
@@ -205,6 +208,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
     }
 
     const chunkDir = path.join(UPLOAD_DIR, uploadId);
+    chunkDirToCleanup = chunkDir;
     if (!await fs.pathExists(chunkDir)) {
       return res.status(400).json({ error: 'Upload session not found' });
     }
@@ -217,6 +221,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
     files.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
     const mergedFilePath = path.join(UPLOAD_DIR, `${uploadId}_merged`);
+    mergedFilePathToCleanup = mergedFilePath;
     const writeStream = fs.createWriteStream(mergedFilePath);
 
     for (let i = 0; i < expectedChunks; i++) {
@@ -237,6 +242,11 @@ export const mergeChunks = async (req: Request, res: Response) => {
       writeStream.on('error', reject);
     });
 
+    await verifyMergedUploadFile(mergedFilePath, {
+      expectedHash: upload.file_hash,
+      expectedSize: upload.file_size,
+    });
+
     const objectKey = buildDocumentKey(req.user.id, uploadId, filename);
     await uploadFilePath(objectKey, mergedFilePath, upload.file_type || contentType);
 
@@ -255,7 +265,14 @@ export const mergeChunks = async (req: Request, res: Response) => {
     res.json({ success: true, message: 'File merged and queued for processing' });
   } catch (err) {
     const message = stringifyError(err);
-    const status = isUnsupportedDocumentMessage(message) ? 400 : 500;
+    const isIntegrityFailure = /hash mismatch|size mismatch/i.test(message);
+    if (isIntegrityFailure) {
+      await Promise.all([
+        chunkDirToCleanup ? fs.remove(chunkDirToCleanup).catch(() => undefined) : Promise.resolve(),
+        mergedFilePathToCleanup ? fs.remove(mergedFilePathToCleanup).catch(() => undefined) : Promise.resolve(),
+      ]);
+    }
+    const status = isUnsupportedDocumentMessage(message) || isIntegrityFailure ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Merge failed', details: message });
   }
 };

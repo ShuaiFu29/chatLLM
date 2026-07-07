@@ -34,6 +34,7 @@ export interface Message {
   traceSummary?: RagTraceSummary | null;
   qualitySummary?: RagQualitySummary | null;
   ragWarning?: boolean;
+  ragSkipped?: boolean;
   sources?: {
     chunk_id?: string;
     file_id?: string;
@@ -776,6 +777,19 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     ragWarning: true,
+                  };
+                  updateMessages(updatedMsgs);
+                }
+              }
+
+              if (data.ragSkipped) {
+                const currentMsgs = get().messages;
+                const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
+                if (lastMsgIndex !== -1) {
+                  const updatedMsgs = [...currentMsgs];
+                  updatedMsgs[lastMsgIndex] = {
+                    ...updatedMsgs[lastMsgIndex],
+                    ragSkipped: true,
                   };
                   updateMessages(updatedMsgs);
                 }

@@ -106,6 +106,32 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertIn("ingest_semaphore.acquire(blocking=False)", source)
         self.assertIn("status_code=429", source)
         self.assertIn("process_file_with_guard", source)
+        self.assertIn("require_internal_auth", source)
+        self.assertIn('Header(alias="X-ChatLLM-RAG-Token")', source)
+        self.assertIn("Depends(require_internal_auth)", source)
+
+    def test_internal_auth_dependency_rejects_missing_or_wrong_tokens_when_configured(self):
+        script = """
+from fastapi import HTTPException
+import main
+
+main.settings.rag_service_token = "expected-token"
+
+for token in (None, "", "wrong"):
+    try:
+        main.require_internal_auth(token)
+    except HTTPException as error:
+        assert error.status_code == 401
+    else:
+        raise SystemExit("accepted invalid token")
+
+assert main.require_internal_auth("expected-token") is True
+print("ok")
+"""
+        result = run_main_script(valid_env({"RAG_SERVICE_TOKEN": "expected-token"}), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
 
     def test_startup_does_not_crash_when_optional_indexes_are_temporarily_unavailable(self):
         script = """
@@ -185,6 +211,9 @@ print("ok")
         graph_source = (ROOT / "graph_store.py").read_text(encoding="utf-8")
 
         self.assertIn("def check_database_ready", db_source)
+        self.assertIn("class _ConnectionPool", db_source)
+        self.assertIn("settings.rag_db_pool_max", db_source)
+        self.assertIn("settings.rag_db_pool_timeout_ms", db_source)
         self.assertIn("select 1", db_source.lower())
         self.assertIn("def check_vector_store_ready", vector_source)
         self.assertIn("client.has_collection", vector_source)
@@ -223,6 +252,61 @@ print("ok")
         self.assertIn("settings.elasticsearch_refresh_on_write", keyword_source)
         self.assertIn("_batched(rows, settings.elasticsearch_bulk_batch_size)", keyword_source)
         self.assertIn("settings.neo4j_batch_size", graph_source)
+
+    def test_keyword_store_raises_on_elasticsearch_bulk_item_failures(self):
+        script = """
+from keyword_store import _raise_for_bulk_errors
+
+_raise_for_bulk_errors({"errors": False})
+try:
+    _raise_for_bulk_errors({
+        "errors": True,
+        "items": [
+            {"index": {"_id": "chunk-1", "error": {"type": "mapper_parsing_exception", "reason": "bad field"}}}
+        ],
+    })
+except RuntimeError as error:
+    assert "chunk-1" in str(error)
+    assert "mapper_parsing_exception" in str(error)
+else:
+    raise SystemExit("bulk errors were ignored")
+print("ok")
+"""
+        result = run_main_script(valid_env(), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
+    def test_vector_store_validates_existing_collection_schema(self):
+        script = """
+from vector_store import _validate_collection_schema
+
+valid_description = {
+    "fields": [
+        {"name": "chunk_id"},
+        {"name": "file_id"},
+        {"name": "user_id"},
+        {"name": "project_space_id"},
+        {"name": "embedding", "params": {"dim": "1024"}},
+    ]
+}
+_validate_collection_schema(valid_description)
+
+for description in (
+    {"fields": [{"name": "embedding", "params": {"dim": "768"}}]},
+    {"fields": [{"name": "embedding", "params": {"dim": "1024"}}]},
+):
+    try:
+        _validate_collection_schema(description)
+    except RuntimeError:
+        continue
+    raise SystemExit("accepted invalid collection schema")
+print("ok")
+"""
+        result = run_main_script(valid_env(), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
 
 
 if __name__ == "__main__":

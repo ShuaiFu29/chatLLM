@@ -42,11 +42,44 @@ def _has_project_space_field() -> bool:
     return _project_space_field_available
 
 
+def _read_field_dim(field: dict[str, Any]):
+    params = field.get("params") or field.get("type_params") or {}
+    dim = params.get("dim")
+    if dim is None:
+        return None
+    try:
+        return int(dim)
+    except (TypeError, ValueError):
+        return None
+
+
+def _validate_collection_schema(description: dict[str, Any]):
+    fields = description.get("fields", [])
+    field_by_name = {field.get("name"): field for field in fields}
+    required_fields = {"chunk_id", "file_id", "user_id", "project_space_id", "embedding"}
+    missing_fields = sorted(required_fields.difference(field_by_name.keys()))
+    if missing_fields:
+        raise RuntimeError(
+            f"Milvus collection {settings.milvus_collection} is missing required fields: {', '.join(missing_fields)}"
+        )
+
+    embedding_dim = _read_field_dim(field_by_name["embedding"])
+    if embedding_dim != settings.embedding_dimension:
+        raise RuntimeError(
+            f"Milvus collection {settings.milvus_collection} embedding dim mismatch: "
+            f"expected {settings.embedding_dimension}, got {embedding_dim}"
+        )
+
+
 def ensure_collection():
     global _project_space_field_available
 
     client = get_client()
     if client.has_collection(settings.milvus_collection):
+        description = client.describe_collection(collection_name=settings.milvus_collection)
+        _validate_collection_schema(description)
+        fields = description.get("fields", [])
+        _project_space_field_available = any(field.get("name") == "project_space_id" for field in fields)
         return
 
     schema = MilvusClient.create_schema(auto_id=True, enable_dynamic_field=False)

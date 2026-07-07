@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
+import { buildRagServiceHeaders } from '../lib/ragClient';
 import { claimNextPendingFile, FileRow, markFileAttemptFailed } from '../repositories/files';
 
 class FileQueueService {
@@ -70,7 +71,10 @@ class FileQueueService {
     try {
       await axios.post(`${this.ragServiceUrl}/ingest-sync`, {
         file_id: file.id,
-      }, { timeout: this.ingestTimeoutMs });
+      }, {
+        timeout: this.ingestTimeoutMs,
+        headers: buildRagServiceHeaders(),
+      });
       status = 'completed';
     } catch (err: any) {
       const message = `RAG Service unavailable: ${err.message}`;

@@ -603,12 +603,17 @@ export default function GraphExplorerPage() {
             </div>
           )}
 
-          <section className="rounded-lg border border-border bg-bg-sidebar p-4">
-            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px_120px_auto] lg:items-end">
+          <section className="rounded-lg border border-border bg-bg-sidebar p-4 shadow-sm">
+            <div className="mb-3 flex flex-col gap-1 md:flex-row md:items-baseline md:gap-3">
+              <h2 className="text-lg font-semibold text-text-main">{t('graphExplorer.queryLabel')}</h2>
+              <p className="text-xs leading-5 text-text-muted">
+                {t('graphExplorer.chunkLimitHint', { nodes: getMaxEntityNodes(limit) })}
+              </p>
+            </div>
+
+            <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_240px_112px_auto] lg:items-end">
               <label className="min-w-0">
-                <span className="mb-2 block text-xs font-semibold uppercase tracking-wide text-text-muted">
-                  {t('graphExplorer.queryLabel')}
-                </span>
+                <span className="sr-only">{t('graphExplorer.queryLabel')}</span>
                 <input
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
@@ -621,7 +626,7 @@ export default function GraphExplorerPage() {
               </label>
 
               <label>
-                <span className="mb-2 block text-xs font-semibold uppercase tracking-wide text-text-muted">
+                <span className="mb-2 block text-xs font-medium text-text-muted">
                   {t('usage.workspace')}
                 </span>
                 <SelectField
@@ -638,7 +643,7 @@ export default function GraphExplorerPage() {
               </label>
 
               <label>
-                <span className="mb-2 block text-xs font-semibold uppercase tracking-wide text-text-muted">
+                <span className="mb-2 block text-xs font-medium text-text-muted">
                   {t('graphExplorer.chunkLimit')}
                 </span>
                 <input
@@ -649,9 +654,6 @@ export default function GraphExplorerPage() {
                   onChange={(event) => setLimit(Math.min(30, Math.max(1, Number(event.target.value) || 1)))}
                   className="h-11 w-full rounded-lg border border-border bg-bg-base px-3 text-sm outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/20"
                 />
-                <span className="mt-1 block text-[11px] leading-snug text-text-muted">
-                  {t('graphExplorer.chunkLimitHint', { nodes: getMaxEntityNodes(limit) })}
-                </span>
               </label>
 
               <button
