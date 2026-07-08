@@ -3,7 +3,7 @@ import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore, type Conversation } from '../stores/useChatStore';
-import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
 import api from '../lib/api';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
@@ -323,6 +323,7 @@ export default function MainLayout() {
   const isKnowledgePage = location.pathname === '/knowledge';
   const isUsagePage = location.pathname === '/usage';
   const isPromptsPage = location.pathname === '/prompts';
+  const isPersonaPage = location.pathname === '/persona';
   const isRagEvalPage = location.pathname === '/rag-eval';
   const isRetrievalLabPage = location.pathname === '/retrieval-lab';
   const isGraphExplorerPage = location.pathname === '/rag-graph';
@@ -1007,6 +1008,19 @@ export default function MainLayout() {
             >
               <BarChart3 className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate text-xs font-medium">{t('sidebar.usage')}</span>
+            </button>
+            <button
+              onClick={() => {
+                navigate('/persona');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isPersonaPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.persona')}
+            >
+              <UserRound className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.persona')}</span>
             </button>
             <button
               onClick={() => {

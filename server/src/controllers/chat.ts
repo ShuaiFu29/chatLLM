@@ -38,6 +38,8 @@ import {
   searchMessagesForUser,
 } from '../repositories/messages';
 import { insertRagRunForMessage } from '../repositories/ragRuns';
+import { buildPersonalizedSystemPrompt } from '../lib/personaInsights';
+import { getPersonaPromptContextForUser, refreshPersonaInsightsForUser } from '../repositories/persona';
 import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
@@ -341,6 +343,9 @@ export const sendMessage = async (req: Request, res: Response) => {
     const model = conversation.model || getDefaultChatModel();
     const { client: chatClient, resolvedModel } = createChatClientForModel(model);
     const userMessage = await insertMessage(conversationId, 'user', content);
+    refreshPersonaInsightsForUser(req.user.id).catch((error) => {
+      console.warn('[Chat] Failed to refresh persona insights:', error);
+    });
 
     if (conversation.title === 'New Chat') {
       generateConversationTitle(conversationId, content);
@@ -361,6 +366,8 @@ export const sendMessage = async (req: Request, res: Response) => {
       ? conversation.temperature
       : 0.7;
     const systemPrompt = conversation.system_prompt || 'You are a helpful AI assistant.';
+    const personaProfile = await getPersonaPromptContextForUser(req.user.id);
+    const personalizedSystemPrompt = buildPersonalizedSystemPrompt(systemPrompt, personaProfile);
     const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
     const shouldRunRag = enableRag && shouldUseRagForMessage(content);
 
@@ -454,7 +461,7 @@ ${originalContent}`;
     const stream = await chatClient.chat.completions.create({
       model: resolvedModel,
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: personalizedSystemPrompt },
         ...messages,
       ],
       stream: true,

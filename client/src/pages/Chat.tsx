@@ -8,6 +8,7 @@ import ChatSettingsDialog from '../components/ChatSettingsDialog';
 import ChatHeader from '../components/ChatHeader';
 import MessageList from '../components/MessageList';
 import ChatInput from '../components/ChatInput';
+import PersonaSuggestionsPanel from '../components/PersonaSuggestionsPanel';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import {
   buildConversationMarkdown,
@@ -106,6 +107,11 @@ export default function ChatPage() {
     clearChatDraft(draftStorage, user?.id, currentConversationId);
     setInput('');
   }, [currentConversationId, user?.id]);
+
+  const handlePersonaSuggestionPick = useCallback((question: string) => {
+    handleInputChange(question);
+    toast.success(t('persona.suggestionLoaded'));
+  }, [handleInputChange, t]);
 
   const handleEditMessageAsDraft = useCallback((content: string) => {
     handleInputChange(content);
@@ -299,6 +305,8 @@ export default function ChatPage() {
         onEditAsDraft={handleEditMessageAsDraft}
         copiedMessageId={copiedMessageId}
       />
+
+      <PersonaSuggestionsPanel onPickSuggestion={handlePersonaSuggestionPick} />
 
       <ChatInput
         input={input}

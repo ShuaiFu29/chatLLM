@@ -11,6 +11,7 @@ import usageRoutes from './routes/usage';
 import promptTemplateRoutes from './routes/promptTemplates';
 import ragEvalRoutes from './routes/ragEval';
 import ragWorkbenchRoutes from './routes/ragWorkbench';
+import personaRoutes from './routes/persona';
 import { fileQueue } from './services/fileQueue';
 import { ragEvalQueue } from './services/ragEvalQueue';
 import { maintenanceService } from './services/maintenance';
@@ -74,6 +75,12 @@ app.use('/api/project-spaces', projectSpaceRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/usage', usageRoutes);
 app.use('/api/prompt-templates', promptTemplateRoutes);
+app.use('/api/persona', createRateLimit({
+  keyPrefix: 'persona',
+  windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
+  max: serverEnv.RATE_LIMIT_MAX,
+  message: 'Too many persona requests',
+}), personaRoutes);
 app.use('/api/rag-eval', createRateLimit({
   keyPrefix: 'rag-eval',
   windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,

@@ -11,6 +11,7 @@ const chatStoreSource = readFileSync(path.join(clientDir, 'src/stores/useChatSto
 const errorBoundarySource = readFileSync(path.join(clientDir, 'src/components/ErrorBoundary.tsx'), 'utf8');
 const protectedRouteSource = readFileSync(path.join(clientDir, 'src/components/ProtectedRoute.tsx'), 'utf8');
 const loginSource = readFileSync(path.join(clientDir, 'src/pages/Login.tsx'), 'utf8');
+const chatPageSource = readFileSync(path.join(clientDir, 'src/pages/Chat.tsx'), 'utf8');
 const knowledgePageSource = readFileSync(path.join(clientDir, 'src/pages/KnowledgeBase.tsx'), 'utf8');
 const hashWorkerSource = readFileSync(path.join(clientDir, 'src/lib/hashWorker.ts'), 'utf8');
 const profilePageSource = readFileSync(path.join(clientDir, 'src/pages/Profile.tsx'), 'utf8');
@@ -22,6 +23,10 @@ const retrievalLabPagePath = path.join(clientDir, 'src/pages/RetrievalLab.tsx');
 const retrievalLabPageSource = existsSync(retrievalLabPagePath) ? readFileSync(retrievalLabPagePath, 'utf8') : '';
 const graphExplorerPagePath = path.join(clientDir, 'src/pages/GraphExplorer.tsx');
 const graphExplorerPageSource = existsSync(graphExplorerPagePath) ? readFileSync(graphExplorerPagePath, 'utf8') : '';
+const personaCenterPagePath = path.join(clientDir, 'src/pages/PersonaCenter.tsx');
+const personaCenterPageSource = existsSync(personaCenterPagePath) ? readFileSync(personaCenterPagePath, 'utf8') : '';
+const personaSuggestionsPath = path.join(clientDir, 'src/components/PersonaSuggestionsPanel.tsx');
+const personaSuggestionsSource = existsSync(personaSuggestionsPath) ? readFileSync(personaSuggestionsPath, 'utf8') : '';
 const ragTraceLabelsPath = path.join(clientDir, 'src/lib/ragTraceLabels.ts');
 const ragTraceLabelsSource = existsSync(ragTraceLabelsPath) ? readFileSync(ragTraceLabelsPath, 'utf8') : '';
 const usagePageSource = readFileSync(path.join(clientDir, 'src/pages/Usage.tsx'), 'utf8');
@@ -443,6 +448,62 @@ test('RAG retrieval lab is routed, reachable from navigation, and localized', ()
     assert.ok(locale.ragWorkbench?.topSources, `${localeFile.locale}.json needs ragWorkbench.topSources`);
     assert.ok(locale.ragWorkbench?.sourceRank, `${localeFile.locale}.json needs ragWorkbench.sourceRank`);
     assert.ok(locale.ragWorkbench?.loadFailed, `${localeFile.locale}.json needs ragWorkbench.loadFailed`);
+  }
+});
+
+test('persona center is routed, editable, explainable, and localized', () => {
+  assert.match(appSource, /const PersonaCenterPage = lazy\(\(\) => import\('\.\/pages\/PersonaCenter'\)\)/);
+  assert.match(appSource, /<Route path="\/persona" element=\{<PersonaCenterPage \/>\} \/>/);
+  assert.match(mainLayoutSource, /sidebar\.persona/);
+  assert.match(mainLayoutSource, /navigate\('\/persona'\)/);
+  assert.match(personaCenterPageSource, /api\.get(?:<[^>]+>)?\('\/persona'\)/);
+  assert.match(personaCenterPageSource, /api\.post(?:<[^>]+>)?\('\/persona\/analyze'\)/);
+  assert.match(personaCenterPageSource, /api\.patch(?:<[^>]+>)?\('\/persona\/profile'/);
+  assert.match(personaCenterPageSource, /api\.patch(?:<[^>]+>)?\(`\/persona\/interests\/\$\{interestId\}`/);
+  assert.match(personaCenterPageSource, /api\.patch(?:<[^>]+>)?\(`\/persona\/suggestions\/\$\{suggestionId\}`/);
+  assert.match(personaCenterPageSource, /api\.post(?:<[^>]+>)?\('\/persona\/reset'\)/);
+  assert.match(personaCenterPageSource, /persona\.privacyTitle/);
+  assert.match(personaCenterPageSource, /persona\.evidenceCount/);
+  assert.match(personaCenterPageSource, /memory_enabled/);
+  assert.match(personaCenterPageSource, /editedProfile/);
+  assert.match(personaCenterPageSource, /status: 'accepted'/);
+  assert.match(personaCenterPageSource, /status: 'hidden'/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.sidebar?.persona, `${localeFile.locale}.json needs sidebar.persona`);
+    assert.ok(locale.persona?.title, `${localeFile.locale}.json needs persona.title`);
+    assert.ok(locale.persona?.subtitle, `${localeFile.locale}.json needs persona.subtitle`);
+    assert.ok(locale.persona?.refreshInsights, `${localeFile.locale}.json needs persona.refreshInsights`);
+    assert.ok(locale.persona?.editableProfile, `${localeFile.locale}.json needs persona.editableProfile`);
+    assert.ok(locale.persona?.inferredInterests, `${localeFile.locale}.json needs persona.inferredInterests`);
+    assert.ok(locale.persona?.likelyQuestions, `${localeFile.locale}.json needs persona.likelyQuestions`);
+    assert.ok(locale.persona?.privacyTitle, `${localeFile.locale}.json needs persona.privacyTitle`);
+    assert.ok(locale.persona?.evidenceCount, `${localeFile.locale}.json needs persona.evidenceCount`);
+    assert.ok(locale.persona?.accept, `${localeFile.locale}.json needs persona.accept`);
+    assert.ok(locale.persona?.hide, `${localeFile.locale}.json needs persona.hide`);
+    assert.ok(locale.persona?.resetProfile, `${localeFile.locale}.json needs persona.resetProfile`);
+    assert.ok(locale.persona?.memoryEnabled, `${localeFile.locale}.json needs persona.memoryEnabled`);
+  }
+});
+
+test('chat page surfaces persona-based likely questions without crowding the composer', () => {
+  assert.ok(existsSync(personaSuggestionsPath), 'PersonaSuggestionsPanel.tsx should exist');
+  assert.match(chatPageSource, /PersonaSuggestionsPanel/);
+  assert.match(chatPageSource, /handlePersonaSuggestionPick/);
+  assert.match(personaSuggestionsSource, /api\.get(?:<[^>]+>)?\('\/persona'\)/);
+  assert.match(personaSuggestionsSource, /api\.patch(?:<[^>]+>)?\(`\/persona\/suggestions\/\$\{suggestion\.id\}`/);
+  assert.match(personaSuggestionsSource, /persona\.likelyQuestions/);
+  assert.match(personaSuggestionsSource, /persona\.useQuestion/);
+  assert.match(personaSuggestionsSource, /persona\.hide/);
+  assert.match(personaSuggestionsSource, /max-h-40/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.persona?.useQuestion, `${localeFile.locale}.json needs persona.useQuestion`);
+    assert.ok(locale.persona?.suggestionLoadFailed, `${localeFile.locale}.json needs persona.suggestionLoadFailed`);
   }
 });
 
