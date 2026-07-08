@@ -156,14 +156,16 @@ npm run dev:infra
 cd D:\project\chatLLM\server
 npm run dev
 
-cd D:\project\chatLLM\rag-service
-uvicorn main:app --reload --host 0.0.0.0 --port 8000
+cd D:\project\chatLLM
+npm run dev:rag
 
 cd D:\project\chatLLM\client
 npm run dev
 ```
 
 前端默认通过 Vite proxy 访问 `/api`，会优先读取 `server/.env` 里的 `BACKEND_URL` / `PORT`。
+
+`npm run dev:rag` 会优先使用项目根目录 `.venv` 里且能导入 RAG 依赖的 Python，避免系统全局 Python 依赖污染影响 RAG 服务；如需强制指定解释器，可以设置 `RAG_PYTHON`。
 
 ## 主要功能
 
