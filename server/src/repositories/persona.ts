@@ -1,3 +1,4 @@
+import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 import {
   analyzePersonaSignals,
@@ -8,6 +9,12 @@ import {
   PersonaProfileDraft,
   PersonaSuggestionDraft,
 } from '../lib/personaInsights';
+
+interface PersonaEvidenceMessage {
+  id: string;
+  content: string;
+  created_at: string;
+}
 
 export interface UserPersonaRow extends PersonaProfileDraft {
   id: string;
@@ -23,6 +30,7 @@ export interface UserPersonaObservationRow extends PersonaObservationDraft {
   status: 'active' | 'accepted' | 'hidden' | 'rejected';
   created_at: string;
   updated_at: string;
+  evidence_messages?: PersonaEvidenceMessage[];
 }
 
 export interface UserInterestTopicRow extends PersonaInterestDraft {
@@ -31,14 +39,21 @@ export interface UserInterestTopicRow extends PersonaInterestDraft {
   status: 'active' | 'accepted' | 'hidden' | 'rejected';
   created_at: string;
   updated_at: string;
+  evidence_messages?: PersonaEvidenceMessage[];
 }
 
 export interface UserQuestionSuggestionRow extends PersonaSuggestionDraft {
   id: string;
   user_id: string;
-  status: 'active' | 'hidden' | 'used';
+  status: 'active' | 'hidden' | 'used' | 'rejected';
   created_at: string;
   updated_at: string;
+}
+
+export interface PersonaHiddenRecords {
+  observations: UserPersonaObservationRow[];
+  interests: UserInterestTopicRow[];
+  suggestions: UserQuestionSuggestionRow[];
 }
 
 export interface PersonaCenter {
@@ -46,6 +61,7 @@ export interface PersonaCenter {
   observations: UserPersonaObservationRow[];
   interests: UserInterestTopicRow[];
   suggestions: UserQuestionSuggestionRow[];
+  hidden: PersonaHiddenRecords;
 }
 
 export interface PersonaProfileUpdate {
@@ -126,6 +142,37 @@ const trimTextArray = (value: unknown, maxItems: number, maxLength: number) => {
     .slice(0, maxItems);
 };
 
+const uniqueEvidenceIds = (items: Array<{ evidence_message_ids?: string[] }>) => (
+  Array.from(new Set(items.flatMap((item) => item.evidence_message_ids || []))).slice(0, 200)
+);
+
+const loadEvidenceMessagesForUser = async (userId: string, evidenceIds: string[]) => {
+  if (evidenceIds.length === 0) return new Map<string, PersonaEvidenceMessage>();
+
+  const { rows } = await query<PersonaEvidenceMessage>(
+    `select m.id, left(m.content, 360) as content, m.created_at
+     from messages m
+     join conversations c on c.id = m.conversation_id
+     where c.user_id = $1
+       and m.id = any($2::uuid[])
+       and m.role = 'user'
+     order by m.created_at desc`,
+    [userId, evidenceIds]
+  );
+
+  return new Map(rows.map((row) => [row.id, row]));
+};
+
+const attachEvidenceMessages = <T extends { evidence_message_ids?: string[] }>(
+  items: T[],
+  evidenceById: Map<string, PersonaEvidenceMessage>
+) => items.map((item) => ({
+  ...item,
+  evidence_messages: (item.evidence_message_ids || [])
+    .map((id) => evidenceById.get(id))
+    .filter((message): message is PersonaEvidenceMessage => Boolean(message)),
+}));
+
 export const normalizePersonaProfileUpdate = (body: unknown): PersonaProfileUpdate => {
   const input = (body && typeof body === 'object') ? body as Record<string, unknown> : {};
   const update: PersonaProfileUpdate = {};
@@ -162,8 +209,41 @@ export const listRecentUserMessagesForPersona = async (userId: string, limit = 1
   return rows;
 };
 
+const listRecentUserMessagesForPersonaInTransaction = async (
+  client: PoolClient,
+  userId: string,
+  limit = 100
+) => {
+  const boundedLimit = Math.min(Math.max(limit, 1), 200);
+  const { rows } = await client.query<PersonaMessageInput>(
+    `select m.id, m.content, m.created_at
+     from messages m
+     join conversations c on c.id = m.conversation_id
+     where c.user_id = $1
+       and m.role = 'user'
+     order by m.created_at desc
+     limit $2`,
+    [userId, boundedLimit]
+  );
+  return rows;
+};
+
 export const ensurePersonaProfileForUser = async (userId: string) => {
   const { rows } = await query<UserPersonaRow>(
+    `insert into user_personas (user_id)
+     values ($1)
+     on conflict (user_id) do update set updated_at = user_personas.updated_at
+     returning ${personaColumns}`,
+    [userId]
+  );
+  return rows[0];
+};
+
+const ensurePersonaProfileForUserInTransaction = async (
+  client: PoolClient,
+  userId: string
+) => {
+  const { rows } = await client.query<UserPersonaRow>(
     `insert into user_personas (user_id)
      values ($1)
      on conflict (user_id) do update set updated_at = user_personas.updated_at
@@ -185,7 +265,21 @@ export const getPersonaPromptContextForUser = async (userId: string) => {
 
 export const getPersonaCenterForUser = async (userId: string): Promise<PersonaCenter> => {
   const profile = await ensurePersonaProfileForUser(userId);
-  const [observations, interests, suggestions] = await Promise.all([
+  if (!profile.memory_enabled) {
+    return {
+      profile,
+      observations: [],
+      interests: [],
+      suggestions: [],
+      hidden: {
+        observations: [],
+        interests: [],
+        suggestions: [],
+      },
+    };
+  }
+
+  const [observations, interests, suggestions, hiddenObservations, hiddenInterests, hiddenSuggestions] = await Promise.all([
     query<UserPersonaObservationRow>(
       `select ${observationColumns}
        from user_persona_observations
@@ -213,13 +307,50 @@ export const getPersonaCenterForUser = async (userId: string): Promise<PersonaCe
        limit 12`,
       [userId]
     ),
+    query<UserPersonaObservationRow>(
+      `select ${observationColumns}
+       from user_persona_observations
+       where user_id = $1
+         and status = 'hidden'
+       order by updated_at desc
+       limit 100`,
+      [userId]
+    ),
+    query<UserInterestTopicRow>(
+      `select ${interestColumns}
+       from user_interest_topics
+       where user_id = $1
+         and status = 'hidden'
+       order by updated_at desc
+       limit 100`,
+      [userId]
+    ),
+    query<UserQuestionSuggestionRow>(
+      `select ${suggestionColumns}
+       from user_question_suggestions
+       where user_id = $1
+         and status = 'hidden'
+       order by updated_at desc
+       limit 100`,
+      [userId]
+    ),
   ]);
+
+  const evidenceById = await loadEvidenceMessagesForUser(
+    userId,
+    uniqueEvidenceIds([...observations.rows, ...interests.rows, ...hiddenObservations.rows, ...hiddenInterests.rows])
+  );
 
   return {
     profile,
-    observations: observations.rows,
-    interests: interests.rows,
+    observations: attachEvidenceMessages(observations.rows, evidenceById),
+    interests: attachEvidenceMessages(interests.rows, evidenceById),
     suggestions: suggestions.rows,
+    hidden: {
+      observations: attachEvidenceMessages(hiddenObservations.rows, evidenceById),
+      interests: attachEvidenceMessages(hiddenInterests.rows, evidenceById),
+      suggestions: hiddenSuggestions.rows,
+    },
   };
 };
 
@@ -304,14 +435,16 @@ export const updatePersonaProfileForUser = async (
 };
 
 export const refreshPersonaInsightsForUser = async (userId: string) => {
-  const currentProfile = await ensurePersonaProfileForUser(userId);
-  if (!currentProfile.memory_enabled) return getPersonaCenterForUser(userId);
-
-  const recentMessages = await listRecentUserMessagesForPersona(userId, 100);
-  const generated = analyzePersonaSignals(recentMessages);
-  const mergedProfile = mergePersonaProfile(currentProfile, generated.profile);
-
   await withTransaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [`persona-refresh:${userId}`]);
+
+    const currentProfile = await ensurePersonaProfileForUserInTransaction(client, userId);
+    if (!currentProfile.memory_enabled) return;
+
+    const recentMessages = await listRecentUserMessagesForPersonaInTransaction(client, userId, 100);
+    const generated = analyzePersonaSignals(recentMessages);
+    const mergedProfile = mergePersonaProfile(currentProfile, generated.profile);
+
     await client.query(
       `insert into user_personas (
          user_id,
@@ -342,6 +475,22 @@ export const refreshPersonaInsightsForUser = async (userId: string) => {
         mergedProfile.avoided_topics,
         mergedProfile.memory_enabled,
       ]
+    );
+
+    await client.query(
+      `delete from user_persona_observations
+       where user_id = $1 and status = 'active'`,
+      [userId]
+    );
+    await client.query(
+      `delete from user_interest_topics
+       where user_id = $1 and status = 'active'`,
+      [userId]
+    );
+    await client.query(
+      `delete from user_question_suggestions
+       where user_id = $1 and status = 'active'`,
+      [userId]
     );
 
     for (const observation of generated.observations) {
@@ -430,7 +579,7 @@ export const refreshPersonaInsightsForUser = async (userId: string) => {
            reason = excluded.reason,
            confidence = excluded.confidence,
            status = case
-             when user_question_suggestions.status = 'hidden'
+             when user_question_suggestions.status in ('hidden', 'used', 'rejected')
              then user_question_suggestions.status
              else 'active'
            end,
@@ -471,6 +620,22 @@ export const updatePersonaInterestStatusForUser = async (
   return rows[0] || null;
 };
 
+export const updatePersonaObservationStatusForUser = async (
+  userId: string,
+  observationId: string,
+  status: UserPersonaObservationRow['status']
+) => {
+  const { rows } = await query<UserPersonaObservationRow>(
+    `update user_persona_observations
+     set status = $3, updated_at = now()
+     where user_id = $1 and id = $2
+     returning ${observationColumns}`,
+    [userId, observationId, status]
+  );
+  if (rows[0]) await recordPersonaAuditEvent(userId, 'observation_status_updated', 'observation', observationId, { status });
+  return rows[0] || null;
+};
+
 export const updatePersonaSuggestionStatusForUser = async (
   userId: string,
   suggestionId: string,
@@ -485,6 +650,81 @@ export const updatePersonaSuggestionStatusForUser = async (
   );
   if (rows[0]) await recordPersonaAuditEvent(userId, 'suggestion_status_updated', 'suggestion', suggestionId, { status });
   return rows[0] || null;
+};
+
+export const deletePersonaInterestForUser = async (
+  userId: string,
+  interestId: string
+) => {
+  const { rows } = await query<UserInterestTopicRow>(
+    `update user_interest_topics
+     set status = 'rejected', updated_at = now()
+     where user_id = $1 and id = $2
+     returning ${interestColumns}`,
+    [userId, interestId]
+  );
+  if (rows[0]) await recordPersonaAuditEvent(userId, 'interest_deleted', 'interest', interestId);
+  return rows[0] || null;
+};
+
+export const deletePersonaObservationForUser = async (
+  userId: string,
+  observationId: string
+) => {
+  const { rows } = await query<UserPersonaObservationRow>(
+    `update user_persona_observations
+     set status = 'rejected', updated_at = now()
+     where user_id = $1 and id = $2
+     returning ${observationColumns}`,
+    [userId, observationId]
+  );
+  if (rows[0]) await recordPersonaAuditEvent(userId, 'observation_deleted', 'observation', observationId);
+  return rows[0] || null;
+};
+
+export const deletePersonaSuggestionForUser = async (
+  userId: string,
+  suggestionId: string
+) => {
+  const { rows } = await query<UserQuestionSuggestionRow>(
+    `update user_question_suggestions
+     set status = 'rejected', updated_at = now()
+     where user_id = $1 and id = $2
+     returning ${suggestionColumns}`,
+    [userId, suggestionId]
+  );
+  if (rows[0]) await recordPersonaAuditEvent(userId, 'suggestion_deleted', 'suggestion', suggestionId);
+  return rows[0] || null;
+};
+
+export const deletePersonaProfileForUser = async (userId: string) => {
+  await withTransaction(async (client) => {
+    await client.query('delete from user_question_suggestions where user_id = $1', [userId]);
+    await client.query('delete from user_interest_topics where user_id = $1', [userId]);
+    await client.query('delete from user_persona_observations where user_id = $1', [userId]);
+    await client.query(
+      `insert into user_personas (user_id)
+       values ($1)
+       on conflict (user_id) do update set
+         summary = '',
+         role_label = '',
+         goals = '{}'::text[],
+         preferences = '{}'::text[],
+         avoided_topics = '{}'::text[],
+         memory_enabled = true,
+         updated_by_user_at = null,
+         analyzed_at = null,
+         updated_at = now()`,
+      [userId]
+    );
+    await client.query(
+      `insert into user_persona_audit_events (user_id, event_type, target_type)
+       values ($1, 'profile_deleted', 'profile')`,
+      [userId]
+    );
+  });
+
+  return getPersonaCenterForUser(userId);
 };
 
 export const resetPersonaCenterForUser = async (userId: string) => {

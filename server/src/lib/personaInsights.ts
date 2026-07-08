@@ -116,6 +116,9 @@ const SENSITIVE_PATTERNS = [
   /婚育/,
 ];
 
+const MIN_TOPIC_EVIDENCE_MESSAGES = 2;
+const MIN_TOPIC_WEIGHTED_MATCHES = 3;
+
 const clamp = (value: number, min = 0, max = 1) => Math.min(Math.max(value, min), max);
 
 const unique = (values: string[], limit: number) => Array.from(new Set(values.filter(Boolean))).slice(0, limit);
@@ -151,10 +154,14 @@ export const analyzePersonaSignals = (messages: PersonaMessageInput[]): PersonaA
     return {
       definition,
       evidenceMessages,
+      weightedMatches,
       score,
     };
   })
-    .filter((item) => item.evidenceMessages.length > 0)
+    .filter((item) => (
+      item.evidenceMessages.length >= MIN_TOPIC_EVIDENCE_MESSAGES
+      && item.weightedMatches >= MIN_TOPIC_WEIGHTED_MATCHES
+    ))
     .sort((a, b) => b.score - a.score);
 
   const interests: PersonaInterestDraft[] = topicScores.slice(0, 6).map((item, index) => ({
@@ -183,27 +190,30 @@ export const analyzePersonaSignals = (messages: PersonaMessageInput[]): PersonaA
   }));
 
   const topTopics = interests.map((interest) => interest.topic);
-  const summary = topTopics.length > 0
+  const hasEvidenceBackedProfile = topicScores.length > 0;
+  const summary = hasEvidenceBackedProfile
     ? `你最近主要围绕 ${topTopics.slice(0, 3).join('、')} 推进 ChatLLM 的产品化和工程质量。`
-    : '你正在使用 ChatLLM 进行 AI 对话、知识库和项目开发探索。';
+    : '';
 
   const profile: PersonaProfileDraft = {
     summary,
-    role_label: topicScores.some((item) => item.definition.topic.includes('后端'))
+    role_label: !hasEvidenceBackedProfile
+      ? ''
+      : topicScores.some((item) => item.definition.topic.includes('后端'))
       ? 'AI 应用/全栈项目开发者'
       : 'AI 应用项目开发者',
-    goals: unique([
+    goals: hasEvidenceBackedProfile ? unique([
       topicScores.some((item) => item.definition.topic.includes('Agentic RAG')) ? '完善 Agentic RAG、引用、评测和 trace 链路' : '',
       topicScores.some((item) => item.definition.topic.includes('企业级')) ? '提升项目在企业级高并发和海量数据场景下的稳定性' : '',
       topicScores.some((item) => item.definition.topic.includes('简历')) ? '沉淀适合简历和面试表达的项目亮点' : '',
       '把 ChatLLM 打磨成可展示、可运行、可验证的高质量项目',
-    ], 6),
-    preferences: unique([
+    ], 6) : [],
+    preferences: hasEvidenceBackedProfile ? unique([
       '希望功能直接落地，并用可验证的测试或真实流程确认效果',
       '偏好中文解释、清晰方案和少走弯路的工程判断',
       topicScores.some((item) => item.definition.topic.includes('前端')) ? '重视界面可读性、弹窗承载复杂信息和 i18n 完整性' : '',
       topicScores.some((item) => item.definition.topic.includes('企业级')) ? '倾向采用有兜底策略的企业级架构设计' : '',
-    ], 6),
+    ], 6) : [],
     avoided_topics: ['不要自动推断敏感身份信息', '不要把与当前项目无关的能力强行塞进产品'],
     memory_enabled: true,
   };
@@ -217,11 +227,11 @@ export const mergePersonaProfile = (
 ): PersonaProfileDraft => {
   if (existing?.updated_by_user_at) {
     return {
-      summary: existing.summary || generated.summary,
-      role_label: existing.role_label || generated.role_label,
-      goals: existing.goals?.length ? existing.goals : generated.goals,
-      preferences: existing.preferences?.length ? existing.preferences : generated.preferences,
-      avoided_topics: existing.avoided_topics?.length ? existing.avoided_topics : generated.avoided_topics,
+      summary: existing.summary ?? generated.summary,
+      role_label: existing.role_label ?? generated.role_label,
+      goals: existing.goals ?? generated.goals,
+      preferences: existing.preferences ?? generated.preferences,
+      avoided_topics: existing.avoided_topics ?? generated.avoided_topics,
       memory_enabled: existing.memory_enabled !== false,
       updated_by_user_at: existing.updated_by_user_at,
     };
@@ -237,10 +247,20 @@ export const buildPersonalizedSystemPrompt = (
   baseSystemPrompt: string,
   profile: Partial<PersonaProfileDraft> | null | undefined
 ) => {
-  if (!profile?.memory_enabled || !profile.summary) return baseSystemPrompt;
+  if (!profile?.memory_enabled) return baseSystemPrompt;
+
+  const hasManualEdits = Boolean(profile.updated_by_user_at);
+  const hasProfileContent = Boolean(
+    profile.summary
+    || profile.role_label
+    || profile.goals?.length
+    || profile.preferences?.length
+    || (hasManualEdits && profile.avoided_topics?.length)
+  );
+  if (!hasProfileContent) return baseSystemPrompt;
 
   const compactProfile = [
-    `Summary: ${profile.summary}`,
+    profile.summary ? `Summary: ${profile.summary}` : '',
     profile.role_label ? `Role: ${profile.role_label}` : '',
     profile.goals?.length ? `Goals: ${profile.goals.slice(0, 3).join('; ')}` : '',
     profile.preferences?.length ? `Preferences: ${profile.preferences.slice(0, 3).join('; ')}` : '',
