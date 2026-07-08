@@ -10,7 +10,7 @@ const readBearerToken = (authorization?: string) => {
 export const metricsAuthMiddleware: RequestHandler = (req, res, next) => {
   const expectedToken = serverEnv.METRICS_TOKEN;
   if (!expectedToken) {
-    next();
+    res.status(503).json({ error: 'Metrics token is not configured' });
     return;
   }
 

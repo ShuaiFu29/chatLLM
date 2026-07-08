@@ -133,13 +133,17 @@ test('server exposes live and ready health probes with request tracing and shutd
 
 test('server applies baseline security headers and structured error responses', () => {
   const indexSource = readSource('src/index.ts');
+  const metricsAuthSource = readOptionalSource('src/middleware/metricsAuth.ts');
   const securityHeadersSource = readOptionalSource('src/middleware/securityHeaders.ts');
   const errorHandlerSource = readOptionalSource('src/middleware/errorHandler.ts');
 
+  assert.match(indexSource, /app\.disable\('x-powered-by'\)/);
   assert.match(indexSource, /securityHeadersMiddleware/);
   assert.match(indexSource, /errorHandlerMiddleware/);
   assert.match(indexSource, /app\.use\(requestContextMiddleware\);[\s\S]*app\.use\(securityHeadersMiddleware\);/);
   assert.match(indexSource, /app\.use\('\/api\/upload'[\s\S]*app\.use\(errorHandlerMiddleware\);/);
+  assert.match(metricsAuthSource, /if \(!expectedToken\)[\s\S]*res\.status\(503\)\.json/);
+  assert.doesNotMatch(metricsAuthSource, /if \(!expectedToken\) \{\s*next\(\);/);
 
   assert.match(securityHeadersSource, /X-Content-Type-Options/);
   assert.match(securityHeadersSource, /nosniff/);
@@ -463,6 +467,7 @@ test('maintenance service cleans expired sessions and stale upload temp files', 
   const indexSource = readSource('src/index.ts');
   const shutdownSource = readOptionalSource('src/lib/gracefulShutdown.ts');
   const sessionsSource = readSource('src/repositories/sessions.ts');
+  const filesRepositorySource = readSource('src/repositories/files.ts');
   const maintenanceSource = readOptionalSource('src/services/maintenance.ts');
   const ragEvalRepositorySource = readOptionalSource('src/repositories/ragEval.ts');
 
@@ -480,6 +485,13 @@ test('maintenance service cleans expired sessions and stale upload temp files', 
   assert.match(maintenanceSource, /recordRagEvalRunsStaleFailed/);
   assert.match(maintenanceSource, /RAG_EVAL_STALE_RUN_MS/);
   assert.match(maintenanceSource, /UPLOAD_TEMP_MAX_AGE_MS/);
+  assert.match(maintenanceSource, /ABANDONED_UPLOAD_RECORD_MAX_AGE_MS/);
+  assert.match(maintenanceSource, /60 \* 60 \* 1000/);
   assert.match(maintenanceSource, /setInterval/);
   assert.match(maintenanceSource, /fs\.remove/);
+  assert.match(filesRepositorySource, /deleteAbandonedUploadingFiles/);
+  assert.match(filesRepositorySource, /status = 'uploading'/);
+  assert.match(filesRepositorySource, /object_key is null/);
+  assert.match(filesRepositorySource, /not exists[\s\S]*upload_multipart_sessions/);
+  assert.match(maintenanceSource, /cleanupAbandonedUploadRecords/);
 });

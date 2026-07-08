@@ -20,3 +20,12 @@ test('rag smoke script uses local embeddings and verifies ingest retrieve cleanu
   assert.match(source, /\/cleanup-file/);
   assert.match(source, /delete from users where id = \$1/);
 });
+
+test('rag smoke script stores the exact uploaded document size and hash', () => {
+  const source = readFileSync(path.join(root, 'scripts/rag-smoke.mjs'), 'utf8');
+
+  assert.match(source, /createHash\('sha256'\)/);
+  assert.match(source, /smokeDocument\.length/);
+  assert.doesNotMatch(source, /crypto\.randomBytes\(16\)\.toString\('hex'\)/);
+  assert.doesNotMatch(source, /,\s*160,\s*objectKey\]/);
+});

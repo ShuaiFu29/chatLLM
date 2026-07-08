@@ -9,9 +9,13 @@ import {
   listExpiredMultipartUploadSessions,
   markMultipartUploadSessionExpired,
 } from '../repositories/uploadMultipart';
-import { updateFile } from '../repositories/files';
+import { deleteAbandonedUploadingFiles, updateFile } from '../repositories/files';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
+const ABANDONED_UPLOAD_RECORD_MAX_AGE_MS = Math.min(
+  serverEnv.UPLOAD_TEMP_MAX_AGE_MS,
+  60 * 60 * 1000
+);
 
 export const cleanupUploadTempDirectory = async (
   uploadDir = UPLOAD_TEMP_DIR,
@@ -48,6 +52,10 @@ export const cleanupExpiredMultipartUploadSessions = async () => {
   }));
 };
 
+export const cleanupAbandonedUploadRecords = async () => {
+  return deleteAbandonedUploadingFiles(ABANDONED_UPLOAD_RECORD_MAX_AGE_MS, 50);
+};
+
 class MaintenanceService {
   private interval: NodeJS.Timeout | null = null;
 
@@ -72,6 +80,7 @@ class MaintenanceService {
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),
       cleanupExpiredMultipartUploadSessions(),
+      this.cleanupAbandonedUploadRecords(),
     ]);
 
     results.forEach((result) => {
@@ -90,6 +99,13 @@ class MaintenanceService {
     const count = await resetStaleRagEvalRunJobs(serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS);
     if (count > 0) {
       console.warn(`[Maintenance] Reset ${count} stale RAG eval queue jobs`);
+    }
+  }
+
+  private async cleanupAbandonedUploadRecords() {
+    const count = await cleanupAbandonedUploadRecords();
+    if (count > 0) {
+      console.warn(`[Maintenance] Removed ${count} abandoned uploading file records`);
     }
   }
 }

@@ -31,6 +31,18 @@ test('buildOpsTargets includes app, RAG, and infra readiness endpoints by defaul
   assert.equal(targets[6].url, 'http://localhost:9091/healthz');
 });
 
+test('buildOpsTargets attaches a metrics bearer token when configured', () => {
+  const targets = buildOpsTargets({
+    OPS_BACKEND_URL: 'http://localhost:3000',
+    OPS_RAG_URL: 'http://localhost:8000',
+    OPS_METRICS_TOKEN: 'metrics-token',
+    OPS_SKIP_INFRA: 'true',
+  });
+  const metricsTarget = targets.find((target) => target.label === 'backend metrics');
+
+  assert.equal(metricsTarget.headers.authorization, 'Bearer metrics-token');
+});
+
 test('buildOpsTargets can skip external infrastructure checks for app-only smoke', () => {
   const targets = buildOpsTargets({
     OPS_BACKEND_URL: 'http://localhost:3000',
@@ -47,7 +59,9 @@ test('buildOpsTargets can skip external infrastructure checks for app-only smoke
 });
 
 test('runOpsChecks reports failed probes without stopping later checks', async () => {
+  const calls = [];
   const fakeFetch = async (url) => ({
+    calls: calls.push([url]),
     status: url.endsWith('/metrics') ? 500 : 200,
     text: async () => (url.endsWith('/metrics') ? 'oops' : '{"status":"ok"}'),
   });
@@ -61,6 +75,24 @@ test('runOpsChecks reports failed probes without stopping later checks', async (
   assert.deepEqual(checks.map((check) => check.status), ['ok', 'error', 'ok']);
   assert.equal(hasFailedOpsChecks(checks), true);
   assert.match(checks[1].detail, /HTTP 500/);
+});
+
+test('runOpsChecks passes target headers to probes', async () => {
+  const requests = [];
+  const fakeFetch = async (url, init) => {
+    requests.push({ url, init });
+    return { status: 200 };
+  };
+
+  await runOpsChecks([
+    {
+      label: 'backend metrics',
+      url: 'http://localhost:3000/metrics',
+      headers: { authorization: 'Bearer metrics-token' },
+    },
+  ], { timeoutMs: 1000 }, fakeFetch);
+
+  assert.equal(requests[0].init.headers.authorization, 'Bearer metrics-token');
 });
 
 test('buildOpsReport renders a compact operator summary', () => {

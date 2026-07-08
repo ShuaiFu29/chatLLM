@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -157,4 +158,26 @@ test('rag demo suite reports case latency percentiles and duration totals', asyn
     p95DurationMs: 1000,
     maxDurationMs: 1000,
   });
+});
+
+test('rag demo suite loads markdown corpora from a nested corpus directory', async () => {
+  const { resolveSuiteMarkdownFiles } = await import(pathToFileURL(scriptPath));
+  const tempRoot = mkdtempSync(path.join(os.tmpdir(), 'chatllm-rag-demo-'));
+  const suiteDir = path.join(tempRoot, 'nested-suite');
+  const corpusDir = path.join(suiteDir, 'corpus');
+  const answersDir = path.join(suiteDir, 'answers');
+
+  mkdirSync(corpusDir, { recursive: true });
+  mkdirSync(answersDir, { recursive: true });
+  writeFileSync(path.join(corpusDir, '00-语料索引与测试指南.md'), '# guide\n', 'utf8');
+  writeFileSync(path.join(corpusDir, '01-核心证据.md'), '# evidence\n', 'utf8');
+  writeFileSync(path.join(answersDir, '01-标准答案.md'), '# answer\n', 'utf8');
+
+  try {
+    const files = resolveSuiteMarkdownFiles(suiteDir).map((file) => path.basename(file));
+
+    assert.deepEqual(files, ['00-语料索引与测试指南.md', '01-核心证据.md']);
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
 });

@@ -259,6 +259,18 @@ function listMarkdownFiles(suiteDir) {
     .sort((left, right) => path.basename(left).localeCompare(path.basename(right)));
 }
 
+export function resolveSuiteMarkdownFiles(suiteDir) {
+  const topLevelFiles = listMarkdownFiles(suiteDir);
+  if (topLevelFiles.length > 0) return topLevelFiles;
+
+  const corpusDir = path.join(suiteDir, 'corpus');
+  if (fs.existsSync(corpusDir) && fs.statSync(corpusDir).isDirectory()) {
+    return listMarkdownFiles(corpusDir);
+  }
+
+  return [];
+}
+
 function findGuideFile(files) {
   return files.find((file) => /00-.*(guide|index)|evaluation-guide|test-guide/i.test(path.basename(file)))
     || files[0];
@@ -610,7 +622,9 @@ async function runSuite(suiteName, context, options) {
     throw new Error(`RAG demo suite not found: ${suiteName}`);
   }
 
-  const allFiles = listMarkdownFiles(suiteDir);
+  const allFiles = resolveSuiteMarkdownFiles(suiteDir);
+  if (allFiles.length === 0) throw new Error(`RAG demo suite has no Markdown files: ${suiteName}`);
+
   const guideFile = findGuideFile(allFiles);
   const parsedCases = parseEvaluationCases(fs.readFileSync(guideFile, 'utf8'), options.maxCases);
   const cases = (parsedCases.length > 0 ? parsedCases : buildFallbackEvaluationCases(allFiles, options.maxCases))
@@ -623,7 +637,6 @@ async function runSuite(suiteName, context, options) {
     }));
   const files = options.focused ? selectFilesForCases(allFiles, guideFile, cases) : allFiles;
 
-  if (allFiles.length === 0) throw new Error(`RAG demo suite has no Markdown files: ${suiteName}`);
   if (cases.length === 0) throw new Error(`RAG demo suite has no evaluation cases: ${suiteName}`);
 
   const { db, s3, ragUrl, bucket } = context;

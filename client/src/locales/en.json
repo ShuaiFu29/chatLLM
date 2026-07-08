@@ -303,6 +303,7 @@
     "deleteFileAction": "Delete file",
     "retryProcessingAction": "Retry processing",
     "viewFileAction": "View original",
+    "fileNotReadyAction": "Original document is available after processing completes",
     "documentPreview": "Original document",
     "loadingDocument": "Loading document...",
     "loadDocumentFailed": "Failed to load document content.",

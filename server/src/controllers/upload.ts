@@ -634,7 +634,7 @@ export const getFileContent = async (req: Request, res: Response) => {
 
   try {
     const file = await findFileForUser(id, req.user.id);
-    if (!file || !file.object_key) {
+    if (!file || file.status !== 'completed' || !file.object_key) {
       return res.status(404).json({ error: 'File content not found' });
     }
 

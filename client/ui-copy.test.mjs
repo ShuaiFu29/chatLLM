@@ -845,6 +845,19 @@ test('knowledge document names omit markdown extensions in visible lists', () =>
   assert.equal(knowledgePageSource.includes('>{file.filename}</span>'), false);
 });
 
+test('knowledge document preview is available only after ingestion completes', () => {
+  assert.match(knowledgePageSource, /canViewFile/);
+  assert.match(knowledgePageSource, /file\.status === 'completed'/);
+  assert.match(knowledgePageSource, /disabled=\{!canViewFile\(file\)\}/);
+  assert.match(knowledgePageSource, /knowledge\.fileNotReadyAction/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.knowledge?.fileNotReadyAction, `${localeFile.locale}.json needs knowledge.fileNotReadyAction`);
+  }
+});
+
 test('knowledge upload worker hashes files with SHA-256 to match server merge integrity checks', () => {
   assert.match(hashWorkerSource, /Sha256/);
   assert.match(hashWorkerSource, /file\.slice\(start,\s*end\)\.arrayBuffer\(\)/);

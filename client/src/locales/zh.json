@@ -303,6 +303,7 @@
     "deleteFileAction": "删除文件",
     "retryProcessingAction": "重试处理",
     "viewFileAction": "查看原文",
+    "fileNotReadyAction": "文档处理完成后才能查看原文",
     "documentPreview": "文档原文",
     "loadingDocument": "正在加载文档...",
     "loadDocumentFailed": "文档原文加载失败。",

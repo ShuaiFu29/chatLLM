@@ -88,7 +88,10 @@ http://localhost:3000/health/live
 http://localhost:3000/health/ready
 
 后端指标：
-http://localhost:3000/metrics
+需要带上 server/.env 里的 METRICS_TOKEN：
+
+cd D:\project\chatLLM
+$env:METRICS_TOKEN=(Select-String -Path .\server\.env -Pattern '^METRICS_TOKEN=').Line.Split('=',2)[1]; Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:METRICS_TOKEN" } http://localhost:3000/metrics
 
 RAG 健康检查：
 http://localhost:8000/health

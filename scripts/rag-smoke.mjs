@@ -18,6 +18,10 @@ const {
 } = serverRequire('@aws-sdk/client-s3');
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const smokeDocument = Buffer.from(
+  '# ChatLLM RAG smoke\n\nThis temporary document proves ChatLLM can ingest markdown into Milvus and retrieve it through the RAG service. The verification phrase is cobalt smoke marker.\n',
+  'utf8'
+);
 
 function parseEnv(filePath) {
   const env = {};
@@ -173,11 +177,9 @@ async function main() {
       Bucket: bucket,
       Key: objectKey,
       ContentType: 'text/markdown',
-      Body: Buffer.from(
-        '# ChatLLM RAG smoke\n\nThis temporary document proves ChatLLM can ingest markdown into Milvus and retrieve it through the RAG service. The verification phrase is cobalt smoke marker.\n',
-        'utf8'
-      ),
+      Body: smokeDocument,
     }));
+    const smokeHash = crypto.createHash('sha256').update(smokeDocument).digest('hex');
 
     await db.query('begin');
     await db.query(
@@ -193,7 +195,7 @@ async function main() {
     await db.query(
       `insert into files (id, user_id, project_space_id, filename, file_hash, file_size, file_type, object_key, status, progress, max_attempts)
        values ($1, $2, $3, 'rag-smoke.md', $4, $5, 'text/markdown', $6, 'pending', 0, 3)`,
-      [fileId, userId, projectSpaceId, crypto.randomBytes(16).toString('hex'), 160, objectKey]
+      [fileId, userId, projectSpaceId, smokeHash, smokeDocument.length, objectKey]
     );
     await db.query('commit');
 

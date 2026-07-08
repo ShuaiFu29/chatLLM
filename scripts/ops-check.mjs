@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -19,6 +20,32 @@ const parsePositiveInteger = (value, fallback, key) => {
   return parsed;
 };
 
+function parseEnvFile(filePath) {
+  if (!fs.existsSync(filePath)) return {};
+  const env = {};
+  const content = fs.readFileSync(filePath, 'utf8');
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex === -1) continue;
+
+    const key = line.slice(0, separatorIndex).trim();
+    let value = line.slice(separatorIndex + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    }
+    env[key] = value;
+  }
+
+  return env;
+}
+
 export function buildOpsTargets(env = process.env) {
   if (env.OPS_TARGETS_JSON) {
     const targets = JSON.parse(env.OPS_TARGETS_JSON);
@@ -34,10 +61,17 @@ export function buildOpsTargets(env = process.env) {
 
   const backendUrl = env.OPS_BACKEND_URL || env.LOAD_TARGET_URL || 'http://localhost:3000';
   const ragUrl = env.OPS_RAG_URL || 'http://localhost:8000';
+  const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const serverEnv = parseEnvFile(path.join(rootDir, 'server', '.env'));
+  const metricsToken = env.OPS_METRICS_TOKEN || env.METRICS_TOKEN || serverEnv.METRICS_TOKEN || '';
   const targets = [
     { label: 'backend live', url: joinUrl(backendUrl, '/health/live') },
     { label: 'backend ready', url: joinUrl(backendUrl, '/health/ready') },
-    { label: 'backend metrics', url: joinUrl(backendUrl, '/metrics') },
+    {
+      label: 'backend metrics',
+      url: joinUrl(backendUrl, '/metrics'),
+      headers: metricsToken ? { authorization: `Bearer ${metricsToken}` } : undefined,
+    },
     { label: 'rag ready', url: joinUrl(ragUrl, '/health/ready') },
   ];
 
@@ -70,6 +104,7 @@ const runOneCheck = async (target, options, fetchImpl) => {
   try {
     const response = await fetchImpl(target.url, {
       method: target.method || 'GET',
+      headers: target.headers,
       signal: controller.signal,
     });
     const durationMs = performance.now() - startedAt;

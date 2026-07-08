@@ -176,6 +176,35 @@ export const updateFile = async (
   return rows[0] || null;
 };
 
+export const deleteAbandonedUploadingFiles = async (
+  maxAgeMs = serverEnv.UPLOAD_TEMP_MAX_AGE_MS,
+  limit = 50
+) => {
+  const { rows } = await query<Pick<FileRow, 'id'>>(
+    `with stale_files as (
+       select f.id
+       from files f
+       where f.status = 'uploading'
+         and f.object_key is null
+         and f.updated_at <= now() - ($1::double precision * interval '1 millisecond')
+         and not exists (
+           select 1
+           from upload_multipart_sessions ums
+           where ums.file_id = f.id
+         )
+       order by f.updated_at asc
+       limit $2
+     )
+     delete from files f
+     using stale_files
+     where f.id = stale_files.id
+     returning f.id`,
+    [maxAgeMs, limit]
+  );
+
+  return rows.length;
+};
+
 export const retryFailedFileForUser = async (fileId: string, userId: string) => {
   const { rows } = await query<FileRow>(
     `update files

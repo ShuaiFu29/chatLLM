@@ -242,6 +242,8 @@ export default function KnowledgeBase() {
     return filename.replace(/\.(?:md|markdown)$/i, "").trim();
   };
 
+  const canViewFile = (file: FileRecord) => file.status === 'completed';
+
   return (
     <div className="h-full bg-bg-base text-text-main transition-colors duration-300 flex flex-col">
       {/* Delete Confirmation Modal */}
@@ -438,9 +440,10 @@ export default function KnowledgeBase() {
                       <div className="flex justify-end gap-1">
                         <button
                           onClick={() => setSelectedDocument({ id: file.id, filename: file.filename })}
-                          className="p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors"
-                          title={t('knowledge.viewFileAction')}
-                          aria-label={t('knowledge.viewFileAction')}
+                          disabled={!canViewFile(file)}
+                          className="p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text-muted"
+                          title={canViewFile(file) ? t('knowledge.viewFileAction') : t('knowledge.fileNotReadyAction')}
+                          aria-label={canViewFile(file) ? t('knowledge.viewFileAction') : t('knowledge.fileNotReadyAction')}
                         >
                           <BookOpen className="w-4 h-4" />
                         </button>
@@ -516,9 +519,10 @@ export default function KnowledgeBase() {
                   <div className="flex shrink-0 gap-1">
                     <button
                       onClick={() => setSelectedDocument({ id: file.id, filename: file.filename })}
-                      className="p-2 text-text-muted hover:text-primary active:bg-primary/10 rounded-lg transition-colors"
-                      title={t('knowledge.viewFileAction')}
-                      aria-label={t('knowledge.viewFileAction')}
+                      disabled={!canViewFile(file)}
+                      className="p-2 text-text-muted hover:text-primary active:bg-primary/10 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-muted disabled:active:bg-transparent"
+                      title={canViewFile(file) ? t('knowledge.viewFileAction') : t('knowledge.fileNotReadyAction')}
+                      aria-label={canViewFile(file) ? t('knowledge.viewFileAction') : t('knowledge.fileNotReadyAction')}
                     >
                       <BookOpen className="w-4 h-4" />
                     </button>

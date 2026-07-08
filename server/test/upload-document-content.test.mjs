@@ -22,6 +22,7 @@ test('upload routes expose an authenticated markdown original-content endpoint',
 test('file content controller streams only the current user document object as markdown', () => {
   assert.match(controllerSource, /export const getFileContent/);
   assert.match(controllerSource, /findFileForUser\(id, req\.user\.id\)/);
+  assert.match(controllerSource, /file\.status !== 'completed'/);
   assert.match(controllerSource, /file\.object_key/);
   assert.match(controllerSource, /getObjectStream\(file\.object_key\)/);
   assert.match(controllerSource, /Content-Type/);
