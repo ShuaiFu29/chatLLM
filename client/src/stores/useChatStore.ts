@@ -59,6 +59,14 @@ export interface RagQualitySummary {
   evidence_score: number;
   overall_score: number;
   evidence_label: string;
+  support_label?: string;
+  verification_score?: number;
+  risk_level?: string;
+  risk_factors?: string[];
+  missing_markers?: string[];
+  matched_markers?: string[];
+  answer_grounding_status?: string;
+  answer_grounding_score?: number;
 }
 
 export interface RagTraceSummary {
@@ -71,6 +79,13 @@ export interface RagTraceSummary {
   planned_queries: string[];
   trace_steps: RagTraceStep[];
   quality: RagQualitySummary;
+  answer_grounding?: Record<string, unknown>;
+  cache?: {
+    status: string;
+    hit_type?: string;
+    scope_fingerprint?: string;
+    reused_count?: number;
+  };
 }
 
 export interface ConversationComparison {
@@ -777,6 +792,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     ragWarning: true,
+                    sources: [],
+                    ragRunId: null,
+                    traceSummary: null,
+                    qualitySummary: null,
                   };
                   updateMessages(updatedMsgs);
                 }
@@ -790,6 +809,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     ragSkipped: true,
+                    sources: [],
+                    ragRunId: null,
+                    traceSummary: null,
+                    qualitySummary: null,
                   };
                   updateMessages(updatedMsgs);
                 }

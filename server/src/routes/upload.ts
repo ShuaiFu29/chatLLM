@@ -1,6 +1,10 @@
 import express from 'express';
 import {
   checkFile,
+  abortMultipartUpload,
+  completeMultipartUpload,
+  initMultipartUpload,
+  presignMultipartParts,
   initUpload,
   uploadChunk,
   mergeChunks,
@@ -21,6 +25,10 @@ router.use(requireAuth);
 
 router.post('/check', checkFile);
 router.post('/init', initUpload);
+router.post('/multipart/init', initMultipartUpload);
+router.post('/multipart/parts', presignMultipartParts);
+router.post('/multipart/complete', completeMultipartUpload);
+router.post('/multipart/abort', abortMultipartUpload);
 router.post('/chunk', chunkUpload.single('chunk'), uploadChunk);
 router.post('/merge', mergeChunks);
 router.post('/avatar', avatarUpload.single('file'), uploadAvatar);

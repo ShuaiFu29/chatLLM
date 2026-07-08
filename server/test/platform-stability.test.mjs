@@ -188,6 +188,20 @@ test('file queue has retry metadata, backoff-aware claims, and configurable conc
   assert.match(queueSource, /FILE_QUEUE_RETRY_BASE_DELAY_MS/);
 });
 
+test('file queue refreshes processing leases during long ingestion jobs', () => {
+  const repositorySource = readSource('src/repositories/files.ts');
+  const queueSource = readSource('src/services/fileQueue.ts');
+
+  assert.match(repositorySource, /export const touchFileProcessingHeartbeat/);
+  assert.match(repositorySource, /set last_attempt_at = now\(\)/i);
+  assert.match(repositorySource, /where id = \$1\s+and status = 'processing'/i);
+  assert.match(queueSource, /touchFileProcessingHeartbeat/);
+  assert.match(queueSource, /createProcessingHeartbeat/);
+  assert.match(queueSource, /FILE_QUEUE_STALE_AFTER_MS/);
+  assert.match(queueSource, /setInterval/);
+  assert.match(queueSource, /clearInterval/);
+});
+
 test('message search has large-data index support and remains bounded', () => {
   const migrationSource = readOptionalSource('migrations/0005_platform_stability.sql');
   const messageRepositorySource = readSource('src/repositories/messages.ts');

@@ -2,11 +2,17 @@ import { Request, Response } from 'express';
 import axios from 'axios';
 import path from 'path';
 import fs from 'fs-extra';
+import { pipeline } from 'stream/promises';
 import {
+  abortMultipartObjectUpload,
   buildAvatarKey,
   buildDocumentKey,
+  completeMultipartObjectUpload,
+  createMultipartObjectUpload,
   deleteObject,
   getObjectStream,
+  listMultipartObjectParts,
+  presignMultipartUploadParts,
   uploadBuffer,
   uploadFilePath,
 } from '../lib/storage';
@@ -25,19 +31,33 @@ import {
   findProjectSpaceForUser,
 } from '../repositories/projectSpaces';
 import { findUserById, updateUser } from '../repositories/users';
+import {
+  createMultipartUploadSession,
+  findActiveMultipartUploadSession,
+  findMultipartUploadSessionForUser,
+  markMultipartUploadSessionCancelled,
+  markMultipartUploadSessionCompleted,
+  markMultipartUploadSessionCompleting,
+  markMultipartUploadSessionFailed,
+  markMultipartUploadSessionUploading,
+} from '../repositories/uploadMultipart';
 import { fileQueue } from '../services/fileQueue';
 import { cleanupRagFileVectors } from '../lib/ragClient';
 import { verifyMergedUploadFile } from '../lib/uploadIntegrity';
 import {
+  MAX_MULTIPART_UPLOAD_PARTS,
   SUPPORTED_DOCUMENT_ERROR,
   UPLOAD_HASH_ERROR,
   UPLOAD_SIZE_ERROR,
+  chooseMultipartPartSize,
   getSupportedDocumentContentType,
+  parseMultipartPartNumbers,
   parseUploadFileHash,
   parseUploadFileSize,
   parseUploadChunkIndex,
   parseUploadTotalChunks,
 } from '../lib/uploadInput';
+import { serverEnv } from '../lib/env';
 
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/temp');
 fs.ensureDirSync(UPLOAD_DIR);
@@ -104,6 +124,38 @@ const resolveProjectSpaceId = async (userId: string, requestedProjectSpaceId?: s
   return defaultSpace.id;
 };
 
+const normalizeStorageParts = (parts: Array<{ partNumber: number; etag: string; size?: number }>) =>
+  parts
+    .filter((part) => part.partNumber >= 1 && part.partNumber <= MAX_MULTIPART_UPLOAD_PARTS && part.etag)
+    .sort((a, b) => a.partNumber - b.partNumber);
+
+const assertCompletePartSet = (
+  parts: Array<{ partNumber: number; etag: string; size?: number }>,
+  expectedTotalParts: number,
+  expectedFileSize?: number | null
+) => {
+  if (parts.length !== expectedTotalParts) {
+    throw new Error(`Missing uploaded parts. Expected ${expectedTotalParts}, found ${parts.length}`);
+  }
+
+  for (let index = 0; index < expectedTotalParts; index += 1) {
+    const expectedPartNumber = index + 1;
+    if (parts[index]?.partNumber !== expectedPartNumber) {
+      throw new Error(`Missing uploaded part ${expectedPartNumber}`);
+    }
+  }
+
+  if (expectedFileSize !== undefined && expectedFileSize !== null) {
+    const partSizes = parts.map((part) => Number(part.size));
+    if (partSizes.every((size) => Number.isFinite(size) && size >= 0)) {
+      const uploadedSize = partSizes.reduce((sum, size) => sum + size, 0);
+      if (uploadedSize !== expectedFileSize) {
+        throw new Error(`Uploaded multipart object size mismatch: expected ${expectedFileSize}, got ${uploadedSize}`);
+      }
+    }
+  }
+};
+
 export const checkFile = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -130,8 +182,22 @@ export const checkFile = async (req: Request, res: Response) => {
     const pendingFile = await findUploadingFileByUserAndHash(req.user.id, normalizedHash, projectSpaceId);
     const fileId = pendingFile?.id;
     let uploadedChunks: number[] = [];
+    let multipartSession = null;
 
     if (fileId) {
+      const activeSession = await findActiveMultipartUploadSession(fileId, req.user.id);
+      if (activeSession) {
+        const uploadedParts = await listMultipartObjectParts(activeSession.object_key, activeSession.storage_upload_id)
+          .catch(() => []);
+        multipartSession = {
+          uploadId: fileId,
+          partSize: Number(activeSession.part_size),
+          totalParts: Number(activeSession.total_parts),
+          uploadedPartNumbers: normalizeStorageParts(uploadedParts).map((part) => part.partNumber),
+          expiresAt: activeSession.expires_at,
+        };
+      }
+
       const fileDir = path.join(UPLOAD_DIR, fileId);
       if (await fs.pathExists(fileDir)) {
         const files = await fs.readdir(fileDir);
@@ -144,6 +210,8 @@ export const checkFile = async (req: Request, res: Response) => {
       uploadNeeded: true,
       uploadedChunks,
       fileId,
+      uploadStrategy: multipartSession ? 'direct-multipart' : 'legacy-chunks',
+      multipart: multipartSession,
       projectSpaceId,
     });
   } catch (err) {
@@ -179,6 +247,244 @@ export const initUpload = async (req: Request, res: Response) => {
     const message = stringifyError(err);
     const status = isUploadInputMessage(message) ? 400 : 500;
     res.status(status).json({ error: status === 400 ? message : 'Init failed', details: message });
+  }
+};
+
+export const initMultipartUpload = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { filename, hash, size, type } = req.body;
+  let createdFileId: string | null = null;
+
+  try {
+    const normalizedHash = requireUploadHash(hash);
+    const normalizedSize = requireUploadSize(size);
+    const contentType = ensureSupportedDocumentFilename(filename);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
+    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
+
+    const existingFile = await findCompletedFileByUserAndHash(req.user.id, normalizedHash, projectSpaceId);
+    if (existingFile) {
+      return res.json({
+        exists: true,
+        uploadNeeded: false,
+        uploadId: existingFile.id,
+        projectSpaceId,
+      });
+    }
+
+    const uploadingFile = await findUploadingFileByUserAndHash(req.user.id, normalizedHash, projectSpaceId);
+    let file = uploadingFile
+      ? await findFileForUser(uploadingFile.id, req.user.id)
+      : null;
+
+    if (file) {
+      const activeSession = await findActiveMultipartUploadSession(file.id, req.user.id);
+      if (activeSession) {
+        const uploadedParts = await listMultipartObjectParts(activeSession.object_key, activeSession.storage_upload_id)
+          .catch(() => []);
+        return res.json({
+          exists: false,
+          uploadNeeded: true,
+          uploadStrategy: 'direct-multipart',
+          uploadId: file.id,
+          partSize: Number(activeSession.part_size),
+          totalParts: Number(activeSession.total_parts),
+          uploadedPartNumbers: normalizeStorageParts(uploadedParts).map((part) => part.partNumber),
+          expiresAt: activeSession.expires_at,
+          projectSpaceId,
+        });
+      }
+    }
+
+    if (!file) {
+      file = await createUploadFile({
+        userId: req.user.id,
+        projectSpaceId,
+        filename,
+        hash: normalizedHash,
+        size: normalizedSize,
+        type: getSupportedDocumentContentType(filename) || type || contentType,
+      });
+      createdFileId = file.id;
+    }
+
+    const partSize = chooseMultipartPartSize(normalizedSize, serverEnv.MULTIPART_UPLOAD_PART_SIZE_BYTES);
+    const totalParts = Math.ceil(normalizedSize / partSize);
+    if (totalParts > MAX_MULTIPART_UPLOAD_PARTS) {
+      return res.status(400).json({ error: `File requires too many parts. Maximum is ${MAX_MULTIPART_UPLOAD_PARTS}` });
+    }
+
+    const objectKey = buildDocumentKey(req.user.id, file.id, filename);
+    const storageUploadId = await createMultipartObjectUpload(objectKey, contentType, {
+      sha256: normalizedHash,
+      size: String(normalizedSize),
+    });
+    const expiresAt = new Date(Date.now() + serverEnv.MULTIPART_UPLOAD_SESSION_TTL_MS);
+    const session = await createMultipartUploadSession({
+      fileId: file.id,
+      userId: req.user.id,
+      projectSpaceId,
+      objectKey,
+      storageUploadId,
+      partSize,
+      totalParts,
+      expiresAt,
+    });
+
+    res.json({
+      exists: false,
+      uploadNeeded: true,
+      uploadStrategy: 'direct-multipart',
+      uploadId: file.id,
+      partSize,
+      totalParts,
+      uploadedPartNumbers: [],
+      expiresAt: session.expires_at,
+      projectSpaceId,
+    });
+  } catch (err) {
+    const message = stringifyError(err);
+    if (createdFileId) {
+      await updateFile(createdFileId, {
+        status: 'failed',
+        progress: 0,
+        error_message: message,
+      }).catch(() => undefined);
+    }
+    const status = isUploadInputMessage(message) ? 400 : 500;
+    res.status(status).json({ error: status === 400 ? message : 'Multipart init failed', details: message });
+  }
+};
+
+export const presignMultipartParts = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { uploadId } = req.body;
+  const partNumbers = parseMultipartPartNumbers(req.body.partNumbers || req.body.part_numbers);
+
+  if (!uploadId || !partNumbers) {
+    return res.status(400).json({ error: 'Missing multipart upload parameters' });
+  }
+
+  try {
+    const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+    if (!session || !['initiated', 'uploading', 'completing'].includes(session.status)) {
+      return res.status(404).json({ error: 'Multipart upload session not found' });
+    }
+
+    if (new Date(session.expires_at).getTime() <= Date.now()) {
+      const message = 'Multipart upload session expired';
+      await markMultipartUploadSessionFailed(uploadId, message);
+      await updateFile(uploadId, { status: 'failed', progress: 0, error_message: message });
+      return res.status(410).json({ error: message });
+    }
+
+    await markMultipartUploadSessionUploading(uploadId);
+    const parts = await presignMultipartUploadParts(
+      session.object_key,
+      session.storage_upload_id,
+      partNumbers,
+      serverEnv.MULTIPART_UPLOAD_URL_EXPIRES_SECONDS
+    );
+
+    res.json({
+      uploadId,
+      expiresIn: serverEnv.MULTIPART_UPLOAD_URL_EXPIRES_SECONDS,
+      parts,
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Multipart presign failed', details: stringifyError(err) });
+  }
+};
+
+export const completeMultipartUpload = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { uploadId } = req.body;
+  let completedObjectKey: string | null = null;
+
+  if (!uploadId) {
+    return res.status(400).json({ error: 'Missing uploadId' });
+  }
+
+  try {
+    const upload = await findFileForUser(uploadId, req.user.id);
+    if (!upload || upload.status !== 'uploading') {
+      return res.status(404).json({ error: 'Upload session not found' });
+    }
+
+    const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+    if (!session || !['initiated', 'uploading', 'completing'].includes(session.status)) {
+      return res.status(404).json({ error: 'Multipart upload session not found' });
+    }
+
+    if (new Date(session.expires_at).getTime() <= Date.now()) {
+      throw new Error('Multipart upload session expired');
+    }
+
+    await markMultipartUploadSessionCompleting(uploadId);
+    const storageParts = normalizeStorageParts(
+      await listMultipartObjectParts(session.object_key, session.storage_upload_id)
+    );
+    assertCompletePartSet(storageParts, Number(session.total_parts), upload.file_size);
+
+    await completeMultipartObjectUpload(session.object_key, session.storage_upload_id, storageParts);
+    completedObjectKey = session.object_key;
+
+    await updateFile(uploadId, {
+      status: 'pending',
+      object_key: session.object_key,
+      progress: 0,
+      error_message: null,
+    });
+    await markMultipartUploadSessionCompleted(uploadId);
+
+    fileQueue.trigger();
+
+    res.json({ success: true, message: 'File uploaded and queued for processing' });
+  } catch (err) {
+    const message = stringifyError(err);
+    await markMultipartUploadSessionFailed(uploadId, message).catch(() => undefined);
+    const failedUpdate: Parameters<typeof updateFile>[1] = {
+      status: 'failed',
+      progress: 0,
+      error_message: message,
+    };
+    if (completedObjectKey) {
+      failedUpdate.object_key = completedObjectKey;
+    }
+    await updateFile(uploadId, failedUpdate).catch(() => undefined);
+    const status = /Missing uploaded parts|Missing uploaded part|size mismatch|expired/i.test(message) ? 400 : 500;
+    res.status(status).json({ error: status === 400 ? message : 'Multipart complete failed', details: message });
+  }
+};
+
+export const abortMultipartUpload = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { uploadId } = req.body;
+
+  if (!uploadId) {
+    return res.status(400).json({ error: 'Missing uploadId' });
+  }
+
+  try {
+    const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+    if (!session) return res.status(404).json({ error: 'Multipart upload session not found' });
+
+    if (['initiated', 'uploading', 'completing'].includes(session.status)) {
+      await abortMultipartObjectUpload(session.object_key, session.storage_upload_id).catch(() => undefined);
+    }
+
+    const message = 'Multipart upload cancelled';
+    await markMultipartUploadSessionCancelled(uploadId, message);
+    await updateFile(uploadId, {
+      status: 'failed',
+      progress: 0,
+      error_message: message,
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Multipart abort failed', details: stringifyError(err) });
   }
 };
 
@@ -243,19 +549,19 @@ export const mergeChunks = async (req: Request, res: Response) => {
 
     files.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
+    for (let i = 0; i < expectedChunks; i++) {
+      if (!files.includes(i.toString())) {
+        return res.status(400).json({ error: `Missing chunk ${i}` });
+      }
+    }
+
     const mergedFilePath = path.join(UPLOAD_DIR, `${uploadId}_merged`);
     mergedFilePathToCleanup = mergedFilePath;
     const writeStream = fs.createWriteStream(mergedFilePath);
 
     for (let i = 0; i < expectedChunks; i++) {
-      if (!files.includes(i.toString())) {
-        writeStream.destroy();
-        return res.status(400).json({ error: `Missing chunk ${i}` });
-      }
-
       const chunkPath = path.join(chunkDir, i.toString());
-      const chunkBuffer = await fs.readFile(chunkPath);
-      writeStream.write(chunkBuffer);
+      await pipeline(fs.createReadStream(chunkPath), writeStream, { end: false });
     }
 
     writeStream.end();

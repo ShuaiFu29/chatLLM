@@ -55,6 +55,9 @@ const enterpriseRagEnv = {
   EMBEDDING_MODEL: 'text-embedding-v4',
   EMBEDDING_DIMENSION: '1024',
   RAG_INGEST_CONCURRENCY: '6',
+  RAG_INGEST_STREAMING_THRESHOLD_BYTES: '52428800',
+  RAG_INGEST_CHUNK_BATCH_SIZE: '100',
+  RAG_INGEST_EMBEDDING_BATCH_SIZE: '10',
   RAG_READINESS_TIMEOUT_MS: '2000',
 };
 
@@ -110,6 +113,9 @@ test('validateCapacityConfig reports risky bottleneck settings for enterprise mo
         ELASTICSEARCH_ENABLED: 'false',
         NEO4J_ENABLED: 'false',
         RAG_INGEST_CONCURRENCY: '2',
+        RAG_INGEST_STREAMING_THRESHOLD_BYTES: '1073741824',
+        RAG_INGEST_CHUNK_BATCH_SIZE: '5000',
+        RAG_INGEST_EMBEDDING_BATCH_SIZE: '200',
         NEO4J_TIMEOUT_MS: '3000',
         NEO4J_BATCH_SIZE: '500',
         MILVUS_SEARCH_EF: '16',
@@ -128,6 +134,9 @@ test('validateCapacityConfig reports risky bottleneck settings for enterprise mo
   assert.match(report.warnings.join('\n'), /MILVUS_SEARCH_EF should be >= 64/);
   assert.match(report.warnings.join('\n'), /MILVUS_INSERT_BATCH_SIZE should be <= 1000/);
   assert.match(report.warnings.join('\n'), /RAG_INGEST_CONCURRENCY should be >= FILE_QUEUE_CONCURRENCY/);
+  assert.match(report.warnings.join('\n'), /RAG_INGEST_STREAMING_THRESHOLD_BYTES should be <= 104857600/);
+  assert.match(report.warnings.join('\n'), /RAG_INGEST_CHUNK_BATCH_SIZE should be <= 1000/);
+  assert.match(report.warnings.join('\n'), /RAG_INGEST_EMBEDDING_BATCH_SIZE should be <= 64/);
   assert.match(report.warnings.join('\n'), /NEO4J_TIMEOUT_MS should be >= 10000/);
   assert.match(report.warnings.join('\n'), /NEO4J_BATCH_SIZE should be <= 200/);
   assert.match(report.warnings.join('\n'), /docker-compose.yml should tune Elasticsearch JVM heap/);

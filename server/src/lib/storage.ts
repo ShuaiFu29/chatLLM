@@ -1,10 +1,15 @@
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CreateBucketCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
+  ListPartsCommand,
   PutObjectCommand,
   S3Client,
+  UploadPartCommand,
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
@@ -82,6 +87,124 @@ export const uploadBuffer = async (
     Key: key,
     Body: buffer,
     ContentType: contentType,
+  }));
+};
+
+export const createMultipartObjectUpload = async (
+  key: string,
+  contentType = 'application/octet-stream',
+  metadata?: Record<string, string>
+) => {
+  await ensureBucket();
+
+  const response = await s3.send(new CreateMultipartUploadCommand({
+    Bucket: S3_BUCKET,
+    Key: key,
+    ContentType: contentType,
+    Metadata: metadata,
+  }));
+
+  if (!response.UploadId) {
+    throw new Error('Storage did not return a multipart upload id');
+  }
+
+  return response.UploadId;
+};
+
+export const presignMultipartUploadParts = async (
+  key: string,
+  uploadId: string,
+  partNumbers: number[],
+  expiresIn: number
+) => {
+  await ensureBucket();
+
+  return Promise.all(partNumbers.map(async (partNumber) => ({
+    partNumber,
+    url: await getSignedUrl(
+      s3,
+      new UploadPartCommand({
+        Bucket: S3_BUCKET,
+        Key: key,
+        UploadId: uploadId,
+        PartNumber: partNumber,
+      }),
+      { expiresIn }
+    ),
+  })));
+};
+
+export interface MultipartObjectPart {
+  partNumber: number;
+  etag: string;
+  size?: number;
+}
+
+export const listMultipartObjectParts = async (
+  key: string,
+  uploadId: string
+): Promise<MultipartObjectPart[]> => {
+  await ensureBucket();
+
+  const parts: MultipartObjectPart[] = [];
+  let partNumberMarker: string | undefined;
+
+  do {
+    const response = await s3.send(new ListPartsCommand({
+      Bucket: S3_BUCKET,
+      Key: key,
+      UploadId: uploadId,
+      PartNumberMarker: partNumberMarker,
+    }));
+
+    for (const part of response.Parts || []) {
+      if (part.PartNumber && part.ETag) {
+        parts.push({
+          partNumber: part.PartNumber,
+          etag: part.ETag,
+          size: part.Size,
+        });
+      }
+    }
+
+    partNumberMarker = response.IsTruncated
+      ? response.NextPartNumberMarker?.toString()
+      : undefined;
+  } while (partNumberMarker);
+
+  return parts.sort((a, b) => a.partNumber - b.partNumber);
+};
+
+export const completeMultipartObjectUpload = async (
+  key: string,
+  uploadId: string,
+  parts: MultipartObjectPart[]
+) => {
+  await ensureBucket();
+
+  await s3.send(new CompleteMultipartUploadCommand({
+    Bucket: S3_BUCKET,
+    Key: key,
+    UploadId: uploadId,
+    MultipartUpload: {
+      Parts: parts.map((part) => ({
+        PartNumber: part.partNumber,
+        ETag: part.etag,
+      })),
+    },
+  }));
+};
+
+export const abortMultipartObjectUpload = async (
+  key: string,
+  uploadId: string
+) => {
+  await ensureBucket();
+
+  await s3.send(new AbortMultipartUploadCommand({
+    Bucket: S3_BUCKET,
+    Key: key,
+    UploadId: uploadId,
   }));
 };
 

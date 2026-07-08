@@ -28,6 +28,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_API_CORS_ALLOW_ORIGIN: "http://localhost:5173,http://localhost:5174"
     ports:
       - "9000:9000"
       - "9001:9001"

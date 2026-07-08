@@ -82,6 +82,17 @@ export interface UsageFileQueueItem {
   filename: string;
   status: 'uploading' | 'pending' | 'processing' | 'completed' | 'failed';
   progress: number;
+  ingestion_status?: string | null;
+  ingestion_stage?: string | null;
+  ingestion_progress?: number | null;
+  total_chunks?: number;
+  indexed_chunks?: number;
+  keyword_batches?: number;
+  graph_batches?: number;
+  vector_batches?: number;
+  checkpoint?: Record<string, unknown>;
+  heartbeat_at?: string | null;
+  job_error_message?: string | null;
   attempts: number;
   max_attempts: number;
   next_attempt_at?: string | null;
@@ -148,8 +159,27 @@ interface UsageFileQueueSummaryRow {
   next_retry_at: string | null;
 }
 
-interface UsageFileQueueItemRow extends Omit<UsageFileQueueItem, 'progress' | 'attempts' | 'max_attempts'> {
+interface UsageFileQueueItemRow extends Omit<
+  UsageFileQueueItem,
+  | 'progress'
+  | 'attempts'
+  | 'max_attempts'
+  | 'ingestion_progress'
+  | 'total_chunks'
+  | 'indexed_chunks'
+  | 'keyword_batches'
+  | 'graph_batches'
+  | 'vector_batches'
+  | 'checkpoint'
+> {
   progress: number | string | null;
+  ingestion_progress: number | string | null;
+  total_chunks: number | string | null;
+  indexed_chunks: number | string | null;
+  keyword_batches: number | string | null;
+  graph_batches: number | string | null;
+  vector_batches: number | string | null;
+  checkpoint: Record<string, unknown> | string | null;
   attempts: number | string | null;
   max_attempts: number | string | null;
 }
@@ -206,6 +236,15 @@ const mapUsageRagRun = (row: UsageRagRunRow): UsageRagRun => ({
 const mapUsageFileQueueItem = (row: UsageFileQueueItemRow): UsageFileQueueItem => ({
   ...row,
   progress: toCount(row.progress),
+  ingestion_progress: row.ingestion_progress === null || row.ingestion_progress === undefined
+    ? null
+    : toCount(row.ingestion_progress),
+  total_chunks: toCount(row.total_chunks),
+  indexed_chunks: toCount(row.indexed_chunks),
+  keyword_batches: toCount(row.keyword_batches),
+  graph_batches: toCount(row.graph_batches),
+  vector_batches: toCount(row.vector_batches),
+  checkpoint: toJsonObject<Record<string, unknown>>(row.checkpoint),
   attempts: toCount(row.attempts),
   max_attempts: toCount(row.max_attempts),
 });
@@ -424,20 +463,32 @@ export const getFileQueueSummaryForUser = async (userId: string, limit = 25): Pr
 
   const { rows: fileRows } = await query<UsageFileQueueItemRow>(
     `select
-       id,
-       project_space_id,
-       filename,
-       status,
-       progress,
-       attempts,
-       max_attempts,
-       next_attempt_at,
-       last_attempt_at,
-       error_message,
-       updated_at
+       files.id,
+       files.project_space_id,
+       files.filename,
+       files.status,
+       files.progress,
+       file_ingestion_jobs.status as ingestion_status,
+       file_ingestion_jobs.stage as ingestion_stage,
+       file_ingestion_jobs.progress as ingestion_progress,
+       file_ingestion_jobs.total_chunks,
+       file_ingestion_jobs.indexed_chunks,
+       file_ingestion_jobs.keyword_batches,
+       file_ingestion_jobs.graph_batches,
+       file_ingestion_jobs.vector_batches,
+       file_ingestion_jobs.checkpoint,
+       file_ingestion_jobs.heartbeat_at,
+       file_ingestion_jobs.error_message as job_error_message,
+       files.attempts,
+       files.max_attempts,
+       files.next_attempt_at,
+       files.last_attempt_at,
+       files.error_message,
+       files.updated_at
      from files
-     where user_id = $1
-     order by updated_at desc
+     left join file_ingestion_jobs on file_ingestion_jobs.file_id = files.id
+     where files.user_id = $1
+     order by greatest(files.updated_at, coalesce(file_ingestion_jobs.updated_at, files.updated_at)) desc
      limit $2`,
     [userId, limit]
   );

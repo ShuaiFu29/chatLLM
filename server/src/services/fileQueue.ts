@@ -2,7 +2,12 @@ import axios from 'axios';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { buildRagServiceHeaders } from '../lib/ragClient';
-import { claimNextPendingFile, FileRow, markFileAttemptFailed } from '../repositories/files';
+import {
+  claimNextPendingFile,
+  FileRow,
+  markFileAttemptFailed,
+  touchFileProcessingHeartbeat,
+} from '../repositories/files';
 
 class FileQueueService {
   private isProcessing = false;
@@ -11,6 +16,7 @@ class FileQueueService {
   private intervalMs = serverEnv.FILE_QUEUE_INTERVAL_MS;
   private concurrency = serverEnv.FILE_QUEUE_CONCURRENCY;
   private ingestTimeoutMs = serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS;
+  private staleAfterMs = serverEnv.FILE_QUEUE_STALE_AFTER_MS;
 
   start() {
     if (this.interval) return;
@@ -43,7 +49,7 @@ class FileQueueService {
           const file = await claimNextPendingFile({
             maxAttempts: serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
             retryBaseDelayMs: serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS,
-            staleAfterMs: serverEnv.FILE_QUEUE_STALE_AFTER_MS,
+            staleAfterMs: this.staleAfterMs,
           });
           if (!file) break;
           files.push(file);
@@ -68,6 +74,7 @@ class FileQueueService {
   private async processFile(file: FileRow) {
     metrics.recordFileQueueStarted();
     let status: 'completed' | 'failed' = 'failed';
+    const heartbeat = this.createProcessingHeartbeat(file.id);
     try {
       await axios.post(`${this.ragServiceUrl}/ingest-sync`, {
         file_id: file.id,
@@ -80,8 +87,20 @@ class FileQueueService {
       const message = `RAG Service unavailable: ${err.message}`;
       await markFileAttemptFailed(file, message);
     } finally {
+      if (heartbeat) clearInterval(heartbeat);
       metrics.recordFileQueueFinished(status);
     }
+  }
+
+  private createProcessingHeartbeat(fileId: string) {
+    const heartbeatMs = Math.max(1000, Math.floor(this.staleAfterMs / 3));
+    const heartbeat = setInterval(() => {
+      touchFileProcessingHeartbeat(fileId).catch((error) => {
+        console.warn(`[FileQueue] Failed to refresh processing heartbeat for ${fileId}:`, error);
+      });
+    }, heartbeatMs);
+    heartbeat.unref?.();
+    return heartbeat;
   }
 }
 

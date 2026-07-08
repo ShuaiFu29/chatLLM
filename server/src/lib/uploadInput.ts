@@ -1,4 +1,8 @@
 export const MAX_UPLOAD_CHUNKS = 1000;
+export const MIN_MULTIPART_PART_SIZE_BYTES = 5 * 1024 * 1024;
+export const DEFAULT_MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
+export const MAX_MULTIPART_UPLOAD_PARTS = 10000;
+export const MAX_MULTIPART_PRESIGN_PARTS = 100;
 export const UPLOAD_HASH_ERROR = 'A valid SHA-256 file hash is required';
 export const UPLOAD_SIZE_ERROR = 'A valid file size is required';
 
@@ -40,6 +44,27 @@ export const parseUploadFileHash = (value: unknown): string | null => {
 
 export const parseUploadFileSize = (value: unknown): number | null =>
   parseBoundedInteger(value, 1, Number.MAX_SAFE_INTEGER);
+
+export const chooseMultipartPartSize = (
+  fileSize: number,
+  preferredPartSize = DEFAULT_MULTIPART_PART_SIZE_BYTES
+) => {
+  const safeFileSize = Math.max(1, Math.floor(fileSize));
+  const safePreferred = Math.max(MIN_MULTIPART_PART_SIZE_BYTES, Math.floor(preferredPartSize));
+  const requiredPartSize = Math.ceil(safeFileSize / MAX_MULTIPART_UPLOAD_PARTS);
+  return Math.max(safePreferred, requiredPartSize, MIN_MULTIPART_PART_SIZE_BYTES);
+};
+
+export const parseMultipartPartNumbers = (value: unknown): number[] | null => {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_MULTIPART_PRESIGN_PARTS) {
+    return null;
+  }
+
+  const parsed = value.map((item) => parseBoundedInteger(item, 1, MAX_MULTIPART_UPLOAD_PARTS));
+  if (parsed.some((item) => item === null)) return null;
+
+  return Array.from(new Set(parsed as number[])).sort((a, b) => a - b);
+};
 
 export const getSupportedDocumentContentType = (filename: unknown): string | null => {
   if (typeof filename !== 'string') return null;

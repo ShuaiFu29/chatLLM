@@ -67,8 +67,13 @@ interface RagEvalResult {
   keyword_score: number;
   answer_keyword_score?: number;
   grounding_score?: number;
+  expected_answer_support_score?: number;
+  expected_answer_support_label?: string;
+  verification_score?: number;
   latency_ms?: number;
   evidence_label: string;
+  support_label?: string;
+  risk_level?: string;
   matched_sources?: RagEvalMatchedSource[];
   trace_summary?: RagEvalTraceSummary;
   error_message: string;
@@ -90,6 +95,8 @@ interface RagEvalRun {
   average_answer_keyword_score?: number;
   average_grounding_score?: number;
   average_judge_score?: number;
+  average_expected_answer_support_score?: number;
+  average_verification_score?: number;
   duration_ms: number;
   created_at: string;
   results?: RagEvalResult[];
@@ -110,6 +117,8 @@ interface RagEvalQualityTrendRun {
   average_keyword_score: number;
   average_answer_keyword_score?: number;
   average_grounding_score?: number;
+  average_expected_answer_support_score?: number;
+  average_verification_score?: number;
   duration_ms: number;
   created_at: string;
 }
@@ -129,7 +138,11 @@ interface RagEvalLowScoreCase {
   keyword_score: number;
   answer_keyword_score?: number;
   grounding_score?: number;
+  expected_answer_support_score?: number;
+  expected_answer_support_label?: string;
+  verification_score?: number;
   evidence_label: string;
+  support_label?: string;
   error_message: string;
 }
 
@@ -148,6 +161,8 @@ interface RagEvalQualitySummary {
   average_keyword_score: number;
   average_answer_keyword_score?: number;
   average_grounding_score?: number;
+  average_expected_answer_support_score?: number;
+  average_verification_score?: number;
   trend: RagEvalQualityTrendRun[];
   low_score_cases: RagEvalLowScoreCase[];
 }
@@ -273,6 +288,8 @@ const buildRagEvalRunMarkdown = (
     `- Citation accuracy: ${formatScore(run.average_citation_accuracy_score)}`,
     `- Keyword score: ${formatScore(run.average_keyword_score)}`,
     `- Grounding score: ${formatScore(run.average_grounding_score)}`,
+    `- Expected answer support: ${formatScore(run.average_expected_answer_support_score)}`,
+    `- Verification score: ${formatScore(run.average_verification_score)}`,
     `- Duration: ${run.duration_ms}ms`,
     '',
     '---',
@@ -296,8 +313,12 @@ const buildRagEvalRunMarkdown = (
     lines.push(`- Citation accuracy: ${formatScore(result.citation_accuracy_score)}`);
     lines.push(`- Keywords: ${formatScore(result.keyword_score)}`);
     lines.push(`- Grounding: ${formatScore(result.grounding_score)}`);
+    lines.push(`- Expected answer support: ${formatScore(result.expected_answer_support_score)}`);
+    lines.push(`- Verification: ${formatScore(result.verification_score)}`);
     lines.push(`- Latency: ${result.latency_ms ?? 0}ms`);
     lines.push(`- Evidence: ${result.evidence_label}`);
+    lines.push(`- Expected answer support label: ${result.expected_answer_support_label || 'unknown'}`);
+    lines.push(`- Support: ${result.support_label || 'unknown'}`);
     if (result.error_message) lines.push(`- Error: ${result.error_message}`);
     lines.push('');
 
@@ -467,6 +488,14 @@ export default function RagEvaluationPage() {
     if (label === 'strong') return t('chat.ragEvidenceStrong');
     if (label === 'partial') return t('chat.ragEvidencePartial');
     if (label === 'weak') return t('chat.ragEvidenceWeak');
+    return label || t('usage.notAvailable');
+  };
+
+  const getSupportLabel = (label?: string) => {
+    if (label === 'supported') return t('chat.ragSupportSupported');
+    if (label === 'partial') return t('chat.ragSupportPartial');
+    if (label === 'unsupported') return t('chat.ragSupportUnsupported');
+    if (label === 'not_applicable') return t('usage.notAvailable');
     return label || t('usage.notAvailable');
   };
 
@@ -1232,6 +1261,14 @@ export default function RagEvaluationPage() {
                       <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_keyword_score)}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
+                      <p className="text-xs text-text-muted">{t('ragEval.expectedAnswerSupportScore')}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_expected_answer_support_score)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-bg-base p-3">
+                      <p className="text-xs text-text-muted">{t('ragEval.verificationScore')}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_verification_score)}</p>
+                    </div>
+                    <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.failedCases')}</p>
                       <p className="mt-1 text-lg font-semibold">{latestRun.failed_count}/{latestRun.case_count}</p>
                     </div>
@@ -1824,6 +1861,14 @@ export default function RagEvaluationPage() {
                   <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_grounding_score)}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.expectedAnswerSupportScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_expected_answer_support_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
+                  <p className="text-xs text-text-muted">{t('ragEval.verificationScore')}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_verification_score)}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.duration')}</p>
                   <p className="mt-1 text-lg font-semibold">{selectedRun.duration_ms}ms</p>
               </div>
@@ -1872,6 +1917,18 @@ export default function RagEvaluationPage() {
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
                                 {t('ragEval.groundingScore')}: {formatScore(result.grounding_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.expectedAnswerSupportScore')}: {formatScore(result.expected_answer_support_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.verificationScore')}: {formatScore(result.verification_score)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.expectedAnswerSupportLabel')}: {getSupportLabel(result.expected_answer_support_label)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.supportStatus')}: {getSupportLabel(result.support_label)}
                               </span>
                               <span className={`rounded-full border px-2 py-1 font-semibold ${getEvidenceStatusClass(result.evidence_label)}`}>
                                 {t('ragEval.evidence')}: {getEvidenceLabel(result.evidence_label)}

@@ -14,6 +14,7 @@ test('usage API exposes per-user file queue state for document processing tracea
   const routeSource = readSource('src/routes/usage.ts');
   const controllerSource = readSource('src/controllers/usage.ts');
   const repositorySource = readSource('src/repositories/usage.ts');
+  const migrationSource = readSource('migrations/0021_file_ingestion_jobs.sql');
 
   assert.match(routeSource, /getUsageFileQueue/);
   assert.match(routeSource, /router\.get\('\/file-queue', requireAuth, getUsageFileQueue\)/);
@@ -31,7 +32,17 @@ test('usage API exposes per-user file queue state for document processing tracea
   assert.match(repositorySource, /max_attempts/);
   assert.match(repositorySource, /next_attempt_at/);
   assert.match(repositorySource, /error_message/);
-  assert.match(repositorySource, /order by updated_at desc\s+limit \$2/i);
+  assert.match(repositorySource, /left join file_ingestion_jobs/i);
+  assert.match(repositorySource, /ingestion_stage/);
+  assert.match(repositorySource, /indexed_chunks/);
+  assert.match(repositorySource, /vector_batches/);
+  assert.match(repositorySource, /heartbeat_at/);
+  assert.match(repositorySource, /order by greatest\(files\.updated_at, coalesce\(file_ingestion_jobs\.updated_at, files\.updated_at\)\) desc\s+limit \$2/i);
+
+  assert.match(migrationSource, /create table if not exists file_ingestion_jobs/i);
+  assert.match(migrationSource, /checkpoint jsonb not null default '\{\}'::jsonb/i);
+  assert.match(migrationSource, /file_ingestion_jobs_user_status_idx/i);
+  assert.match(migrationSource, /file_ingestion_jobs_heartbeat_idx/i);
 });
 
 test('usage page renders document processing queue state with i18n coverage', () => {
@@ -45,6 +56,10 @@ test('usage page renders document processing queue state with i18n coverage', ()
   assert.match(usagePageSource, /fileQueue\?\.summary\.processing/);
   assert.match(usagePageSource, /isFileJobsModalOpen/);
   assert.match(usagePageSource, /fileQueue\.files\.map/);
+  assert.match(usagePageSource, /ingestion_stage/);
+  assert.match(usagePageSource, /usage\.ingestionStage/);
+  assert.match(usagePageSource, /usage\.indexedChunks/);
+  assert.match(usagePageSource, /usage\.heartbeatAt/);
 
   for (const key of [
     'documentProcessing',
@@ -57,6 +72,12 @@ test('usage page renders document processing queue state with i18n coverage', ()
     'attempts',
     'nextRetry',
     'queueLoadFailed',
+    'ingestionStage',
+    'indexedChunks',
+    'vectorBatches',
+    'keywordBatches',
+    'graphBatches',
+    'heartbeatAt',
   ]) {
     assert.equal(typeof en.usage[key], 'string', `missing English usage.${key}`);
     assert.equal(typeof zh.usage[key], 'string', `missing Chinese usage.${key}`);

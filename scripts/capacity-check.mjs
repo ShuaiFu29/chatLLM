@@ -41,6 +41,9 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   const ragRetrieveTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TIMEOUT_MS', 10000);
   const ragCircuitThreshold = asInt(serverEnv, 'RAG_CIRCUIT_FAILURE_THRESHOLD', 5);
   const ragIngestConcurrency = asInt(ragEnv, 'RAG_INGEST_CONCURRENCY', 2);
+  const ragStreamingThresholdBytes = asInt(ragEnv, 'RAG_INGEST_STREAMING_THRESHOLD_BYTES', 50 * 1024 * 1024);
+  const ragChunkBatchSize = asInt(ragEnv, 'RAG_INGEST_CHUNK_BATCH_SIZE', 100);
+  const ragEmbeddingBatchSize = asInt(ragEnv, 'RAG_INGEST_EMBEDDING_BATCH_SIZE', 10);
 
   if (enterprise) {
     addThresholdWarning(warnings, checks, 'DB_POOL_MAX', dbPoolMax, '>=', 20, `DB_POOL_MAX=${dbPoolMax}`);
@@ -80,6 +83,39 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
     warnings.push(
       `RAG_INGEST_CONCURRENCY should be >= FILE_QUEUE_CONCURRENCY for enterprise profile (RAG_INGEST_CONCURRENCY=${ragIngestConcurrency}, FILE_QUEUE_CONCURRENCY=${fileQueueConcurrency})`
     );
+  }
+  if (enterprise) {
+    addThresholdWarning(
+      warnings,
+      checks,
+      'RAG_INGEST_STREAMING_THRESHOLD_BYTES',
+      ragStreamingThresholdBytes,
+      '<=',
+      100 * 1024 * 1024,
+      `RAG_INGEST_STREAMING_THRESHOLD_BYTES=${ragStreamingThresholdBytes}`
+    );
+    addThresholdWarning(
+      warnings,
+      checks,
+      'RAG_INGEST_CHUNK_BATCH_SIZE',
+      ragChunkBatchSize,
+      '<=',
+      1000,
+      `RAG_INGEST_CHUNK_BATCH_SIZE=${ragChunkBatchSize}`
+    );
+    addThresholdWarning(
+      warnings,
+      checks,
+      'RAG_INGEST_EMBEDDING_BATCH_SIZE',
+      ragEmbeddingBatchSize,
+      '<=',
+      64,
+      `RAG_INGEST_EMBEDDING_BATCH_SIZE=${ragEmbeddingBatchSize}`
+    );
+  } else {
+    checks.push({ label: 'RAG_INGEST_STREAMING_THRESHOLD_BYTES', status: 'ok', detail: `RAG_INGEST_STREAMING_THRESHOLD_BYTES=${ragStreamingThresholdBytes}` });
+    checks.push({ label: 'RAG_INGEST_CHUNK_BATCH_SIZE', status: 'ok', detail: `RAG_INGEST_CHUNK_BATCH_SIZE=${ragChunkBatchSize}` });
+    checks.push({ label: 'RAG_INGEST_EMBEDDING_BATCH_SIZE', status: 'ok', detail: `RAG_INGEST_EMBEDDING_BATCH_SIZE=${ragEmbeddingBatchSize}` });
   }
   checks.push({ label: 'RAG_RETRIEVE_TIMEOUT_MS', status: 'ok', detail: `RAG_RETRIEVE_TIMEOUT_MS=${ragRetrieveTimeoutMs}` });
   checks.push({ label: 'RAG_CIRCUIT_FAILURE_THRESHOLD', status: 'ok', detail: `RAG_CIRCUIT_FAILURE_THRESHOLD=${ragCircuitThreshold}` });

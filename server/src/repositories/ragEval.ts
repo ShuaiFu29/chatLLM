@@ -47,6 +47,8 @@ export interface RagEvalRunRow {
   average_answer_keyword_score: number;
   average_grounding_score: number;
   average_judge_score: number;
+  average_expected_answer_support_score: number;
+  average_verification_score: number;
   duration_ms: number;
   queued_at: string;
   claimed_at?: string | null;
@@ -87,8 +89,13 @@ export interface RagEvalResultRow {
   answer_keyword_score: number;
   grounding_score: number;
   judge_score: number;
+  expected_answer_support_score: number;
+  expected_answer_support_label: string;
+  verification_score: number;
   latency_ms: number;
   evidence_label: string;
+  support_label: string;
+  risk_level: string;
   matched_sources: unknown[];
   trace_summary: Record<string, unknown>;
   error_message: string;
@@ -111,6 +118,8 @@ export interface RagEvalQualityTrendRun {
   average_answer_keyword_score: number;
   average_grounding_score: number;
   average_judge_score: number;
+  average_expected_answer_support_score: number;
+  average_verification_score: number;
   duration_ms: number;
   created_at: string;
   completed_at?: string | null;
@@ -132,8 +141,13 @@ export interface RagEvalLowScoreCase {
   answer_keyword_score: number;
   grounding_score: number;
   judge_score: number;
+  expected_answer_support_score: number;
+  expected_answer_support_label: string;
+  verification_score: number;
   latency_ms: number;
   evidence_label: string;
+  support_label: string;
+  risk_level: string;
   error_message: string;
 }
 
@@ -153,6 +167,8 @@ export interface RagEvalQualitySummary {
   average_answer_keyword_score: number;
   average_grounding_score: number;
   average_judge_score: number;
+  average_expected_answer_support_score: number;
+  average_verification_score: number;
   trend: RagEvalQualityTrendRun[];
   low_score_cases: RagEvalLowScoreCase[];
 }
@@ -229,6 +245,8 @@ const runColumns = `
   average_answer_keyword_score,
   average_grounding_score,
   average_judge_score,
+  average_expected_answer_support_score,
+  average_verification_score,
   duration_ms,
   queued_at,
   claimed_at,
@@ -256,6 +274,8 @@ interface RagEvalRunOutput {
   average_answer_keyword_score?: number;
   average_grounding_score?: number;
   average_judge_score?: number;
+  average_expected_answer_support_score?: number;
+  average_verification_score?: number;
   results: Array<{
     case_id: string;
     question: string;
@@ -271,8 +291,13 @@ interface RagEvalRunOutput {
     answer_keyword_score?: number;
     grounding_score?: number;
     judge_score?: number;
+    expected_answer_support_score?: number;
+    expected_answer_support_label?: string;
+    verification_score?: number;
     latency_ms?: number;
     evidence_label: string;
+    support_label?: string;
+    risk_level?: string;
     matched_sources: unknown[];
     trace_summary: Record<string, unknown>;
     error_message: string;
@@ -552,6 +577,8 @@ export const getRagEvalQualitySummaryForUser = async (
       average_answer_keyword_score: run.average_answer_keyword_score,
       average_grounding_score: run.average_grounding_score,
       average_judge_score: run.average_judge_score,
+      average_expected_answer_support_score: run.average_expected_answer_support_score,
+      average_verification_score: run.average_verification_score,
       duration_ms: run.duration_ms,
       created_at: run.created_at,
       completed_at: run.completed_at,
@@ -575,8 +602,13 @@ export const getRagEvalQualitySummaryForUser = async (
          answer_keyword_score,
          grounding_score,
          judge_score,
+         expected_answer_support_score,
+         expected_answer_support_label,
+         verification_score,
          latency_ms,
          evidence_label,
+         support_label,
+         risk_level,
          error_message
        from rag_eval_results
        where run_id = $1
@@ -604,6 +636,8 @@ export const getRagEvalQualitySummaryForUser = async (
     average_answer_keyword_score: latestRun?.average_answer_keyword_score || 0,
     average_grounding_score: latestRun?.average_grounding_score || 0,
     average_judge_score: latestRun?.average_judge_score || 0,
+    average_expected_answer_support_score: latestRun?.average_expected_answer_support_score || 0,
+    average_verification_score: latestRun?.average_verification_score || 0,
     trend,
     low_score_cases: lowScoreCases,
   };
@@ -849,7 +883,9 @@ export const completeRagEvalRunWithResults = async (input: {
            average_answer_keyword_score = $14,
            average_grounding_score = $15,
            average_judge_score = $16,
-           duration_ms = $17,
+           average_expected_answer_support_score = $17,
+           average_verification_score = $18,
+           duration_ms = $19,
            claimed_at = null,
            worker_id = null,
            next_attempt_at = null,
@@ -858,7 +894,7 @@ export const completeRagEvalRunWithResults = async (input: {
        where id = $1
          and user_id = $2
          and status in ('running')
-         and ($18::text is null or worker_id = $18)
+         and ($20::text is null or worker_id = $20)
        returning ${runColumns}`,
       [
         input.runId,
@@ -877,6 +913,8 @@ export const completeRagEvalRunWithResults = async (input: {
         input.output.average_answer_keyword_score ?? input.output.average_keyword_score,
         input.output.average_grounding_score ?? 0,
         input.output.average_judge_score ?? 0,
+        input.output.average_expected_answer_support_score ?? 0,
+        input.output.average_verification_score ?? 0,
         input.output.duration_ms,
         input.workerId || null,
       ]
@@ -904,13 +942,18 @@ export const completeRagEvalRunWithResults = async (input: {
            answer_keyword_score,
            grounding_score,
            judge_score,
+           expected_answer_support_score,
+           expected_answer_support_label,
+           verification_score,
            latency_ms,
            evidence_label,
+           support_label,
+           risk_level,
            matched_sources,
            trace_summary,
            error_message
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          returning *`,
         [
           run.id,
@@ -928,8 +971,13 @@ export const completeRagEvalRunWithResults = async (input: {
           result.answer_keyword_score ?? result.keyword_score,
           result.grounding_score ?? 0,
           result.judge_score ?? 0,
+          result.expected_answer_support_score ?? 0,
+          result.expected_answer_support_label || 'unknown',
+          result.verification_score ?? 0,
           result.latency_ms ?? 0,
           result.evidence_label,
+          result.support_label || 'unsupported',
+          result.risk_level || 'unknown',
           JSON.stringify(result.matched_sources || []),
           JSON.stringify(result.trace_summary || {}),
           result.error_message || '',
@@ -1076,10 +1124,12 @@ export const insertRagEvalRunWithResults = async (input: {
          average_answer_keyword_score,
          average_grounding_score,
          average_judge_score,
+         average_expected_answer_support_score,
+         average_verification_score,
          duration_ms,
          completed_at
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, now())
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, now())
        returning ${runColumns}`,
       [
         input.datasetId,
@@ -1098,6 +1148,8 @@ export const insertRagEvalRunWithResults = async (input: {
         input.output.average_answer_keyword_score ?? input.output.average_keyword_score,
         input.output.average_grounding_score ?? 0,
         input.output.average_judge_score ?? 0,
+        input.output.average_expected_answer_support_score ?? 0,
+        input.output.average_verification_score ?? 0,
         input.output.duration_ms,
       ]
     );
@@ -1123,13 +1175,18 @@ export const insertRagEvalRunWithResults = async (input: {
            answer_keyword_score,
            grounding_score,
            judge_score,
+           expected_answer_support_score,
+           expected_answer_support_label,
+           verification_score,
            latency_ms,
            evidence_label,
+           support_label,
+           risk_level,
            matched_sources,
            trace_summary,
            error_message
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          returning *`,
         [
           run.id,
@@ -1147,8 +1204,13 @@ export const insertRagEvalRunWithResults = async (input: {
           result.answer_keyword_score ?? result.keyword_score,
           result.grounding_score ?? 0,
           result.judge_score ?? 0,
+          result.expected_answer_support_score ?? 0,
+          result.expected_answer_support_label || 'unknown',
+          result.verification_score ?? 0,
           result.latency_ms ?? 0,
           result.evidence_label,
+          result.support_label || 'unsupported',
+          result.risk_level || 'unknown',
           JSON.stringify(result.matched_sources || []),
           JSON.stringify(result.trace_summary || {}),
           result.error_message || '',

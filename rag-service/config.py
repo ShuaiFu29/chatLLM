@@ -52,6 +52,9 @@ class Settings:
     rag_judge_timeout_ms: int
     rag_readiness_timeout_ms: int
     rag_ingest_concurrency: int
+    rag_ingest_streaming_threshold_bytes: int
+    rag_ingest_chunk_batch_size: int
+    rag_ingest_embedding_batch_size: int
     rag_service_token: str
     rag_db_pool_max: int
     rag_db_pool_timeout_ms: int
@@ -158,6 +161,9 @@ def load_settings() -> Settings:
         rag_judge_timeout_ms=_positive_int("RAG_JUDGE_TIMEOUT_MS", "10000"),
         rag_readiness_timeout_ms=_positive_int("RAG_READINESS_TIMEOUT_MS", "2000"),
         rag_ingest_concurrency=_positive_int("RAG_INGEST_CONCURRENCY", "2"),
+        rag_ingest_streaming_threshold_bytes=_positive_int("RAG_INGEST_STREAMING_THRESHOLD_BYTES", str(50 * 1024 * 1024)),
+        rag_ingest_chunk_batch_size=_positive_int("RAG_INGEST_CHUNK_BATCH_SIZE", "100"),
+        rag_ingest_embedding_batch_size=_positive_int("RAG_INGEST_EMBEDDING_BATCH_SIZE", "10"),
         rag_service_token=os.environ.get("RAG_SERVICE_TOKEN", "").strip(),
         rag_db_pool_max=_positive_int("RAG_DB_POOL_MAX", "10"),
         rag_db_pool_timeout_ms=_positive_int("RAG_DB_POOL_TIMEOUT_MS", "5000"),

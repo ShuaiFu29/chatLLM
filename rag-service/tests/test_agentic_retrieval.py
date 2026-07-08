@@ -5,12 +5,437 @@ from unittest.mock import patch
 from agentic_retrieval import agentic_retrieve
 from evaluation import evaluate_retrieval_quality
 from query_planner import plan_queries
+from retrieval_cache import InMemoryRetrievalCache
 from retrieval import retrieve_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
 class AgenticRetrievalTests(unittest.TestCase):
+    def test_agentic_retrieve_reports_query_cache_write_failure_without_failing_retrieval(self):
+        class FailingWriteCache(InMemoryRetrievalCache):
+            def upsert_query_cache(self, *args, **kwargs):
+                raise RuntimeError("cache write timeout")
+
+        cache = FailingWriteCache(scope_fingerprint="scope-v1")
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return [{
+                "id": "chunk-cache-write",
+                "content": "OAuth refresh token rotation revokes the previous token and issues a new HttpOnly refresh session.",
+                "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 3},
+                "similarity": 0.9,
+                "retrieval_score": 0.9,
+            }]
+
+        result = agentic_retrieve(
+            query="How does OAuth refresh token rotation work?",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertEqual(result["results"][0]["id"], "chunk-cache-write")
+        cache_write_steps = [
+            step for step in result["trace_steps"]
+            if step["step_type"] == "cache_write" and step["input"].get("cache_kind") == "query"
+        ]
+        self.assertEqual(cache_write_steps[-1]["status"], "partial")
+        self.assertIn("cache write timeout", cache_write_steps[-1]["output"]["error"])
+
+    def test_agentic_retrieve_reports_cache_hit_side_effect_failure_without_retrieving(self):
+        class FailingHitCache(InMemoryRetrievalCache):
+            def record_hit(self, entry):
+                raise RuntimeError("hit counter unavailable")
+
+        cache = FailingHitCache(scope_fingerprint="scope-v1")
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="how does oauth refresh token rotation work?",
+            original_query="How does OAuth refresh token rotation work?",
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "chunk-cached-oauth",
+                    "content": "OAuth refresh token rotation reissues the HttpOnly session and invalidates the previous refresh token.",
+                    "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 1},
+                    "similarity": 0.93,
+                    "retrieval_score": 0.93,
+                }
+            ],
+            quality={"overall_score": 0.82, "evidence_label": "strong"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(query)
+            return []
+
+        result = agentic_retrieve(
+            query="How does OAuth refresh token rotation work?",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertEqual(retrieve_calls, [])
+        self.assertEqual(result["results"][0]["id"], "chunk-cached-oauth")
+        cache_side_effect_steps = [
+            step for step in result["trace_steps"]
+            if step["step_type"] == "cache_side_effect"
+        ]
+        self.assertEqual(cache_side_effect_steps[-1]["status"], "partial")
+        self.assertIn("hit counter unavailable", cache_side_effect_steps[-1]["output"]["error"])
+
+    def test_agentic_retrieve_reuses_exact_cached_evidence_without_retrieving(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="how does oauth refresh token rotation work?",
+            original_query="How does OAuth refresh token rotation work?",
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "chunk-cached-oauth",
+                    "content": "OAuth refresh token rotation reissues the HttpOnly session and invalidates the previous refresh token.",
+                    "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 1},
+                    "similarity": 0.93,
+                    "retrieval_score": 0.93,
+                }
+            ],
+            quality={"overall_score": 0.82, "evidence_label": "strong"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(query)
+            return []
+
+        result = agentic_retrieve(
+            query="How does OAuth refresh token rotation work?",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertEqual(retrieve_calls, [])
+        self.assertEqual(result["results"][0]["id"], "chunk-cached-oauth")
+        self.assertEqual(result["cache"]["status"], "hit")
+        step_types = [step["step_type"] for step in result["trace_steps"]]
+        self.assertIn("cache_lookup", step_types)
+        self.assertIn("evidence_reuse", step_types)
+
+    def test_agentic_retrieve_ignores_cached_evidence_when_scope_fingerprint_changes(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v2")
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="how does oauth refresh token rotation work?",
+            original_query="How does OAuth refresh token rotation work?",
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "chunk-stale",
+                    "content": "Stale OAuth evidence from an older knowledge version.",
+                    "metadata": {"filename": "old-auth.md", "file_id": "file-old", "chunk_index": 0},
+                    "similarity": 0.99,
+                    "retrieval_score": 0.99,
+                }
+            ],
+            quality={"overall_score": 0.95, "evidence_label": "strong"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(query)
+            return [{
+                "id": "chunk-fresh",
+                "content": "Fresh OAuth refresh token rotation evidence from the current knowledge version.",
+                "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 2},
+                "similarity": 0.88,
+                "retrieval_score": 0.88,
+            }]
+
+        result = agentic_retrieve(
+            query="How does OAuth refresh token rotation work?",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertGreater(len(retrieve_calls), 0)
+        self.assertEqual(result["results"][0]["id"], "chunk-fresh")
+        self.assertNotEqual(result["cache"]["status"], "hit")
+
+    def test_agentic_retrieve_supplements_cached_evidence_when_confidence_is_weak(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="how does oauth refresh token rotation work?",
+            original_query="How does OAuth refresh token rotation work?",
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "chunk-weak-cache",
+                    "content": "Account settings mention sessions.",
+                    "metadata": {"filename": "profile.md", "file_id": "file-profile", "chunk_index": 0},
+                    "similarity": 0.2,
+                    "retrieval_score": 0.2,
+                }
+            ],
+            quality={"overall_score": 0.2, "evidence_label": "weak"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(query)
+            return [{
+                "id": "chunk-fresh-oauth",
+                "content": "OAuth refresh token rotation revokes the previous token and issues a new HttpOnly refresh session.",
+                "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 3},
+                "similarity": 0.9,
+                "retrieval_score": 0.9,
+            }]
+
+        result = agentic_retrieve(
+            query="How does OAuth refresh token rotation work?",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertGreater(len(retrieve_calls), 0)
+        self.assertEqual(result["results"][0]["id"], "chunk-fresh-oauth")
+        reuse_steps = [step for step in result["trace_steps"] if step["step_type"] == "evidence_reuse"]
+        self.assertEqual(reuse_steps[0]["status"], "partial")
+        self.assertEqual(result["cache"]["status"], "partial")
+
+    def test_agentic_retrieve_verifies_cached_evidence_before_skipping_retrieval(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        query = "华东 E-2 紧急等级下，响应确认窗口应按 T+5 还是 T+3？"
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query=query,
+            original_query=query,
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "cached-default-rule",
+                    "content": "2026 修订版规定默认响应确认窗口是 T+5 分钟，未说明华东 E-2 特例。",
+                    "metadata": {"filename": "01-current.md", "file_id": "current", "chunk_index": 1},
+                    "similarity": 0.99,
+                    "retrieval_score": 0.99,
+                }
+            ],
+            quality={"overall_score": 0.92, "evidence_label": "strong"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(planned_query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(planned_query)
+            return [{
+                "id": "fresh-regional-rule",
+                "content": "华东 E-2 紧急等级必须并读区域附件，响应确认窗口按 T+3，不能沿用默认 T+5。",
+                "metadata": {"filename": "regional-appendix.md", "file_id": "regional", "chunk_index": 4},
+                "similarity": 0.86,
+                "retrieval_score": 0.86,
+            }]
+
+        result = agentic_retrieve(
+            query=query,
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            limit=3,
+            threshold=0.1,
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertGreater(len(retrieve_calls), 0)
+        self.assertEqual(result["cache"]["status"], "partial")
+        self.assertEqual(result["results"][0]["id"], "fresh-regional-rule")
+        self.assertIn("support_label", result["quality"])
+        self.assertEqual(result["quality"]["support_label"], "supported")
+        step_types = [step["step_type"] for step in result["trace_steps"]]
+        self.assertIn("risk_assess", step_types)
+        self.assertIn("evidence_verify", step_types)
+
+    def test_agentic_retrieve_supplements_single_source_cache_for_high_risk_cross_region_queries(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        query = "CN 患者原始诊疗文本是否能在事故恢复期间同步到 EU 分析域，并由 AI 服务处理？"
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query=query,
+            original_query=query,
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "cached-single-policy",
+                    "content": "CN 患者原始诊疗文本在事故恢复期间同步到 EU 分析域并由 AI 服务处理需要患者授权、跨境审批和审计留痕。",
+                    "metadata": {"filename": "cn-eu-policy.md", "file_id": "policy", "chunk_index": 1},
+                    "similarity": 0.99,
+                    "retrieval_score": 0.99,
+                }
+            ],
+            quality={"overall_score": 0.95, "evidence_label": "strong", "support_label": "supported"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(planned_query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(planned_query)
+            return [
+                {
+                    "id": "fresh-cn-control",
+                    "content": "CN 原始诊疗文本出境需要患者授权、出境安全评估和事故恢复期间的临时审批。",
+                    "metadata": {"filename": "cn-control.md", "file_id": "cn", "chunk_index": 2},
+                    "similarity": 0.88,
+                    "retrieval_score": 0.88,
+                },
+                {
+                    "id": "fresh-eu-ai-control",
+                    "content": "EU 分析域由 AI 服务处理患者文本时必须启用目的限制、假名化和审计留痕。",
+                    "metadata": {"filename": "eu-ai-control.md", "file_id": "eu", "chunk_index": 3},
+                    "similarity": 0.84,
+                    "retrieval_score": 0.84,
+                },
+            ]
+
+        result = agentic_retrieve(
+            query=query,
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            limit=4,
+            threshold=0.1,
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertGreater(len(retrieve_calls), 0)
+        self.assertEqual(result["cache"]["status"], "partial")
+        verify_steps = [step for step in result["trace_steps"] if step["step_type"] == "evidence_verify"]
+        self.assertIn("limited_source_diversity_for_high_risk_query", verify_steps[0]["output"]["reasons"])
+        self.assertTrue(any(document["id"] == "fresh-cn-control" for document in result["results"]))
+
+    def test_agentic_retrieve_reuses_subquery_cache_for_planned_queries(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        cache.upsert_subquery_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="模型重大变更 上线 双签 2024",
+            original_query="模型重大变更 上线 双签 2024",
+            scope_fingerprint="scope-v1",
+            documents=[
+                {
+                    "id": "chunk-cached-model",
+                    "content": "模型重大变更上线前需要完成双签，不得按 2024 旧口径补交。",
+                    "metadata": {"filename": "model-change.md", "file_id": "file-model", "chunk_index": 1},
+                    "similarity": 0.82,
+                    "retrieval_score": 0.82,
+                }
+            ],
+            quality={"overall_score": 0.7, "evidence_label": "strong"},
+        )
+
+        retrieve_calls = []
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(query)
+            return [{
+                "id": f"chunk-live-{len(retrieve_calls)}",
+                "content": "患者授权和医保支付证据会影响模型重大变更上线审批。",
+                "metadata": {"filename": "governance.md", "file_id": "file-gov", "chunk_index": len(retrieve_calls)},
+                "similarity": 0.74,
+                "retrieval_score": 0.74,
+            }]
+
+        result = agentic_retrieve(
+            query="模型重大变更上线前是否必须完成双签，还是可以按 2024 口径补交？",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            limit=4,
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertLess(len(retrieve_calls), len(result["planned_queries"]))
+        self.assertTrue(any(document["id"] == "chunk-cached-model" for document in result["results"]))
+        step_types = [step["step_type"] for step in result["trace_steps"]]
+        self.assertIn("subquery_cache_hit", step_types)
+
+    def test_agentic_retrieve_reports_partial_cache_status_when_subquery_cache_is_reused(self):
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        cached_document = {
+            "id": "chunk-cached-model",
+            "content": "模型重大变更上线前需要完成双签，不得按 2024 旧口径补交。",
+            "metadata": {"filename": "model-change.md", "file_id": "file-model", "chunk_index": 1},
+            "similarity": 0.82,
+            "retrieval_score": 0.82,
+        }
+        cache.upsert_subquery_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="模型重大变更 上线 双签 2024",
+            original_query="模型重大变更 上线 双签 2024",
+            scope_fingerprint="scope-v1",
+            documents=[cached_document],
+            quality={"overall_score": 0.7, "evidence_label": "strong"},
+        )
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return [{
+                "id": "chunk-live",
+                "content": "患者授权和医保支付证据会影响模型重大变更上线审批。",
+                "metadata": {"filename": "governance.md", "file_id": "file-gov", "chunk_index": 2},
+                "similarity": 0.74,
+                "retrieval_score": 0.74,
+            }]
+
+        result = agentic_retrieve(
+            query="模型重大变更上线前是否必须完成双签，还是可以按 2024 口径补交？",
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            limit=4,
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+        )
+
+        self.assertEqual(result["cache"]["status"], "partial")
+        self.assertEqual(result["cache"]["hit_type"], "subquery")
+        self.assertGreaterEqual(result["cache"]["reused_count"], 1)
+
     def test_plan_queries_deduplicates_and_keeps_original_first(self):
         queries = plan_queries("  How does OAuth login handle refresh tokens?  ", max_queries=3)
 
@@ -229,6 +654,56 @@ class AgenticRetrievalTests(unittest.TestCase):
         route_step = [step for step in result["trace_steps"] if step["step_type"] == "retriever_route"][0]
         self.assertIn("graph", route_step["output"]["routes"])
         self.assertEqual(result["intent"]["type"], "relationship")
+
+    def test_agentic_retrieve_records_retrieval_channel_summary_in_trace(self):
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return [
+                {
+                    "id": "chunk-hybrid",
+                    "content": "JSBridge connects WebView and Native runtime through a bridge contract.",
+                    "metadata": {
+                        "filename": "webview.md",
+                        "file_id": "file-webview",
+                        "chunk_index": 0,
+                        "retrieval_mode": "hybrid_rrf",
+                        "retrieval_channels": ["vector", "bm25", "graph"],
+                    },
+                    "similarity": 0.91,
+                    "retrieval_score": 0.91,
+                    "retrieval_channels": ["vector", "bm25", "graph"],
+                },
+                {
+                    "id": "chunk-lexical",
+                    "content": "WebView fallback notes mention JSBridge setup.",
+                    "metadata": {
+                        "filename": "fallback.md",
+                        "file_id": "file-fallback",
+                        "chunk_index": 1,
+                        "retrieval_mode": "lexical",
+                        "retrieval_channels": ["bm25"],
+                    },
+                    "similarity": 0.5,
+                    "retrieval_score": 0.5,
+                    "retrieval_channels": ["bm25"],
+                },
+            ]
+
+        result = agentic_retrieve(
+            query="JSBridge 和 WebView 有什么关系？",
+            user_id="user-1",
+            project_space_id="space-1",
+            retrieve_fn=fake_retrieve,
+        )
+
+        retrieve_steps = [step for step in result["trace_steps"] if step["step_type"] == "retrieve"]
+        self.assertGreater(len(retrieve_steps), 0)
+        summary = retrieve_steps[0]["output"]
+        self.assertEqual(summary["channel_counts"]["bm25"], 2)
+        self.assertEqual(summary["channel_counts"]["vector"], 1)
+        self.assertEqual(summary["channel_counts"]["graph"], 1)
+        self.assertEqual(summary["mode_counts"]["hybrid_rrf"], 1)
+        self.assertEqual(summary["mode_counts"]["lexical"], 1)
+        self.assertEqual(summary["unique_source_count"], 2)
 
     def test_agentic_retrieve_routes_distinction_questions_to_graph(self):
         def fake_retrieve(query, user_id, project_space_id, limit, threshold):

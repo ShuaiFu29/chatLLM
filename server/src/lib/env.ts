@@ -44,6 +44,9 @@ const DEFAULT_CHAT_STREAM_MAX_CONCURRENT = 20;
 const DEFAULT_CHAT_STREAM_MAX_CONCURRENT_PER_USER = 3;
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_UPLOAD_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MULTIPART_UPLOAD_PART_SIZE_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS = 15 * 60;
+const DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
 
 export interface ServerEnv {
@@ -109,6 +112,9 @@ export interface ServerEnv {
   CHAT_STREAM_MAX_CONCURRENT_PER_USER: number;
   MAINTENANCE_INTERVAL_MS: number;
   UPLOAD_TEMP_MAX_AGE_MS: number;
+  MULTIPART_UPLOAD_PART_SIZE_BYTES: number;
+  MULTIPART_UPLOAD_URL_EXPIRES_SECONDS: number;
+  MULTIPART_UPLOAD_SESSION_TTL_MS: number;
   SHUTDOWN_TIMEOUT_MS: number;
 }
 
@@ -221,6 +227,9 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const chatStreamMaxConcurrentPerUser = getPositiveInteger(env, 'CHAT_STREAM_MAX_CONCURRENT_PER_USER', DEFAULT_CHAT_STREAM_MAX_CONCURRENT_PER_USER, errors);
   const maintenanceIntervalMs = getPositiveInteger(env, 'MAINTENANCE_INTERVAL_MS', DEFAULT_MAINTENANCE_INTERVAL_MS, errors);
   const uploadTempMaxAgeMs = getPositiveInteger(env, 'UPLOAD_TEMP_MAX_AGE_MS', DEFAULT_UPLOAD_TEMP_MAX_AGE_MS, errors);
+  const multipartUploadPartSizeBytes = getPositiveInteger(env, 'MULTIPART_UPLOAD_PART_SIZE_BYTES', DEFAULT_MULTIPART_UPLOAD_PART_SIZE_BYTES, errors);
+  const multipartUploadUrlExpiresSeconds = getPositiveInteger(env, 'MULTIPART_UPLOAD_URL_EXPIRES_SECONDS', DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS, errors);
+  const multipartUploadSessionTtlMs = getPositiveInteger(env, 'MULTIPART_UPLOAD_SESSION_TTL_MS', DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS, errors);
   const shutdownTimeoutMs = getPositiveInteger(env, 'SHUTDOWN_TIMEOUT_MS', DEFAULT_SHUTDOWN_TIMEOUT_MS, errors);
 
   if (fileQueueIngestTimeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
@@ -298,6 +307,9 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     CHAT_STREAM_MAX_CONCURRENT_PER_USER: chatStreamMaxConcurrentPerUser,
     MAINTENANCE_INTERVAL_MS: maintenanceIntervalMs,
     UPLOAD_TEMP_MAX_AGE_MS: uploadTempMaxAgeMs,
+    MULTIPART_UPLOAD_PART_SIZE_BYTES: multipartUploadPartSizeBytes,
+    MULTIPART_UPLOAD_URL_EXPIRES_SECONDS: multipartUploadUrlExpiresSeconds,
+    MULTIPART_UPLOAD_SESSION_TTL_MS: multipartUploadSessionTtlMs,
     SHUTDOWN_TIMEOUT_MS: shutdownTimeoutMs,
   };
 };

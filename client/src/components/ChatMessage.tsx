@@ -49,12 +49,35 @@ const ChatMessage = memo(({
   const traceSteps = traceSummary?.trace_steps || [];
   const plannedQueries = traceSummary?.planned_queries || [];
   const ragRunId = msg.ragRunId || msg.rag_run_id;
+  const cacheStatus = traceSummary?.cache?.status;
 
   const formatScore = (score?: number) => `${Math.round((score || 0) * 100)}%`;
   const formatEvidenceLabel = (label?: string) => {
     if (label === 'strong') return t('chat.ragEvidenceStrong');
     if (label === 'partial') return t('chat.ragEvidencePartial');
     return t('chat.ragEvidenceWeak');
+  };
+  const formatSupportLabel = (label?: string) => {
+    if (label === 'supported') return t('chat.ragSupportSupported');
+    if (label === 'partial') return t('chat.ragSupportPartial');
+    return t('chat.ragSupportUnsupported');
+  };
+  const formatRiskLabel = (level?: string) => {
+    if (level === 'high') return t('chat.ragRiskHigh');
+    if (level === 'medium') return t('chat.ragRiskMedium');
+    if (level === 'low') return t('chat.ragRiskLow');
+    return t('chat.ragRiskUnknown');
+  };
+  const formatAnswerGroundingLabel = (label?: string) => {
+    if (label === 'supported') return t('chat.ragAnswerGroundingSupported');
+    if (label === 'partial') return t('chat.ragAnswerGroundingPartial');
+    return t('chat.ragAnswerGroundingUnsupported');
+  };
+  const formatCacheLabel = (status?: string) => {
+    if (status === 'hit') return t('chat.ragCacheHit');
+    if (status === 'partial') return t('chat.ragCachePartial');
+    if (status === 'miss') return t('chat.ragCacheMiss');
+    return '';
   };
 
   return (
@@ -110,6 +133,28 @@ const ChatMessage = memo(({
                   <span>
                     {t('chat.ragEvidence')}: {formatEvidenceLabel(qualitySummary.evidence_label)}
                   </span>
+                  {qualitySummary.support_label && (
+                    <span>
+                      {t('chat.ragSupport')}: {formatSupportLabel(qualitySummary.support_label)}
+                      {qualitySummary.verification_score !== undefined ? ` · ${formatScore(qualitySummary.verification_score)}` : ''}
+                    </span>
+                  )}
+                  {qualitySummary.risk_level && (
+                    <span>
+                      {t('chat.ragRisk')}: {formatRiskLabel(qualitySummary.risk_level)}
+                    </span>
+                  )}
+                  {qualitySummary.answer_grounding_status && qualitySummary.answer_grounding_status !== 'not_applicable' && (
+                    <span>
+                      {t('chat.ragAnswerGrounding')}: {formatAnswerGroundingLabel(qualitySummary.answer_grounding_status)}
+                      {qualitySummary.answer_grounding_score !== undefined ? ` · ${formatScore(qualitySummary.answer_grounding_score)}` : ''}
+                    </span>
+                  )}
+                  {cacheStatus && cacheStatus !== 'disabled' && (
+                    <span className="rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-primary">
+                      {formatCacheLabel(cacheStatus)}
+                    </span>
+                  )}
                   {ragRunId && <span className="font-mono text-[10px] text-text-muted">#{String(ragRunId).slice(0, 8)}</span>}
                 </div>
               )}

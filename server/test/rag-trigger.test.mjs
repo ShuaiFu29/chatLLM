@@ -38,3 +38,27 @@ test('chat controller gates RAG before calling the RAG service', () => {
   assert.match(chatSource, /if \(shouldRunRag\)/);
   assert.match(chatSource, /ragSkipped/);
 });
+
+test('chat controller keeps document-grounded answers tied to retrieved evidence', () => {
+  const chatSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
+
+  assert.match(chatSource, /Do not use general knowledge as document evidence/i);
+  assert.doesNotMatch(chatSource, /but you can still use your general knowledge/i);
+});
+
+test('chat controller verifies generated answers before persisting RAG citations', () => {
+  const chatSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
+
+  assert.match(chatSource, /verifyAnswerGrounding/);
+  assert.match(chatSource, /answer_grounding_check/);
+  assert.match(chatSource, /finalAssistantSources/);
+  assert.match(chatSource, /verified_sources/);
+});
+
+test('chat controller uses labeled RAG context and source-label citation rules', () => {
+  const chatSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
+
+  assert.match(chatSource, /buildRagContextText\(documents\)/);
+  assert.match(chatSource, /Use source labels such as \[Source 1\]/);
+  assert.match(chatSource, /Inventory rows are context/);
+});

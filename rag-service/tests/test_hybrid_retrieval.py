@@ -78,6 +78,8 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertTrue(all("rrf_score" in doc for doc in documents))
         self.assertEqual(documents[0]["metadata"]["retrieval_mode"], "hybrid_rrf")
         self.assertIn("retrieval_channels", documents[0]["metadata"])
+        self.assertEqual(documents[0]["retrieval_score"], 1.0)
+        self.assertLess(documents[0]["rrf_score"], 1.0)
 
     def test_retrieve_documents_includes_graph_results_in_fusion(self):
         graph_chunk = {
@@ -114,6 +116,63 @@ class HybridRetrievalTests(unittest.TestCase):
         self.assertEqual(documents[0]["id"], "chunk-graph")
         self.assertEqual(documents[0]["metadata"]["retrieval_channels"], ["graph"])
         self.assertEqual(documents[0]["metadata"]["retrieval_mode"], "graph")
+
+    def test_retrieve_documents_keeps_source_diversity_before_filling_remainder(self):
+        vector_hits = [
+            {
+                "chunk_id": f"chunk-a-{index}",
+                "file_id": "file-a",
+                "user_id": "user-1",
+                "filename": "a.md",
+                "chunk_index": index,
+                "similarity": 0.95 - (index * 0.01),
+            }
+            for index in range(4)
+        ] + [{
+            "chunk_id": "chunk-b-0",
+            "file_id": "file-b",
+            "user_id": "user-1",
+            "filename": "b.md",
+            "chunk_index": 0,
+            "similarity": 0.6,
+        }]
+        chunks = [
+            {
+                "id": hit["chunk_id"],
+                "file_id": hit["file_id"],
+                "user_id": "user-1",
+                "chunk_index": hit["chunk_index"],
+                "content": f"content from {hit['filename']} #{hit['chunk_index']}",
+                "metadata": {"filename": hit["filename"], "file_id": hit["file_id"]},
+                "project_space_id": "space-1",
+            }
+            for hit in vector_hits
+        ]
+
+        with patch("retrieval.get_embedding", return_value=[0.1, 0.2]), patch(
+            "retrieval.search_vectors",
+            return_value=vector_hits,
+        ), patch("retrieval.get_chunks_by_ids", return_value=chunks), patch(
+            "retrieval.search_keyword_chunks",
+            return_value=[],
+        ), patch("retrieval.search_chunks_by_text", return_value=[]), patch(
+            "retrieval.search_graph",
+            return_value=[],
+        ):
+            documents = retrieve_documents(
+                query="risk policy",
+                user_id="user-1",
+                project_space_id="space-1",
+                limit=4,
+                threshold=0.1,
+            )
+
+        self.assertIn("file-b", {doc["metadata"]["file_id"] for doc in documents})
+        self.assertLessEqual(
+            sum(1 for doc in documents if doc["metadata"]["file_id"] == "file-a"),
+            3,
+        )
+        self.assertTrue(all("source_diversity_rank" in doc["metadata"] for doc in documents))
 
 
 if __name__ == "__main__":

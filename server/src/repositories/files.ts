@@ -272,6 +272,20 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
   });
 };
 
+export const touchFileProcessingHeartbeat = async (fileId: string) => {
+  const { rows } = await query<FileRow>(
+    `update files
+     set last_attempt_at = now(),
+         updated_at = now()
+     where id = $1
+       and status = 'processing'
+     returning ${columns}`,
+    [fileId]
+  );
+
+  return rows[0] || null;
+};
+
 export const markFileAttemptFailed = async (file: Pick<FileRow, 'id' | 'attempts' | 'max_attempts'>, errorMessage: string) => {
   const maxAttempts = Math.max(file.max_attempts || 0, serverEnv.FILE_QUEUE_MAX_ATTEMPTS);
   const attempts = file.attempts || 1;

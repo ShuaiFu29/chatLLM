@@ -70,6 +70,9 @@ class RuntimeStabilityTests(unittest.TestCase):
             valid_env({
                 "RAG_READINESS_TIMEOUT_MS": "1500",
                 "RAG_INGEST_CONCURRENCY": "3",
+                "RAG_INGEST_STREAMING_THRESHOLD_BYTES": "2048",
+                "RAG_INGEST_CHUNK_BATCH_SIZE": "25",
+                "RAG_INGEST_EMBEDDING_BATCH_SIZE": "5",
                 "ELASTICSEARCH_TIMEOUT_MS": "900",
                 "ELASTICSEARCH_NUMBER_OF_SHARDS": "2",
                 "ELASTICSEARCH_NUMBER_OF_REPLICAS": "1",
@@ -85,11 +88,11 @@ class RuntimeStabilityTests(unittest.TestCase):
                 "NEO4J_BATCH_SIZE": "300",
                 "RAG_ALLOWED_ORIGINS": "http://localhost:3000, http://localhost:5173",
             }),
-            "(config.settings.rag_readiness_timeout_ms, config.settings.rag_ingest_concurrency, config.settings.elasticsearch_url, config.settings.elasticsearch_index, config.settings.elasticsearch_timeout_ms, config.settings.elasticsearch_number_of_shards, config.settings.elasticsearch_number_of_replicas, config.settings.elasticsearch_bulk_batch_size, config.settings.elasticsearch_refresh_on_write, config.settings.milvus_index_type, config.settings.milvus_metric_type, config.settings.milvus_hnsw_m, config.settings.milvus_hnsw_ef_construction, config.settings.milvus_search_ef, config.settings.milvus_insert_batch_size, config.settings.neo4j_url, config.settings.neo4j_user, config.settings.neo4j_timeout_ms, config.settings.neo4j_batch_size, config.settings.rag_allowed_origins)",
+            "(config.settings.rag_readiness_timeout_ms, config.settings.rag_ingest_concurrency, config.settings.rag_ingest_streaming_threshold_bytes, config.settings.rag_ingest_chunk_batch_size, config.settings.rag_ingest_embedding_batch_size, config.settings.elasticsearch_url, config.settings.elasticsearch_index, config.settings.elasticsearch_timeout_ms, config.settings.elasticsearch_number_of_shards, config.settings.elasticsearch_number_of_replicas, config.settings.elasticsearch_bulk_batch_size, config.settings.elasticsearch_refresh_on_write, config.settings.milvus_index_type, config.settings.milvus_metric_type, config.settings.milvus_hnsw_m, config.settings.milvus_hnsw_ef_construction, config.settings.milvus_search_ef, config.settings.milvus_insert_batch_size, config.settings.neo4j_url, config.settings.neo4j_user, config.settings.neo4j_timeout_ms, config.settings.neo4j_batch_size, config.settings.rag_allowed_origins)",
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("(1500, 3, 'http://localhost:9200', 'chatllm_chunks', 900, 2, 1, 250, True, 'HNSW', 'COSINE', 32, 300, 128, 500, 'http://localhost:7474', 'neo4j', 1200, 300, ['http://localhost:3000', 'http://localhost:5173'])", result.stdout)
+        self.assertIn("(1500, 3, 2048, 25, 5, 'http://localhost:9200', 'chatllm_chunks', 900, 2, 1, 250, True, 'HNSW', 'COSINE', 32, 300, 128, 500, 'http://localhost:7474', 'neo4j', 1200, 300, ['http://localhost:3000', 'http://localhost:5173'])", result.stdout)
 
     def test_main_defines_ready_probe_and_ingest_concurrency_guard(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
@@ -222,6 +225,22 @@ print("ok")
         self.assertIn("def check_graph_store_ready", graph_source)
         self.assertIn("settings.neo4j_url", graph_source)
 
+    def test_database_connections_use_configured_connect_timeout(self):
+        db_source = (ROOT / "db.py").read_text(encoding="utf-8")
+        create_connection_body = db_source.split("def _create_connection", 1)[1].split("def acquire", 1)[0]
+
+        self.assertIn("connect_timeout", create_connection_body)
+        self.assertIn("settings.rag_db_pool_timeout_ms", create_connection_body)
+
+    def test_database_readiness_checks_rag_cache_schema_before_accepting_ingestion(self):
+        db_source = (ROOT / "db.py").read_text(encoding="utf-8")
+        ready_body = db_source.split("def check_database_ready", 1)[1].split("def _index_settings_fingerprint", 1)[0]
+
+        self.assertIn("project_spaces", ready_body)
+        self.assertIn("knowledge_version", ready_body)
+        self.assertIn("rag_index_versions", ready_body)
+        self.assertIn("rag_retrieval_cache", ready_body)
+
     def test_cleanup_endpoint_removes_vector_and_keyword_indexes(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
 
@@ -270,6 +289,28 @@ except RuntimeError as error:
     assert "mapper_parsing_exception" in str(error)
 else:
     raise SystemExit("bulk errors were ignored")
+print("ok")
+"""
+        result = run_main_script(valid_env(), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
+    def test_keyword_delete_refreshes_index_before_followup_searches(self):
+        script = """
+from unittest.mock import patch
+import keyword_store
+
+paths = []
+
+def fake_request(method, path, body=None):
+    paths.append((method, path, body))
+    return {}
+
+with patch("keyword_store._request", fake_request):
+    keyword_store.delete_file_keywords("file-1")
+
+assert paths == [("POST", "chatllm_chunks/_delete_by_query?refresh=true", {"query": {"term": {"file_id": "file-1"}}})]
 print("ok")
 """
         result = run_main_script(valid_env(), script)

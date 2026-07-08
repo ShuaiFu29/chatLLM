@@ -1,10 +1,23 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import DEFAULT, patch
 
 from ingestion import extract_text, process_file
 
 
 class MarkdownOnlyIngestionTests(unittest.TestCase):
+    def setUp(self):
+        self.job_tracking_patch = patch.multiple(
+            "ingestion",
+            start_ingestion_job=DEFAULT,
+            update_ingestion_job_checkpoint=DEFAULT,
+            complete_ingestion_job=DEFAULT,
+            fail_ingestion_job=DEFAULT,
+        )
+        self.job_tracking_patch.start()
+
+    def tearDown(self):
+        self.job_tracking_patch.stop()
+
     def test_extract_text_accepts_markdown_extensions(self):
         text, is_markdown = extract_text(b"# Title\n\nBody", "text/markdown", "notes.markdown")
 
@@ -126,7 +139,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
         ), patch("ingestion.insert_vectors"), patch("ingestion.index_graph_chunks"), patch(
             "ingestion.index_chunks"
-        ) as index_chunks_mock, patch("ingestion.update_file_status"), patch(
+        ) as index_chunks_mock, patch("ingestion.bump_project_knowledge_version"), patch("ingestion.update_file_status"), patch(
             "ingestion.update_file_progress"
         ):
             process_file("file-1")
@@ -135,6 +148,36 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         self.assertEqual(indexed_rows[0]["id"], "chunk-1")
         self.assertEqual(indexed_rows[0]["metadata"]["filename"], "notes.md")
         self.assertEqual(indexed_rows[0]["metadata"]["project_space_id"], "space-1")
+
+    def test_process_file_rejects_object_when_uploaded_hash_does_not_match_metadata(self):
+        status_updates = []
+
+        def capture_status(file_id, status, progress=None, error_message=None):
+            status_updates.append({
+                "file_id": file_id,
+                "status": status,
+                "progress": progress,
+                "error_message": error_message,
+            })
+
+        with patch("ingestion.get_file", return_value={
+            "id": "file-1",
+            "user_id": "user-1",
+            "filename": "notes.md",
+            "file_type": "text/markdown",
+            "object_key": "uploads/notes.md",
+            "file_hash": "0" * 64,
+            "file_size": 7,
+            "project_space_id": "space-1",
+        }), patch("ingestion.download_object", return_value=b"# Notes"), patch(
+            "ingestion.extract_text"
+        ) as extract_text_mock, patch("ingestion.update_file_status", side_effect=capture_status):
+            with self.assertRaisesRegex(ValueError, "Uploaded object hash mismatch"):
+                process_file("file-1")
+
+        extract_text_mock.assert_not_called()
+        self.assertEqual(status_updates[-1]["status"], "failed")
+        self.assertIn("Uploaded object hash mismatch", status_updates[-1]["error_message"])
 
     def test_process_file_indexes_chunks_into_knowledge_graph(self):
         chunk_rows = [{
@@ -163,7 +206,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
         ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch(
             "ingestion.index_graph_chunks"
-        ) as index_graph_mock, patch("ingestion.update_file_status"), patch(
+        ) as index_graph_mock, patch("ingestion.bump_project_knowledge_version"), patch("ingestion.update_file_status"), patch(
             "ingestion.update_file_progress"
         ):
             process_file("file-1")
@@ -209,7 +252,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.index_chunks"
         ), patch("ingestion.index_graph_chunks", side_effect=TimeoutError("timed out")), patch(
             "ingestion.logger.warning"
-        ) as warning_mock, patch(
+        ) as warning_mock, patch("ingestion.bump_project_knowledge_version"), patch(
             "ingestion.update_file_status", side_effect=capture_status
         ), patch("ingestion.update_file_progress"):
             result = process_file("file-1")

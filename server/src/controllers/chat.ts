@@ -5,7 +5,14 @@ import {
   ModelProviderConfigurationError,
   UnsupportedOfficialModelError,
 } from '../lib/llmProviders';
-import { buildChatSources, ChatSource, RagTraceSummary } from '../lib/chatSources';
+import {
+  buildChatSources,
+  buildRagContextText,
+  ChatSource,
+  RagTraceStep,
+  RagTraceSummary,
+  verifyAnswerGrounding,
+} from '../lib/chatSources';
 import { normalizeChatMessageContent } from '../lib/chatInput';
 import { normalizeMessagePageQuery } from '../lib/messagePagination';
 import { normalizeSearchQuery, readSearchFilters } from '../lib/searchInput';
@@ -56,6 +63,12 @@ const resolveProjectSpaceId = async (userId: string, requestedProjectSpaceId?: s
 
   const defaultSpace = await ensureDefaultProjectSpaceForUser(userId);
   return defaultSpace.id;
+};
+
+const ragAnswerGroundingStatusToTraceStatus = (status: string) => {
+  if (status === 'supported' || status === 'not_applicable') return 'success';
+  if (status === 'partial') return 'partial';
+  return 'failed';
 };
 
 export const getConversations = async (req: Request, res: Response) => {
@@ -368,6 +381,7 @@ export const sendMessage = async (req: Request, res: Response) => {
           query: content,
           user_id: req.user.id,
           project_space_id: conversation.project_space_id || undefined,
+          conversation_id: conversationId,
           limit: 10,
           threshold: 0.1,
         });
@@ -380,12 +394,13 @@ export const sendMessage = async (req: Request, res: Response) => {
           quality: agenticRagRun.quality,
           insufficient_evidence: agenticRagRun.insufficient_evidence,
           answer_guidance: agenticRagRun.answer_guidance,
+          cache: agenticRagRun.cache,
         };
         insufficientEvidence = Boolean(agenticRagRun.insufficient_evidence);
         answerGuidance = agenticRagRun.answer_guidance || '';
 
         if (documents && documents.length > 0) {
-          contextText = documents.map((doc) => doc.content || '').join('\n---\n');
+          contextText = buildRagContextText(documents);
 
           assistantSources = buildChatSources(documents);
         }
@@ -422,8 +437,11 @@ export const sendMessage = async (req: Request, res: Response) => {
           ? `${answerGuidance}\n\n`
           : '';
         messages[lastMsgIndex].content = `${evidenceGuidance}Based on the following context, please answer the user's question.
-If the answer is not in the context, say so, but you can still use your general knowledge.
-Do not mention "Based on the provided context" or similar phrases in your answer unless necessary to clarify sources.
+If the answer is not in the context, say that the retrieved source material is insufficient.
+Do not use general knowledge as document evidence, and do not attach citations to claims that are not supported by the context.
+Use source labels such as [Source 1] only when the claim is directly supported by that source.
+Inventory rows are context for document-list questions; do not treat them as document evidence citations.
+Do not mention "Based on the provided context" or similar phrases in your answer unless necessary to clarify source limits.
 
 Context:
 ${contextText}
@@ -458,7 +476,54 @@ ${originalContent}`;
     }
 
     if (fullContent) {
-      const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent, assistantSources);
+      let finalAssistantSources = assistantSources;
+      let finalTraceSteps = agenticRagRun?.trace_steps || [];
+      let finalQuality = agenticRagRun?.quality;
+      let finalTraceSummary = traceSummary;
+
+      if (agenticRagRun) {
+        const startedAt = Date.now();
+        const answerGrounding = verifyAnswerGrounding(
+          fullContent,
+          assistantSources,
+          agenticRagRun.quality,
+          insufficientEvidence
+        );
+        finalAssistantSources = answerGrounding.verified_sources;
+        const groundingStep: RagTraceStep = {
+          step_type: 'answer_grounding_check',
+          status: ragAnswerGroundingStatusToTraceStatus(answerGrounding.status),
+          duration_ms: Math.max(0, Date.now() - startedAt),
+          input: {
+            answer_length: fullContent.length,
+            source_count: assistantSources.length,
+          },
+          output: { ...answerGrounding },
+        };
+        finalTraceSteps = [...finalTraceSteps, groundingStep];
+        finalQuality = {
+          ...agenticRagRun.quality,
+          answer_grounding_status: answerGrounding.status,
+          answer_grounding_score: answerGrounding.score,
+        };
+        finalTraceSummary = traceSummary
+          ? {
+              ...traceSummary,
+              trace_steps: finalTraceSteps,
+              quality: finalQuality,
+              answer_grounding: answerGrounding,
+            }
+          : null;
+
+        res.write(`data: ${JSON.stringify({
+          sources: finalAssistantSources,
+          traceSummary: finalTraceSummary,
+          qualitySummary: finalQuality,
+          answerGrounding: answerGrounding,
+        })}\n\n`);
+      }
+
+      const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent, finalAssistantSources);
       if (agenticRagRun) {
         insertRagRunForMessage({
           runId: agenticRagRun.run_id,
@@ -468,10 +533,10 @@ ${originalContent}`;
           mode: agenticRagRun.mode,
           query: content,
           plannedQueries: agenticRagRun.planned_queries || [],
-          traceSteps: agenticRagRun.trace_steps || [],
-          quality: agenticRagRun.quality,
-          retrievedSources: assistantSources,
-          status: traceSummary?.quality?.evidence_label === 'weak' ? 'partial' : 'success',
+          traceSteps: finalTraceSteps,
+          quality: finalQuality || agenticRagRun.quality,
+          retrievedSources: finalAssistantSources,
+          status: finalQuality?.evidence_label === 'weak' || finalQuality?.answer_grounding_status === 'unsupported' ? 'partial' : 'success',
         }).catch((error) => {
           console.warn('[Chat] Failed to persist RAG trace:', error);
         });

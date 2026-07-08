@@ -6,6 +6,8 @@ export interface ProjectSpaceRow {
   name: string;
   description: string;
   is_default: boolean;
+  knowledge_version: number;
+  knowledge_version_updated_at: string;
   created_at: string;
   updated_at: string;
 }
@@ -16,6 +18,8 @@ const columns = `
   name,
   description,
   is_default,
+  knowledge_version,
+  knowledge_version_updated_at,
   created_at,
   updated_at
 `;

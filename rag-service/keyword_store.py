@@ -135,7 +135,7 @@ def delete_file_keywords(file_id: str):
         return
 
     try:
-        _request("POST", f"{settings.elasticsearch_index}/_delete_by_query", {
+        _request("POST", f"{settings.elasticsearch_index}/_delete_by_query?refresh=true", {
             "query": {"term": {"file_id": file_id}},
         })
     except urllib.error.HTTPError as error:

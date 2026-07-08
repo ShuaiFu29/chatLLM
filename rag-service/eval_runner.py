@@ -1,13 +1,27 @@
 import time
 import re
-from typing import Callable
+from typing import Callable, Protocol
 
 from agentic_retrieval import agentic_retrieve
+from evidence_verifier import verify_evidence_support
 from judge import evaluate_case_with_judge
+from reranker import classify_source_role, extract_exact_markers
 
 
-AgenticRetrieveFn = Callable[[str, str, str | None, int, float], dict]
 JudgeFn = Callable[[dict, dict, list[dict]], dict]
+
+
+class AgenticRetrieveFn(Protocol):
+    def __call__(
+        self,
+        query: str,
+        user_id: str,
+        project_space_id: str | None = None,
+        *,
+        limit: int = 10,
+        threshold: float = 0.1,
+    ) -> dict:
+        ...
 
 
 def _normalize_expected_list(value) -> list[str]:
@@ -122,23 +136,130 @@ def _score_citation_accuracy(documents: list[dict]) -> float:
     return round(valid_count / len(documents), 4)
 
 
+_NEGATED_OR_DEPRECATED_TERMS = (
+    "废止",
+    "已废止",
+    "失效",
+    "旧口径",
+    "历史口径",
+    "不能替代",
+    "不得",
+    "不是",
+    "不应",
+    "不可",
+    "deprecated",
+    "obsolete",
+    "historical",
+    "superseded",
+    "not ",
+    "not-",
+    "cannot",
+    "must not",
+)
+
+
+def _marker_contexts(value: str, marker: str, window: int = 36) -> list[str]:
+    contexts: list[str] = []
+    if not value or not marker:
+        return contexts
+
+    marker_pattern = re.escape(marker)
+    for match in re.finditer(marker_pattern, value, flags=re.IGNORECASE):
+        start = max(0, match.start() - window)
+        end = min(len(value), match.end() + window)
+        contexts.append(value[start:end].lower())
+    return contexts
+
+
+def _context_is_negated_or_deprecated(context: str) -> bool:
+    normalized = context.lower().replace(" ", "")
+    return any(term.lower().replace(" ", "") in normalized for term in _NEGATED_OR_DEPRECATED_TERMS)
+
+
+def _asserted_answer_markers(expected_answer: str) -> set[str]:
+    markers = extract_exact_markers(expected_answer)
+    asserted = set()
+    for marker in markers:
+        contexts = _marker_contexts(expected_answer, marker)
+        if contexts and all(_context_is_negated_or_deprecated(context) for context in contexts):
+            continue
+        asserted.add(marker)
+    return asserted
+
+
+def _deprecated_marker_conflicts(expected_answer: str, documents: list[dict]) -> list[str]:
+    asserted_markers = _asserted_answer_markers(expected_answer)
+    if not asserted_markers:
+        return []
+
+    conflicts: set[str] = set()
+    primary_support: set[str] = set()
+    for document in documents:
+        content = str(document.get("content") or "")
+        role = document.get("source_role") or classify_source_role(document)
+        content_markers = extract_exact_markers(content)
+        for marker in asserted_markers & content_markers:
+            contexts = _marker_contexts(content, marker)
+            if role == "deprecated" or any(_context_is_negated_or_deprecated(context) for context in contexts):
+                conflicts.add(marker)
+            elif role not in {"evaluation_guide", "deprecated"}:
+                primary_support.add(marker)
+
+    return sorted(conflicts - primary_support)
+
+
+def _verify_expected_answer_support(expected_answer: str, documents: list[dict]) -> dict:
+    if not expected_answer:
+        return {
+            "support_label": "not_applicable",
+            "support_score": 1.0,
+            "reasons": ["no_expected_answer"],
+            "deprecated_marker_conflicts": [],
+        }
+
+    verification = verify_evidence_support(expected_answer, documents)
+    conflicts = _deprecated_marker_conflicts(expected_answer, documents)
+    if conflicts:
+        reasons = sorted(set((verification.get("reasons") or []) + ["deprecated_marker_conflict"]))
+        return {
+            **verification,
+            "support_label": "unsupported",
+            "support_score": min(float(verification.get("support_score") or 0), 0.25),
+            "deprecated_marker_conflicts": conflicts,
+            "reasons": reasons,
+        }
+
+    return {
+        **verification,
+        "deprecated_marker_conflicts": [],
+    }
+
+
 def _score_grounding(
     answer_score: float,
     keyword_score: float,
     source_recall_score: float,
     citation_accuracy_score: float,
+    expected_answer_support_score: float,
+    expected_answer_support_label: str,
     judge_score: float,
     judge_enabled: bool,
 ) -> float:
     components = [
-        (answer_score, 0.25),
+        (answer_score, 0.20),
         (keyword_score, 0.20),
-        (source_recall_score, 0.25),
+        (source_recall_score, 0.20),
         (citation_accuracy_score, 0.15),
+        (expected_answer_support_score, 0.25),
     ]
     if judge_enabled:
         components.append((judge_score, 0.30))
-    return _weighted_score(components)
+    score = _weighted_score(components)
+    if expected_answer_support_label == "unsupported":
+        return min(score, 0.45)
+    if expected_answer_support_label == "partial":
+        return min(score, 0.72)
+    return score
 
 
 def _matched_sources(documents: list[dict]) -> list[dict]:
@@ -191,7 +312,13 @@ def run_eval_cases(
         expected_source_files = _normalize_expected_list(case.get("expected_source_files"))
 
         try:
-            retrieval = agentic_retrieve_fn(question, user_id, project_space_id, limit, threshold)
+            retrieval = agentic_retrieve_fn(
+                question,
+                user_id,
+                project_space_id=project_space_id,
+                limit=limit,
+                threshold=threshold,
+            )
             documents = retrieval.get("results") or []
             quality = retrieval.get("quality") or {}
             answer_score = _score_expected_answer(expected_answer, documents)
@@ -200,8 +327,12 @@ def run_eval_cases(
             source_recall_score = source_score
             source_precision_score = _score_source_precision(expected_source_files, documents)
             citation_accuracy_score = _score_citation_accuracy(documents)
+            expected_answer_verification = _verify_expected_answer_support(expected_answer, documents)
+            expected_answer_support_score = float(expected_answer_verification.get("support_score") or 0)
+            expected_answer_support_label = str(expected_answer_verification.get("support_label") or "unsupported")
             retrieval_score = float(quality.get("retrieval_score") or 0)
             evidence_score = float(quality.get("evidence_score") or 0)
+            verification_score = float(quality.get("verification_score") or 0)
             judge = judge_fn(case, retrieval, documents) if judge_fn else {"enabled": False, "score": 0.0}
             judge_score = float(judge.get("score") or 0)
             grounding_score = _score_grounding(
@@ -209,6 +340,8 @@ def run_eval_cases(
                 keyword_score,
                 source_recall_score,
                 citation_accuracy_score,
+                expected_answer_support_score,
+                expected_answer_support_label,
                 judge_score,
                 bool(judge.get("enabled")),
             )
@@ -216,6 +349,10 @@ def run_eval_cases(
                 (retrieval_score, 0.30),
                 (evidence_score, 0.20),
             ]
+            if "verification_score" in quality:
+                overall_components.append((verification_score, 0.20))
+            if expected_answer:
+                overall_components.append((expected_answer_support_score, 0.20))
             if expected_answer:
                 overall_components.append((answer_score, 0.20))
             if expected_keywords:
@@ -241,7 +378,12 @@ def run_eval_cases(
                 "answer_keyword_score": keyword_score,
                 "grounding_score": grounding_score,
                 "judge_score": judge_score,
+                "expected_answer_support_score": expected_answer_support_score,
+                "expected_answer_support_label": expected_answer_support_label,
                 "evidence_label": quality.get("evidence_label") or "weak",
+                "support_label": quality.get("support_label") or "unsupported",
+                "verification_score": verification_score,
+                "risk_level": quality.get("risk_level") or "low",
                 "matched_sources": _matched_sources(documents),
                 "latency_ms": int((time.time() - case_started_at) * 1000),
                 "trace_summary": {
@@ -250,6 +392,7 @@ def run_eval_cases(
                     "planned_queries": retrieval.get("planned_queries") or [],
                     "trace_steps": retrieval.get("trace_steps") or [],
                     "quality": quality,
+                    "expected_answer_verification": expected_answer_verification,
                     "judge": judge,
                 },
                 "error_message": "",
@@ -270,7 +413,12 @@ def run_eval_cases(
                 "answer_keyword_score": 0,
                 "grounding_score": 0,
                 "judge_score": 0,
+                "expected_answer_support_score": 0,
+                "expected_answer_support_label": "unsupported",
                 "evidence_label": "weak",
+                "support_label": "unsupported",
+                "verification_score": 0,
+                "risk_level": "unknown",
                 "matched_sources": [],
                 "latency_ms": int((time.time() - case_started_at) * 1000),
                 "trace_summary": {},
@@ -293,5 +441,7 @@ def run_eval_cases(
         "average_answer_keyword_score": _average([result["answer_keyword_score"] for result in successful_results]),
         "average_grounding_score": _average([result["grounding_score"] for result in successful_results]),
         "average_judge_score": _average([result["judge_score"] for result in successful_results]),
+        "average_expected_answer_support_score": _average([result["expected_answer_support_score"] for result in successful_results]),
+        "average_verification_score": _average([result["verification_score"] for result in successful_results]),
         "results": results,
     }

@@ -7,6 +7,7 @@ interface RetrieveRagDocumentsInput {
   query: string;
   user_id: string;
   project_space_id?: string;
+  conversation_id?: string;
   limit: number;
   threshold: number;
 }
@@ -33,6 +34,12 @@ export interface AgenticRagResponse {
   inventory_limit?: number;
   insufficient_evidence?: boolean;
   answer_guidance?: string;
+  cache?: {
+    status: 'disabled' | 'hit' | 'miss' | 'partial' | string;
+    hit_type?: string;
+    scope_fingerprint?: string;
+    reused_count?: number;
+  };
 }
 
 export interface RagEvalCaseInput {
@@ -58,6 +65,8 @@ export interface RagEvalRunResponse {
   average_answer_keyword_score?: number;
   average_grounding_score?: number;
   average_judge_score?: number;
+  average_expected_answer_support_score?: number;
+  average_verification_score?: number;
   results: Array<{
     case_id: string;
     question: string;
@@ -73,8 +82,13 @@ export interface RagEvalRunResponse {
     answer_keyword_score?: number;
     grounding_score?: number;
     judge_score?: number;
+    expected_answer_support_score?: number;
+    expected_answer_support_label?: string;
+    verification_score?: number;
     latency_ms?: number;
     evidence_label: string;
+    support_label?: string;
+    risk_level?: string;
     matched_sources: unknown[];
     trace_summary: Record<string, unknown>;
     error_message: string;

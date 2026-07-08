@@ -4,10 +4,18 @@ import uuid
 from typing import Callable
 
 from evaluation import evaluate_retrieval_quality
+from evidence_verifier import assess_query_risk, verify_evidence_support
 from query_planner import plan_queries
 from db import list_files_for_inventory
 from reranker import classify_source_role, rerank_documents
 from retrieval import retrieve_documents
+from retrieval_cache import (
+    CONVERSATION_EVIDENCE_THRESHOLD,
+    SIMILAR_QUERY_THRESHOLD,
+    RetrievalCacheStore,
+    cache_entry_is_reusable,
+    normalize_query,
+)
 
 
 RetrieveFn = Callable[[str, str, str | None, int, float], list[dict]]
@@ -43,6 +51,36 @@ def _document_key(document: dict) -> str:
 def _source_key(document: dict) -> str:
     metadata = document.get("metadata") or {}
     return str(metadata.get("file_id") or metadata.get("filename") or document.get("id") or "")
+
+
+def _retrieval_channel_summary(documents: list[dict]) -> dict:
+    channel_counts: dict[str, int] = {}
+    mode_counts: dict[str, int] = {}
+    source_ids: set[str] = set()
+
+    for document in documents:
+        metadata = document.get("metadata") or {}
+        channels = document.get("retrieval_channels") or metadata.get("retrieval_channels") or []
+        if isinstance(channels, str):
+            channels = [channels]
+        for channel in channels:
+            channel_key = str(channel or "").strip()
+            if channel_key:
+                channel_counts[channel_key] = channel_counts.get(channel_key, 0) + 1
+
+        mode = str(metadata.get("retrieval_mode") or document.get("retrieval_mode") or "").strip()
+        if mode:
+            mode_counts[mode] = mode_counts.get(mode, 0) + 1
+
+        source_key = _source_key(document)
+        if source_key:
+            source_ids.add(source_key)
+
+    return {
+        "channel_counts": dict(sorted(channel_counts.items())),
+        "mode_counts": dict(sorted(mode_counts.items())),
+        "unique_source_count": len(source_ids),
+    }
 
 
 def _document_facet(document: dict) -> str:
@@ -322,6 +360,163 @@ def _query_overlap_score(query: str, content: str) -> float:
     return len(query_terms & content_terms) / len(query_terms)
 
 
+def _copy_cache_documents(entry: dict | None) -> list[dict]:
+    if not entry:
+        return []
+    documents = entry.get("documents") or entry.get("evidence") or []
+    return [dict(document) for document in documents]
+
+
+def _evaluate_cached_documents(
+    query: str,
+    entry: dict,
+    limit: int,
+    rerank_fn: RerankFn,
+) -> tuple[list[dict], dict]:
+    documents = _copy_cache_documents(entry)
+    if not documents:
+        return [], evaluate_retrieval_quality(query, [])
+
+    ranked_documents = rerank_fn(query, documents)
+    selected_documents = _select_diverse_documents(ranked_documents, limit)
+    quality = evaluate_retrieval_quality(query, selected_documents)
+    return selected_documents, quality
+
+
+def _merge_documents(
+    merged_by_key: dict[str, dict],
+    documents: list[dict],
+    matched_query: str,
+    cache_source: str | None = None,
+):
+    for document in documents:
+        key = _document_key(document)
+        current = merged_by_key.get(key)
+        if not current or float(document.get("similarity") or 0) > float(current.get("similarity") or 0):
+            merged = dict(document)
+            existing_queries = (current or {}).get("matched_queries", [])
+            merged["matched_queries"] = sorted(set(existing_queries + document.get("matched_queries", []) + [matched_query]))
+            if cache_source:
+                merged["cache_source"] = cache_source
+            merged_by_key[key] = merged
+        elif current:
+            current["matched_queries"] = sorted(set(current.get("matched_queries", []) + [matched_query]))
+            if cache_source and not current.get("cache_source"):
+                current["cache_source"] = cache_source
+
+
+def _cache_summary(status: str, **extra: object) -> dict:
+    return {
+        "status": status,
+        **{key: value for key, value in extra.items() if value is not None},
+    }
+
+
+def _safe_cache_side_effect(
+    trace_steps: list[dict],
+    action: str,
+    input_data: dict,
+    fn: Callable[[], None],
+) -> bool:
+    started_at = _now_ms()
+    try:
+        fn()
+    except Exception as error:
+        trace_steps.append(_trace_step(
+            "cache_side_effect",
+            "partial",
+            started_at,
+            {"action": action, **input_data},
+            {"ok": False, "error": str(error)},
+        ))
+        return False
+
+    trace_steps.append(_trace_step(
+        "cache_side_effect",
+        "success",
+        started_at,
+        {"action": action, **input_data},
+        {"ok": True},
+    ))
+    return True
+
+
+def _safe_cache_write(
+    trace_steps: list[dict],
+    cache_kind: str,
+    input_data: dict,
+    fn: Callable[[], None],
+) -> bool:
+    started_at = _now_ms()
+    try:
+        fn()
+    except Exception as error:
+        trace_steps.append(_trace_step(
+            "cache_write",
+            "partial",
+            started_at,
+            {"cache_kind": cache_kind, **input_data},
+            {"stored": False, "error": str(error)},
+        ))
+        return False
+
+    trace_steps.append(_trace_step(
+        "cache_write",
+        "success",
+        started_at,
+        {"cache_kind": cache_kind, **input_data},
+        {"stored": True},
+    ))
+    return True
+
+
+def _verification_status(verification: dict) -> str:
+    label = verification.get("support_label")
+    if label == "supported":
+        return "success"
+    if label == "partial":
+        return "partial"
+    return "failed"
+
+
+def _quality_with_verification(
+    query: str,
+    documents: list[dict],
+    quality: dict,
+    cache_hit_type: str | None = None,
+    query_similarity: float | None = None,
+) -> tuple[dict, dict]:
+    verification = verify_evidence_support(
+        query,
+        documents,
+        cache_hit_type=cache_hit_type,
+        query_similarity=query_similarity,
+    )
+    enriched_quality = {
+        **quality,
+        "support_label": verification["support_label"],
+        "verification_score": verification["support_score"],
+        "risk_level": verification["risk_level"],
+        "risk_factors": verification["risk_factors"],
+        "missing_markers": verification["missing_markers"],
+        "matched_markers": verification["matched_markers"],
+        "cache_reuse_allowed": verification["cache_reuse_allowed"],
+        "must_retrieve": verification["must_retrieve"],
+    }
+    return enriched_quality, verification
+
+
+def _should_store_cache(quality: dict) -> bool:
+    if quality.get("support_label") == "unsupported":
+        return False
+    if quality.get("evidence_label") == "weak":
+        return False
+    try:
+        return float(quality.get("overall_score") or 0) >= 0.38
+    except (TypeError, ValueError):
+        return False
+
+
 def default_rerank_documents(query: str, documents: list[dict]) -> list[dict]:
     return rerank_documents(query, documents)
 
@@ -330,10 +525,23 @@ def _build_answer_guidance(quality: dict) -> tuple[bool, str]:
     insufficient_evidence = (
         quality.get("evidence_label") == "weak"
         or float(quality.get("overall_score") or 0) < 0.35
+        or quality.get("support_label") == "unsupported"
+        or (quality.get("risk_level") == "high" and quality.get("support_label") != "supported")
     )
 
     if not insufficient_evidence:
         return False, ""
+
+    if quality.get("support_label") == "unsupported":
+        return True, (
+            "Retrieved evidence does not sufficiently support the question. "
+            "Do not invent document-backed facts or citations; state that the source material is insufficient."
+        )
+    if quality.get("risk_level") == "high":
+        return True, (
+            "This is a high-risk document-grounded question. Answer only from retrieved evidence, "
+            "call out missing markers or unresolved conflicts, and avoid unsupported conclusions."
+        )
 
     return True, (
         "Retrieved evidence is weak. Answer cautiously, state what is unsupported, "
@@ -345,11 +553,13 @@ def agentic_retrieve(
     query: str,
     user_id: str,
     project_space_id: str | None = None,
+    conversation_id: str | None = None,
     limit: int = 5,
     threshold: float = 0.1,
     retrieve_fn: RetrieveFn = retrieve_documents,
     rerank_fn: RerankFn = default_rerank_documents,
     inventory_fn: InventoryFn = list_files_for_inventory,
+    cache_store: RetrievalCacheStore | None = None,
 ) -> dict:
     run_id = str(uuid.uuid4())
     trace_steps: list[dict] = []
@@ -420,6 +630,16 @@ def agentic_retrieve(
     ))
 
     started_at = _now_ms()
+    risk_assessment = assess_query_risk(query)
+    trace_steps.append(_trace_step(
+        "risk_assess",
+        "success",
+        started_at,
+        {"query": query},
+        risk_assessment,
+    ))
+
+    started_at = _now_ms()
     trace_steps.append(_trace_step(
         "retriever_route",
         "success",
@@ -439,8 +659,296 @@ def agentic_retrieve(
     ))
 
     merged_by_key: dict[str, dict] = {}
+    cache_info = _cache_summary("disabled")
+    scope_fingerprint: str | None = None
+    cache_entry: dict | None = None
+
+    if cache_store:
+        normalized_query = normalize_query(query)
+        started_at = _now_ms()
+        try:
+            scope = cache_store.get_scope(user_id, project_space_id)
+            scope_fingerprint = str(scope.get("fingerprint") or "")
+            exact_entry = cache_store.find_exact(
+                user_id,
+                project_space_id,
+                conversation_id,
+                scope_fingerprint,
+                normalized_query,
+            )
+            similar_entry = None if exact_entry else cache_store.find_similar(
+                user_id,
+                project_space_id,
+                conversation_id,
+                scope_fingerprint,
+                normalized_query,
+                min_similarity=SIMILAR_QUERY_THRESHOLD,
+            )
+            conversation_entry = None if exact_entry or similar_entry or not conversation_id else cache_store.find_conversation_evidence(
+                user_id,
+                project_space_id,
+                conversation_id,
+                scope_fingerprint,
+                normalized_query,
+                min_similarity=CONVERSATION_EVIDENCE_THRESHOLD,
+            )
+            cache_entry = exact_entry or similar_entry or conversation_entry
+            hit_type = "exact" if exact_entry else "similar" if similar_entry else "conversation" if conversation_entry else None
+            trace_steps.append(_trace_step(
+                "cache_lookup",
+                "success",
+                started_at,
+                {
+                    "user_id": user_id,
+                    "project_space_id": project_space_id,
+                    "conversation_id": conversation_id,
+                    "normalized_query": normalized_query,
+                },
+                {
+                    "enabled": True,
+                    "scope_fingerprint": scope_fingerprint,
+                    "hit_type": hit_type,
+                    "query_similarity": (cache_entry or {}).get("query_similarity"),
+                },
+            ))
+
+            if cache_entry:
+                started_at = _now_ms()
+                cached_documents, cached_quality = _evaluate_cached_documents(query, cache_entry, limit, rerank_fn)
+                query_similarity = cache_entry.get("query_similarity")
+                cached_quality, verification = _quality_with_verification(
+                    query,
+                    cached_documents,
+                    cached_quality,
+                    cache_hit_type=hit_type,
+                    query_similarity=query_similarity,
+                )
+                trace_steps.append(_trace_step(
+                    "evidence_verify",
+                    _verification_status(verification),
+                    started_at,
+                    {
+                        "cache_id": cache_entry.get("id"),
+                        "hit_type": hit_type,
+                        "query_similarity": query_similarity,
+                        "selected_count": len(cached_documents),
+                    },
+                    verification,
+                ))
+                reusable = (
+                    cache_entry_is_reusable(cache_entry, cached_quality, query_similarity)
+                    and verification.get("cache_reuse_allowed") is True
+                )
+                if reusable:
+                    _safe_cache_side_effect(
+                        trace_steps,
+                        "record_hit",
+                        {
+                            "cache_kind": str(cache_entry.get("cache_kind") or "query"),
+                            "cache_id": cache_entry.get("id"),
+                            "hit_type": hit_type,
+                        },
+                        lambda: cache_store.record_hit(cache_entry),
+                    )
+                    if conversation_id:
+                        _safe_cache_write(
+                            trace_steps,
+                            "conversation_evidence",
+                            {
+                                "cache_id": cache_entry.get("id"),
+                                "hit_type": hit_type,
+                                "document_count": len(cached_documents),
+                            },
+                            lambda: cache_store.upsert_conversation_evidence(
+                                user_id=user_id,
+                                project_space_id=project_space_id,
+                                conversation_id=conversation_id,
+                                normalized_query=normalized_query,
+                                original_query=query,
+                                scope_fingerprint=scope_fingerprint,
+                                documents=cached_documents,
+                                quality=cached_quality,
+                            ),
+                        )
+                    cache_info = _cache_summary(
+                        "hit",
+                        hit_type=hit_type,
+                        scope_fingerprint=scope_fingerprint,
+                        reused_count=len(cached_documents),
+                        query_similarity=query_similarity,
+                    )
+                    trace_steps.append(_trace_step(
+                        "evidence_reuse",
+                        "success",
+                        started_at,
+                        {
+                            "cache_id": cache_entry.get("id"),
+                            "hit_type": hit_type,
+                            "query_similarity": query_similarity,
+                        },
+                        {
+                            "reused_count": len(cached_documents),
+                            "skipped_retrieve": True,
+                            **cached_quality,
+                        },
+                    ))
+                    insufficient_evidence, answer_guidance = _build_answer_guidance(cached_quality)
+                    return {
+                        "run_id": run_id,
+                        "mode": "agentic",
+                        "intent": intent,
+                        "planned_queries": planned_queries,
+                        "results": cached_documents,
+                        "trace_steps": trace_steps,
+                        "quality": cached_quality,
+                        "insufficient_evidence": insufficient_evidence,
+                        "answer_guidance": answer_guidance,
+                        "cache": cache_info,
+                    }
+
+                _merge_documents(merged_by_key, cached_documents, query, cache_source=hit_type or "cache")
+                cache_info = _cache_summary(
+                    "partial",
+                    hit_type=hit_type,
+                    scope_fingerprint=scope_fingerprint,
+                    reused_count=len(cached_documents),
+                    query_similarity=query_similarity,
+                )
+                trace_steps.append(_trace_step(
+                    "evidence_reuse",
+                    "partial",
+                    started_at,
+                    {
+                        "cache_id": cache_entry.get("id"),
+                        "hit_type": hit_type,
+                        "query_similarity": query_similarity,
+                    },
+                    {
+                        "reused_count": len(cached_documents),
+                        "skipped_retrieve": False,
+                        **cached_quality,
+                    },
+                ))
+            else:
+                cache_info = _cache_summary("miss", scope_fingerprint=scope_fingerprint)
+        except Exception as cache_error:
+            cache_info = _cache_summary("disabled", error=str(cache_error))
+            trace_steps.append(_trace_step(
+                "cache_lookup",
+                "partial",
+                started_at,
+                {"user_id": user_id, "project_space_id": project_space_id},
+                {"enabled": False, "error": str(cache_error)},
+            ))
+
     retrieve_limit = min(max(limit * 2, limit), 20)
     for planned_query in planned_queries:
+        if cache_store and scope_fingerprint:
+            normalized_planned_query = normalize_query(planned_query)
+            started_at = _now_ms()
+            try:
+                subquery_entry = cache_store.find_subquery(
+                    user_id,
+                    project_space_id,
+                    conversation_id,
+                    scope_fingerprint,
+                    normalized_planned_query,
+                    min_similarity=SIMILAR_QUERY_THRESHOLD,
+                )
+                if subquery_entry:
+                    subquery_documents, subquery_quality = _evaluate_cached_documents(
+                        planned_query,
+                        subquery_entry,
+                        retrieve_limit,
+                        rerank_fn,
+                    )
+                    subquery_quality, subquery_verification = _quality_with_verification(
+                        planned_query,
+                        subquery_documents,
+                        subquery_quality,
+                        cache_hit_type="subquery",
+                        query_similarity=subquery_entry.get("query_similarity"),
+                    )
+                    trace_steps.append(_trace_step(
+                        "evidence_verify",
+                        _verification_status(subquery_verification),
+                        started_at,
+                        {
+                            "query": planned_query,
+                            "cache_id": subquery_entry.get("id"),
+                            "hit_type": "subquery",
+                            "query_similarity": subquery_entry.get("query_similarity"),
+                            "selected_count": len(subquery_documents),
+                        },
+                        subquery_verification,
+                    ))
+                    if (
+                        cache_entry_is_reusable(subquery_entry, subquery_quality, subquery_entry.get("query_similarity"))
+                        and subquery_verification.get("cache_reuse_allowed") is True
+                    ):
+                        _safe_cache_side_effect(
+                            trace_steps,
+                            "record_hit",
+                            {
+                                "cache_kind": str(subquery_entry.get("cache_kind") or "subquery"),
+                                "cache_id": subquery_entry.get("id"),
+                                "hit_type": "subquery",
+                            },
+                            lambda: cache_store.record_hit(subquery_entry),
+                        )
+                        _merge_documents(
+                            merged_by_key,
+                            subquery_documents,
+                            planned_query,
+                            cache_source="subquery",
+                        )
+                        cache_info = _cache_summary(
+                            "partial",
+                            hit_type=cache_info.get("hit_type") or "subquery",
+                            scope_fingerprint=scope_fingerprint,
+                            reused_count=int(cache_info.get("reused_count") or 0) + len(subquery_documents),
+                            query_similarity=cache_info.get("query_similarity"),
+                        )
+                        trace_steps.append(_trace_step(
+                            "subquery_cache_hit",
+                            "success",
+                            started_at,
+                            {
+                                "query": planned_query,
+                                "cache_id": subquery_entry.get("id"),
+                                "query_similarity": subquery_entry.get("query_similarity"),
+                            },
+                            {
+                                "reused_count": len(subquery_documents),
+                                **subquery_quality,
+                            },
+                        ))
+                        continue
+
+                    trace_steps.append(_trace_step(
+                        "subquery_cache_hit",
+                        "partial",
+                        started_at,
+                        {
+                            "query": planned_query,
+                            "cache_id": subquery_entry.get("id"),
+                            "query_similarity": subquery_entry.get("query_similarity"),
+                        },
+                        {
+                            "reused_count": len(subquery_documents),
+                            "reason": "cached evidence confidence was insufficient",
+                            **subquery_quality,
+                        },
+                    ))
+            except Exception as cache_error:
+                trace_steps.append(_trace_step(
+                    "subquery_cache_hit",
+                    "partial",
+                    started_at,
+                    {"query": planned_query},
+                    {"error": str(cache_error)},
+                ))
+
         started_at = _now_ms()
         documents = retrieve_fn(planned_query, user_id, project_space_id, retrieve_limit, threshold)
         trace_steps.append(_trace_step(
@@ -451,18 +959,44 @@ def agentic_retrieve(
             {
                 "hit_count": len(documents),
                 "top_similarity": max([float(doc.get("similarity") or 0) for doc in documents] or [0]),
+                **_retrieval_channel_summary(documents),
             },
         ))
 
-        for document in documents:
-            key = _document_key(document)
-            current = merged_by_key.get(key)
-            if not current or float(document.get("similarity") or 0) > float(current.get("similarity") or 0):
-                merged = dict(document)
-                merged["matched_queries"] = sorted(set((current or {}).get("matched_queries", []) + [planned_query]))
-                merged_by_key[key] = merged
-            elif current:
-                current["matched_queries"] = sorted(set(current.get("matched_queries", []) + [planned_query]))
+        if cache_store and scope_fingerprint:
+            try:
+                subquery_quality = evaluate_retrieval_quality(planned_query, documents)
+                subquery_quality, _ = _quality_with_verification(planned_query, documents, subquery_quality)
+                if _should_store_cache(subquery_quality):
+                    _safe_cache_write(
+                        trace_steps,
+                        "subquery",
+                        {
+                            "query": planned_query,
+                            "document_count": len(documents),
+                            "scope_fingerprint": scope_fingerprint,
+                        },
+                        lambda planned_query=planned_query, documents=documents, subquery_quality=subquery_quality: cache_store.upsert_subquery_cache(
+                            user_id=user_id,
+                            project_space_id=project_space_id,
+                            conversation_id=conversation_id,
+                            normalized_query=planned_query,
+                            original_query=planned_query,
+                            scope_fingerprint=scope_fingerprint,
+                            documents=documents,
+                            quality=subquery_quality,
+                        ),
+                    )
+            except Exception as cache_error:
+                trace_steps.append(_trace_step(
+                    "cache_write",
+                    "partial",
+                    started_at,
+                    {"cache_kind": "subquery", "query": planned_query},
+                    {"stored": False, "error": str(cache_error)},
+                ))
+
+        _merge_documents(merged_by_key, documents, planned_query)
 
     if not merged_by_key:
         retry_query = _build_retry_query(query, intent)
@@ -477,13 +1011,10 @@ def agentic_retrieve(
             {
                 "hit_count": len(documents),
                 "top_similarity": max([float(doc.get("similarity") or 0) for doc in documents] or [0]),
+                **_retrieval_channel_summary(documents),
             },
         ))
-        for document in documents:
-            key = _document_key(document)
-            merged = dict(document)
-            merged["matched_queries"] = [retry_query]
-            merged_by_key[key] = merged
+        _merge_documents(merged_by_key, documents, retry_query)
 
     started_at = _now_ms()
     reranker_name = "local-evidence" if rerank_fn is default_rerank_documents else "custom"
@@ -513,6 +1044,14 @@ def agentic_retrieve(
 
     started_at = _now_ms()
     quality = evaluate_retrieval_quality(query, selected_documents)
+    quality, verification = _quality_with_verification(query, selected_documents, quality)
+    trace_steps.append(_trace_step(
+        "evidence_verify",
+        _verification_status(verification),
+        started_at,
+        {"selected_count": len(selected_documents)},
+        verification,
+    ))
     insufficient_evidence, answer_guidance = _build_answer_guidance(quality)
     trace_steps.append(_trace_step(
         "evidence_check",
@@ -521,6 +1060,47 @@ def agentic_retrieve(
         {"selected_count": len(selected_documents)},
         {**quality, "insufficient_evidence": insufficient_evidence},
     ))
+
+    if cache_store and scope_fingerprint and selected_documents and _should_store_cache(quality):
+        _safe_cache_write(
+            trace_steps,
+            "query",
+            {
+                "query": query,
+                "document_count": len(selected_documents),
+                "scope_fingerprint": scope_fingerprint,
+            },
+            lambda: cache_store.upsert_query_cache(
+                user_id=user_id,
+                project_space_id=project_space_id,
+                conversation_id=conversation_id,
+                normalized_query=query,
+                original_query=query,
+                scope_fingerprint=scope_fingerprint,
+                documents=selected_documents,
+                quality=quality,
+            ),
+        )
+        if conversation_id:
+            _safe_cache_write(
+                trace_steps,
+                "conversation_evidence",
+                {
+                    "query": query,
+                    "document_count": len(selected_documents),
+                    "scope_fingerprint": scope_fingerprint,
+                },
+                lambda: cache_store.upsert_conversation_evidence(
+                    user_id=user_id,
+                    project_space_id=project_space_id,
+                    conversation_id=conversation_id,
+                    normalized_query=query,
+                    original_query=query,
+                    scope_fingerprint=scope_fingerprint,
+                    documents=selected_documents,
+                    quality=quality,
+                ),
+            )
 
     return {
         "run_id": run_id,
@@ -532,4 +1112,5 @@ def agentic_retrieve(
         "quality": quality,
         "insufficient_evidence": insufficient_evidence,
         "answer_guidance": answer_guidance,
+        "cache": cache_info,
     }

@@ -117,6 +117,16 @@ interface UsageFileQueueItem {
   filename: string;
   status: 'uploading' | 'pending' | 'processing' | 'completed' | 'failed';
   progress: number;
+  ingestion_status?: string | null;
+  ingestion_stage?: string | null;
+  ingestion_progress?: number | null;
+  total_chunks?: number;
+  indexed_chunks?: number;
+  keyword_batches?: number;
+  graph_batches?: number;
+  vector_batches?: number;
+  heartbeat_at?: string | null;
+  job_error_message?: string | null;
   attempts: number;
   max_attempts: number;
   next_attempt_at?: string | null;
@@ -223,6 +233,34 @@ export default function UsagePage() {
     if (status === 'pending') return 'border-amber-500/30 bg-amber-500/10 text-amber-200';
     return 'border-red-500/30 bg-red-500/10 text-red-300';
   }, []);
+
+  const formatIngestionStage = useCallback((stage?: string | null) => {
+    switch (stage) {
+      case 'validating_uploaded_object':
+        return t('usage.ingestionStageValidating');
+      case 'downloading_object':
+      case 'streaming_download':
+        return t('usage.ingestionStageDownloading');
+      case 'parsing_markdown':
+        return t('usage.ingestionStageParsing');
+      case 'chunking':
+        return t('usage.ingestionStageChunking');
+      case 'persisting_chunks':
+        return t('usage.ingestionStagePersisting');
+      case 'resetting_indexes':
+        return t('usage.ingestionStageResetting');
+      case 'indexing_vectors':
+        return t('usage.ingestionStageIndexing');
+      case 'completed':
+        return t('usage.ingestionStageCompleted');
+      case 'failed':
+        return t('usage.ingestionStageFailed');
+      case 'queued':
+        return t('usage.ingestionStageQueued');
+      default:
+        return stage ? t('usage.ingestionStageUnknownWithValue', { stage }) : t('usage.notAvailable');
+    }
+  }, [t]);
 
   const fetchOverview = useCallback(async () => {
     setIsLoadingOverview(true);
@@ -656,11 +694,16 @@ export default function UsagePage() {
                     <p className="break-words text-sm font-medium text-text-main">{formatFilename(file.filename)}</p>
                     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted">
                       <span>{t('usage.attempts', { count: file.attempts, max: file.max_attempts })}</span>
-                      <span>{formatNumber(file.progress)}%</span>
+                      <span>{formatNumber(file.ingestion_progress ?? file.progress)}%</span>
+                      {file.ingestion_stage && (
+                        <span>{t('usage.ingestionStage')}: {formatIngestionStage(file.ingestion_stage)}</span>
+                      )}
                       <span>{formatDateTime(file.updated_at)}</span>
                     </div>
-                    {file.error_message && (
-                      <p className="mt-2 line-clamp-2 break-words text-xs text-red-300">{file.error_message}</p>
+                    {(file.job_error_message || file.error_message) && (
+                      <p className="mt-2 line-clamp-2 break-words text-xs text-red-300">
+                        {file.job_error_message || file.error_message}
+                      </p>
                     )}
                   </div>
                   <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-xs font-medium ${getFileStatusClass(file.status)}`}>
@@ -708,11 +751,38 @@ export default function UsagePage() {
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('usage.progress')}</p>
-                <p className="mt-1 text-text-main">{formatNumber(selectedFileJob.progress)}%</p>
+                <p className="mt-1 text-text-main">{formatNumber(selectedFileJob.ingestion_progress ?? selectedFileJob.progress)}%</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-xs text-text-muted">{t('usage.ingestionStage')}</p>
+                <p className="mt-1 break-words text-text-main">{formatIngestionStage(selectedFileJob.ingestion_stage)}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('usage.attemptCount')}</p>
                 <p className="mt-1 text-text-main">{t('usage.attempts', { count: selectedFileJob.attempts, max: selectedFileJob.max_attempts })}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-xs text-text-muted">{t('usage.indexedChunks')}</p>
+                <p className="mt-1 text-text-main">
+                  {formatNumber(selectedFileJob.indexed_chunks || 0)}
+                  {selectedFileJob.total_chunks ? ` / ${formatNumber(selectedFileJob.total_chunks)}` : ''}
+                </p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-xs text-text-muted">{t('usage.vectorBatches')}</p>
+                <p className="mt-1 text-text-main">{formatNumber(selectedFileJob.vector_batches || 0)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-xs text-text-muted">{t('usage.keywordBatches')}</p>
+                <p className="mt-1 text-text-main">{formatNumber(selectedFileJob.keyword_batches || 0)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-xs text-text-muted">{t('usage.graphBatches')}</p>
+                <p className="mt-1 text-text-main">{formatNumber(selectedFileJob.graph_batches || 0)}</p>
+              </div>
+              <div className="rounded-lg border border-border bg-bg-base p-3">
+                <p className="text-xs text-text-muted">{t('usage.heartbeatAt')}</p>
+                <p className="mt-1 text-text-main">{formatDateTime(selectedFileJob.heartbeat_at)}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('usage.lastAttempt')}</p>
@@ -727,11 +797,11 @@ export default function UsagePage() {
                 <p className="mt-1 text-text-main">{formatDateTime(selectedFileJob.next_attempt_at)}</p>
               </div>
             </div>
-            {selectedFileJob.error_message && (
+            {(selectedFileJob.job_error_message || selectedFileJob.error_message) && (
               <div>
                 <p className="mb-1 text-xs font-medium text-text-muted">{t('usage.errorMessage')}</p>
                 <p className="whitespace-pre-wrap break-words rounded-lg border border-red-500/20 bg-red-500/10 p-3 text-sm leading-6 text-red-300">
-                  {selectedFileJob.error_message}
+                  {selectedFileJob.job_error_message || selectedFileJob.error_message}
                 </p>
               </div>
             )}

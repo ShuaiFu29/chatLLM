@@ -6,11 +6,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from config import settings
 from agentic_retrieval import agentic_retrieve
-from db import check_database_ready
+from db import bump_project_knowledge_version, check_database_ready, get_file
 from eval_runner import run_eval_cases
 from graph_store import check_graph_store_ready, delete_file_graph, ensure_graph_schema, list_graph, search_graph
 from ingestion import process_file
 from keyword_store import check_keyword_store_ready, delete_file_keywords, ensure_keyword_index
+from retrieval_cache import get_default_retrieval_cache
 from retrieval import retrieve_documents
 from vector_store import check_vector_store_ready, delete_file_vectors, ensure_collection
 
@@ -74,7 +75,12 @@ class RetrieveRequest(BaseModel):
 
 
 class AgenticRetrieveRequest(RetrieveRequest):
-    pass
+    conversation_id: str | None = Field(default=None, max_length=128)
+
+    @field_validator("conversation_id")
+    @classmethod
+    def strip_optional_conversation_id(cls, value: str | None):
+        return strip_and_reject_blank_value(value)
 
 
 class GraphListRequest(BaseModel):
@@ -245,8 +251,10 @@ def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
             query=request.query,
             user_id=request.user_id,
             project_space_id=request.project_space_id,
+            conversation_id=request.conversation_id,
             limit=request.limit,
             threshold=request.threshold,
+            cache_store=get_default_retrieval_cache(),
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -297,9 +305,16 @@ def eval_run_endpoint(request: EvalRunRequest):
 @app.post("/cleanup-file", dependencies=[Depends(require_internal_auth)])
 def cleanup_file_endpoint(request: CleanupFileRequest):
     try:
+        file_data = get_file(request.file_id)
         delete_file_vectors(request.file_id)
         delete_file_keywords(request.file_id)
         delete_file_graph(request.file_id)
+        if file_data:
+            bump_project_knowledge_version(
+                str(file_data["user_id"]),
+                str(file_data.get("project_space_id")) if file_data.get("project_space_id") else None,
+                "file_deleted",
+            )
         return {"status": "deleted", "file_id": request.file_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

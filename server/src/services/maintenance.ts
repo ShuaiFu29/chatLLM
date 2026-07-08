@@ -4,6 +4,12 @@ import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
+import { abortMultipartObjectUpload } from '../lib/storage';
+import {
+  listExpiredMultipartUploadSessions,
+  markMultipartUploadSessionExpired,
+} from '../repositories/uploadMultipart';
+import { updateFile } from '../repositories/files';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
 
@@ -24,6 +30,21 @@ export const cleanupUploadTempDirectory = async (
     if (now - stat.mtimeMs >= maxAgeMs) {
       await fs.remove(fullPath);
     }
+  }));
+};
+
+export const cleanupExpiredMultipartUploadSessions = async () => {
+  const sessions = await listExpiredMultipartUploadSessions(20);
+
+  await Promise.all(sessions.map(async (session) => {
+    const message = 'Multipart upload session expired';
+    await abortMultipartObjectUpload(session.object_key, session.storage_upload_id).catch(() => undefined);
+    await markMultipartUploadSessionExpired(session.file_id, message);
+    await updateFile(session.file_id, {
+      status: 'failed',
+      progress: 0,
+      error_message: message,
+    });
   }));
 };
 
@@ -50,6 +71,7 @@ class MaintenanceService {
       this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),
+      cleanupExpiredMultipartUploadSessions(),
     ]);
 
     results.forEach((result) => {

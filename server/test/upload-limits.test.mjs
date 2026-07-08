@@ -304,3 +304,12 @@ test('merge integrity failures mark the upload row failed instead of leaving it 
     rmSync(mergedPath, { force: true });
   }
 });
+
+test('legacy chunk merge streams chunk files instead of buffering entire uploads', () => {
+  const mergeBody = uploadControllerSource.split('export const mergeChunks')[1].split('export const listFiles')[0];
+
+  assert.match(mergeBody, /pipeline/);
+  assert.match(mergeBody, /fs\.createReadStream\(chunkPath\)/);
+  assert.doesNotMatch(mergeBody, /await fs\.readFile\(chunkPath\)/);
+  assert.match(mergeBody, /await fs\.remove\(chunkDir\)/);
+});

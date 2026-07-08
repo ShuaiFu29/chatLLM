@@ -109,6 +109,51 @@ def _keyword_documents(query: str, user_id: str, project_space_id: str | None, l
     return documents
 
 
+def _result_source_key(result: dict) -> str:
+    metadata = result.get("metadata") or {}
+    return str(metadata.get("file_id") or metadata.get("filename") or result.get("id") or "")
+
+
+def _apply_source_diversity(results: list[dict], limit: int) -> list[dict]:
+    if limit <= 0:
+        return []
+    if len(results) <= limit:
+        for index, result in enumerate(results, start=1):
+            result.setdefault("metadata", {})["source_diversity_rank"] = index
+        return results
+
+    max_per_source_first_pass = 2 if limit >= 4 else limit
+    selected: list[dict] = []
+    selected_ids: set[str] = set()
+    source_counts: dict[str, int] = {}
+
+    for result in results:
+        source_key = _result_source_key(result)
+        if source_counts.get(source_key, 0) >= max_per_source_first_pass:
+            continue
+        selected.append(result)
+        selected_ids.add(str(result.get("id")))
+        source_counts[source_key] = source_counts.get(source_key, 0) + 1
+        if len(selected) >= limit:
+            break
+
+    if len(selected) < limit:
+        for result in results:
+            result_id = str(result.get("id"))
+            if result_id in selected_ids:
+                continue
+            selected.append(result)
+            selected_ids.add(result_id)
+            if len(selected) >= limit:
+                break
+
+    for index, result in enumerate(selected, start=1):
+        result.setdefault("metadata", {})["source_diversity_rank"] = index
+        result["source_diversity_rank"] = index
+
+    return selected
+
+
 def retrieve_documents(
     query: str,
     user_id: str,
@@ -163,13 +208,14 @@ def retrieve_documents(
         ("graph", graph_documents),
     ])
     active_retriever_count = sum(1 for documents in (vector_documents, keyword_documents, graph_documents) if documents)
+    max_rrf_score = max([float(document.get("rrf_score") or 0) for document in fused_documents] or [0.0])
 
     results = []
     for document in fused_documents:
         vector_similarity = float((document.get("channel_scores") or {}).get("vector") or document.get("similarity") or 0)
         lexical_score = float((document.get("channel_scores") or {}).get("bm25") or document.get("lexical_score") or 0)
         rrf_score = float(document.get("rrf_score") or 0)
-        retrieval_score = round(rrf_score, 6)
+        retrieval_score = round(rrf_score / max_rrf_score, 6) if max_rrf_score > 0 else 0.0
         channels = document.get("retrieval_channels") or []
         if active_retriever_count > 1:
             retrieval_mode = "hybrid_rrf"
@@ -192,4 +238,5 @@ def retrieve_documents(
             channel_scores=document.get("channel_scores") or {},
         ))
 
-    return sorted(results, key=lambda result: result["retrieval_score"], reverse=True)[:limit]
+    ranked_results = sorted(results, key=lambda result: result["retrieval_score"], reverse=True)
+    return _apply_source_diversity(ranked_results, limit)

@@ -416,6 +416,9 @@ test('RAG retrieval lab is routed, reachable from navigation, and localized', ()
   assert.match(retrievalLabPageSource, /ragWorkbench\.traceSteps/);
   assert.match(retrievalLabPageSource, /ragWorkbench\.retrievalChannels/);
   assert.match(retrievalLabPageSource, /ragWorkbench\.rerankScore/);
+  assert.match(retrievalLabPageSource, /<Modal/);
+  assert.match(retrievalLabPageSource, /setIsSourceModalOpen\(true\)/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.openSources/);
   assert.match(retrievalLabPageSource, /retrieval_channels/);
   assert.match(retrievalLabPageSource, /channel_ranks/);
   assert.match(retrievalLabPageSource, /channel_scores/);
@@ -435,8 +438,22 @@ test('RAG retrieval lab is routed, reachable from navigation, and localized', ()
     assert.ok(locale.ragWorkbench?.traceSteps, `${localeFile.locale}.json needs ragWorkbench.traceSteps`);
     assert.ok(locale.ragWorkbench?.retrievalChannels, `${localeFile.locale}.json needs ragWorkbench.retrievalChannels`);
     assert.ok(locale.ragWorkbench?.rerankScore, `${localeFile.locale}.json needs ragWorkbench.rerankScore`);
+    assert.ok(locale.ragWorkbench?.sourcesSummary, `${localeFile.locale}.json needs ragWorkbench.sourcesSummary`);
+    assert.ok(locale.ragWorkbench?.openSources, `${localeFile.locale}.json needs ragWorkbench.openSources`);
+    assert.ok(locale.ragWorkbench?.topSources, `${localeFile.locale}.json needs ragWorkbench.topSources`);
+    assert.ok(locale.ragWorkbench?.sourceRank, `${localeFile.locale}.json needs ragWorkbench.sourceRank`);
     assert.ok(locale.ragWorkbench?.loadFailed, `${localeFile.locale}.json needs ragWorkbench.loadFailed`);
   }
+});
+
+test('RAG retrieval source snippets render markdown instead of exposing raw encoded links', () => {
+  assert.match(retrievalLabPageSource, /MarkdownRenderer/);
+  assert.match(retrievalLabPageSource, /<MarkdownRenderer content=\{source\.content \|\| t\('usage\.notAvailable'\)\} \/>/);
+  assert.doesNotMatch(
+    retrievalLabPageSource,
+    /<p className="[^"]*whitespace-pre-wrap[^"]*"[^>]*>\s*\{source\.content \|\| t\('usage\.notAvailable'\)\}\s*<\/p>/,
+    'retrieval source body should not render raw markdown text with percent-encoded link URLs',
+  );
 });
 
 test('RAG graph explorer is routed, reachable from navigation, and localized', () => {
@@ -852,6 +869,15 @@ test('assistant messages expose Agentic RAG trace and quality summaries in local
   }
 });
 
+test('chat stream clears stale RAG metadata when the server skips retrieval', () => {
+  assert.match(chatStoreSource, /if \(data\.ragSkipped\)/);
+  assert.match(chatStoreSource, /ragSkipped:\s*true/);
+  assert.match(chatStoreSource, /sources:\s*\[\]/);
+  assert.match(chatStoreSource, /traceSummary:\s*null/);
+  assert.match(chatStoreSource, /qualitySummary:\s*null/);
+  assert.match(chatStoreSource, /ragRunId:\s*null/);
+});
+
 test('RAG trace steps use readable localized labels instead of internal step ids', () => {
   assert.ok(existsSync(ragTraceLabelsPath), 'ragTraceLabels.ts should define user-facing trace labels');
   assert.match(ragTraceLabelsSource, /getRagTraceStepLabel/);
@@ -888,6 +914,45 @@ test('RAG trace steps use readable localized labels instead of internal step ids
     assert.ok(locale.ragTrace?.statuses?.partial, `${localeFile.locale}.json needs ragTrace.statuses.partial`);
     assert.ok(locale.ragTrace?.statuses?.failed, `${localeFile.locale}.json needs ragTrace.statuses.failed`);
     assert.ok(locale.ragTrace?.statuses?.unknown, `${localeFile.locale}.json needs ragTrace.statuses.unknown`);
+  }
+});
+
+test('RAG verification and risk signals are visible in localized UI', () => {
+  assert.match(chatStoreSource, /support_label/);
+  assert.match(chatStoreSource, /verification_score/);
+  assert.match(chatStoreSource, /risk_level/);
+  assert.match(chatStoreSource, /answer_grounding_status/);
+  assert.match(chatStoreSource, /answer_grounding_score/);
+  assert.match(chatMessageSource, /chat\.ragSupport/);
+  assert.match(chatMessageSource, /chat\.ragRisk/);
+  assert.match(chatMessageSource, /chat\.ragAnswerGrounding/);
+  assert.match(chatMessageSource, /qualitySummary\.verification_score/);
+  assert.match(chatMessageSource, /qualitySummary\.answer_grounding_score/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.verificationScore/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.riskLevel/);
+  assert.match(retrievalLabPageSource, /ragWorkbench\.supportStatus/);
+  assert.match(ragTraceLabelsSource, /risk_assess/);
+  assert.match(ragTraceLabelsSource, /evidence_verify/);
+  assert.match(ragTraceLabelsSource, /answer_grounding_check/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.chat?.ragSupport, `${localeFile.locale}.json needs chat.ragSupport`);
+    assert.ok(locale.chat?.ragRisk, `${localeFile.locale}.json needs chat.ragRisk`);
+    assert.ok(locale.chat?.ragAnswerGrounding, `${localeFile.locale}.json needs chat.ragAnswerGrounding`);
+    assert.ok(locale.chat?.ragAnswerGroundingSupported, `${localeFile.locale}.json needs chat.ragAnswerGroundingSupported`);
+    assert.ok(locale.chat?.ragAnswerGroundingPartial, `${localeFile.locale}.json needs chat.ragAnswerGroundingPartial`);
+    assert.ok(locale.chat?.ragAnswerGroundingUnsupported, `${localeFile.locale}.json needs chat.ragAnswerGroundingUnsupported`);
+    assert.ok(locale.chat?.ragSupportSupported, `${localeFile.locale}.json needs chat.ragSupportSupported`);
+    assert.ok(locale.chat?.ragSupportPartial, `${localeFile.locale}.json needs chat.ragSupportPartial`);
+    assert.ok(locale.chat?.ragSupportUnsupported, `${localeFile.locale}.json needs chat.ragSupportUnsupported`);
+    assert.ok(locale.ragTrace?.steps?.risk_assess, `${localeFile.locale}.json needs ragTrace.steps.risk_assess`);
+    assert.ok(locale.ragTrace?.steps?.evidence_verify, `${localeFile.locale}.json needs ragTrace.steps.evidence_verify`);
+    assert.ok(locale.ragTrace?.steps?.answer_grounding_check, `${localeFile.locale}.json needs ragTrace.steps.answer_grounding_check`);
+    assert.ok(locale.ragWorkbench?.verificationScore, `${localeFile.locale}.json needs ragWorkbench.verificationScore`);
+    assert.ok(locale.ragWorkbench?.riskLevel, `${localeFile.locale}.json needs ragWorkbench.riskLevel`);
+    assert.ok(locale.ragWorkbench?.supportStatus, `${localeFile.locale}.json needs ragWorkbench.supportStatus`);
   }
 });
 
@@ -928,13 +993,24 @@ test('RAG evaluation details show readable source names and colored status badge
   assert.match(ragEvaluationPageSource, /source_recall_score/);
   assert.match(ragEvaluationPageSource, /source_precision_score/);
   assert.match(ragEvaluationPageSource, /citation_accuracy_score/);
+  assert.match(ragEvaluationPageSource, /verification_score/);
+  assert.match(ragEvaluationPageSource, /average_verification_score/);
   assert.match(ragEvaluationPageSource, /grounding_score/);
+  assert.match(ragEvaluationPageSource, /ragEval\.verificationScore/);
+  assert.match(ragEvaluationPageSource, /ragEval\.supportStatus/);
   assert.match(ragEvaluationPageSource, /break-words text-text-main/);
   assert.equal(
     ragEvaluationPageSource.includes('<div className="truncate text-text-main">'),
     false,
     'RAG evaluation matched source filenames should wrap instead of being truncated',
   );
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.ragEval?.verificationScore, `${localeFile.locale}.json needs ragEval.verificationScore`);
+    assert.ok(locale.ragEval?.supportStatus, `${localeFile.locale}.json needs ragEval.supportStatus`);
+  }
 });
 
 test('markdown image references show a localized fallback when the uploaded markdown did not include image assets', () => {
