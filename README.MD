@@ -1,6 +1,6 @@
-# DocuMind - 智能文档大脑
+# ChatLLM - AI 聊天与 Agentic RAG 知识工作台
 
-DocuMind 是一个前后端分离的 AI 聊天工作台。用户可以通过 GitHub OAuth 登录，把文件、会话和基础 RAG 检索组织到 Project Spaces 中，并在对话中查看引用来源。
+ChatLLM 是一个前后端分离的 AI 聊天与 Agentic RAG 知识工作台。用户可以通过 GitHub OAuth 登录，把会话、Markdown 文档、项目空间、检索引用、RAG 质量评测和使用追踪组织在同一个工作台里。
 
 当前架构已经移除 Supabase，改为本地 Docker Compose 栈：
 
@@ -10,6 +10,8 @@ DocuMind 是一个前后端分离的 AI 聊天工作台。用户可以通过 Git
 - MinIO 文件存储
 - Python FastAPI RAG 服务
 - Milvus 向量数据库
+- Elasticsearch BM25 检索
+- Neo4j 知识图谱
 
 ## 系统架构
 
@@ -22,6 +24,8 @@ flowchart LR
   Rag -->|SQL metadata/chunks| Postgres
   Rag -->|Download source files| MinIO
   Rag -->|Vector insert/search| Milvus["Milvus"]
+  Rag -->|BM25 search| ES["Elasticsearch"]
+  Rag -->|Entity graph| Neo4j["Neo4j"]
   Server -->|Streaming chat completion| LLM["DeepSeek / Kimi / Qwen compatible APIs"]
 ```
 
@@ -63,6 +67,9 @@ chatLLM/
 - PostgreSQL chunk metadata
 - MinIO source document download
 - Milvus vector storage and retrieval
+- Elasticsearch BM25 hybrid retrieval
+- Neo4j entity graph retrieval
+- Agentic query planning, trace, evidence verification, and RAG evaluation support
 
 ## 本地启动
 
@@ -168,18 +175,23 @@ npm run dev
 - 会话创建、重命名、删除
 - 会话可移动到不同 Project Space
 - 消息搜索
-- Markdown 文件分片上传和断点续传
+- Markdown 文件分片上传、直传 MinIO、断点续传和完整性校验
 - 文件处理失败后可重试
 - Usage 页面可查看文档处理队列、失败原因和重试状态
 - MinIO 文档存储
-- RAG 文档解析、切块、embedding、Milvus 检索
+- RAG 文档解析、切块、embedding、Milvus 向量检索、Elasticsearch BM25 检索、Neo4j 图谱检索
 - 本地 RAG smoke 可不依赖外部 embedding 额度完成 ingest / retrieve 闭环
-- 对话回答展示基础引用来源、片段编号、相似度和摘要
+- Agentic RAG 查询规划、证据复用缓存、引用校验、trace 展示和质量信号
+- RAG 评测中心可查看历史 RAG 运行、来源命中、弱证据和质量趋势
+- 知识图谱可查看文档实体关系，并定位到原文证据片段
+- 对话回答展示引用来源、片段编号、相似度、摘要和 RAG trace
+- 使用追踪页面可按会话和文档查看用户使用情况
+- 个人画像中心可基于历史提问生成、编辑、隐藏、恢复和删除用户画像记录
 - 个人资料和主题设置
 
 ## 产品边界
 
-chatLLM 的定位是面向用户的聊天入口和项目知识工作台：管理会话、文件、Project Spaces、基础检索和回答引用。后续如果开发 `agent-flow` 和 `agentic-rag`，建议把工作流编排、工具调用、多步规划、多跳检索、复杂 rerank/trace 等能力放到那两个项目中，避免三个项目高度重合。
+ChatLLM 的定位是面向用户的 AI 对话入口和知识工作台：核心能力是对话体验、项目空间、Markdown 知识库、Agentic RAG 检索、引用溯源、知识图谱、质量评测、使用追踪和个人画像。它不承担通用工作流编排平台的职责，复杂工具流、节点编排和跨应用自动化更适合放在独立的 `agent-flow` 项目中。
 
 ## 数据说明
 
@@ -198,3 +210,7 @@ chatLLM 的定位是面向用户的聊天入口和项目知识工作台：管理
 源文件存储在 MinIO `documents` bucket。
 
 向量数据存储在 Milvus `document_chunks` collection。
+
+BM25 检索数据存储在 Elasticsearch `chatllm_chunks` index。
+
+实体关系和证据定位数据存储在 Neo4j。
