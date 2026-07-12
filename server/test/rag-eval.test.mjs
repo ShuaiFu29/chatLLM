@@ -87,14 +87,14 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(shutdownSource, /ragEvalQueue\.stop\(\)/);
 
   assert.match(routesSource, /router\.get\('\/datasets', requireAuth, listRagEvalDatasets\)/);
-  assert.match(routesSource, /router\.post\('\/datasets', requireAuth, createRagEvalDataset\)/);
-  assert.match(routesSource, /router\.patch\('\/datasets\/:datasetId', requireAuth, updateRagEvalDataset\)/);
-  assert.match(routesSource, /router\.delete\('\/datasets\/:datasetId', requireAuth, deleteRagEvalDataset\)/);
+  assert.match(routesSource, /router\.post\('\/datasets', requireAuth, validateMutation\(mutationSchemas\.ragEvalDatasetCreate\), createRagEvalDataset\)/);
+  assert.match(routesSource, /router\.patch\('\/datasets\/:datasetId', requireAuth, validateMutation\(mutationSchemas\.ragEvalDatasetUpdate\), updateRagEvalDataset\)/);
+  assert.match(routesSource, /router\.delete\('\/datasets\/:datasetId', requireAuth, validateMutation\(mutationSchemas\.ragEvalDatasetDelete\), deleteRagEvalDataset\)/);
   assert.match(routesSource, /router\.get\('\/datasets\/:datasetId\/quality', requireAuth, getRagEvalQualitySummary\)/);
-  assert.match(routesSource, /router\.post\('\/datasets\/:datasetId\/cases', requireAuth, createRagEvalCase\)/);
-  assert.match(routesSource, /router\.post\('\/datasets\/:datasetId\/runs', requireAuth, runRagEvalDataset\)/);
+  assert.match(routesSource, /router\.post\('\/datasets\/:datasetId\/cases', requireAuth, validateMutation\(mutationSchemas\.ragEvalCaseCreate\), createRagEvalCase\)/);
+  assert.match(routesSource, /router\.post\('\/datasets\/:datasetId\/runs', requireAuth, validateMutation\(mutationSchemas\.ragEvalDatasetRun\), runRagEvalDataset\)/);
   assert.match(routesSource, /router\.get\('\/runs\/:runId', requireAuth, getRagEvalRun\)/);
-  assert.match(routesSource, /router\.post\('\/runs\/:runId\/cancel', requireAuth, cancelRagEvalRun\)/);
+  assert.match(routesSource, /router\.post\('\/runs\/:runId\/cancel', requireAuth, validateMutation\(mutationSchemas\.ragEvalRunCancel\), cancelRagEvalRun\)/);
 
   assert.match(controllerSource, /listRagEvalDatasets/);
   assert.match(controllerSource, /updateRagEvalDataset/);

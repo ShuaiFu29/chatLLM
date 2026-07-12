@@ -14,7 +14,7 @@ test('upload routes expose an authenticated markdown original-content endpoint',
   assert.match(routeSource, /router\.get\('\/files\/:id\/content', getFileContent\)/);
   assert.ok(
     routeSource.indexOf("router.get('/files/:id/content', getFileContent)") <
-      routeSource.indexOf("router.delete('/files/:id', deleteFile)"),
+      routeSource.indexOf("router.delete('/files/:id', validateMutation(mutationSchemas.uploadDeleteFile), deleteFile)"),
     'content route should be declared before destructive file actions',
   );
 });

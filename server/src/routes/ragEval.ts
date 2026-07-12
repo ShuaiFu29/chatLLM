@@ -12,20 +12,22 @@ import {
   runRagEvalDataset,
   updateRagEvalDataset,
 } from '../controllers/ragEval';
+import { mutationSchemas } from '../lib/mutationSchemas';
+import { validateMutation } from '../lib/validation';
 import { requireAuth } from '../middleware/auth';
 
 const router = Router();
 
 router.get('/history', requireAuth, listRagEvalHistory);
 router.get('/datasets', requireAuth, listRagEvalDatasets);
-router.post('/datasets', requireAuth, createRagEvalDataset);
-router.patch('/datasets/:datasetId', requireAuth, updateRagEvalDataset);
-router.delete('/datasets/:datasetId', requireAuth, deleteRagEvalDataset);
+router.post('/datasets', requireAuth, validateMutation(mutationSchemas.ragEvalDatasetCreate), createRagEvalDataset);
+router.patch('/datasets/:datasetId', requireAuth, validateMutation(mutationSchemas.ragEvalDatasetUpdate), updateRagEvalDataset);
+router.delete('/datasets/:datasetId', requireAuth, validateMutation(mutationSchemas.ragEvalDatasetDelete), deleteRagEvalDataset);
 router.get('/datasets/:datasetId/quality', requireAuth, getRagEvalQualitySummary);
-router.post('/datasets/:datasetId/cases', requireAuth, createRagEvalCase);
-router.post('/datasets/:datasetId/runs', requireAuth, runRagEvalDataset);
+router.post('/datasets/:datasetId/cases', requireAuth, validateMutation(mutationSchemas.ragEvalCaseCreate), createRagEvalCase);
+router.post('/datasets/:datasetId/runs', requireAuth, validateMutation(mutationSchemas.ragEvalDatasetRun), runRagEvalDataset);
 router.get('/runs/:runId', requireAuth, getRagEvalRun);
-router.post('/runs/:runId/cancel', requireAuth, cancelRagEvalRun);
-router.delete('/cases/:caseId', requireAuth, deleteRagEvalCase);
+router.post('/runs/:runId/cancel', requireAuth, validateMutation(mutationSchemas.ragEvalRunCancel), cancelRagEvalRun);
+router.delete('/cases/:caseId', requireAuth, validateMutation(mutationSchemas.ragEvalCaseDelete), deleteRagEvalCase);
 
 export default router;

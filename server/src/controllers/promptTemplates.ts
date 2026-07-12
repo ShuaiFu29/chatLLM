@@ -7,11 +7,6 @@ import {
 } from '../repositories/promptTemplates';
 import { toSafeError } from '../lib/safeError';
 
-const cleanText = (value: unknown, maxLength: number) => {
-  if (typeof value !== 'string') return '';
-  return value.trim().slice(0, maxLength);
-};
-
 const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -33,23 +28,18 @@ export const listPromptTemplates = async (req: Request, res: Response) => {
 export const createPromptTemplate = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const name = cleanText(req.body.name, 120);
-  const content = cleanText(req.body.content, 8000);
-  const description = cleanText(req.body.description, 500);
-
-  if (!name || !content) {
-    res.status(400).json({ error: 'Name and content are required' });
-    return;
-  }
+  const name = req.body.name as string;
+  const content = req.body.content as string;
+  const description = (req.body.description ?? '') as string;
 
   try {
     const template = await createPromptTemplateForUser({
       userId: req.user.id,
-      projectSpaceId: readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId),
+      projectSpaceId: readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId),
       name,
       content,
       description,
-      isDefault: Boolean(req.body.is_default || req.body.isDefault),
+      isDefault: req.body.is_default ?? req.body.isDefault ?? false,
     });
     res.status(201).json(template);
   } catch (error) {
@@ -71,18 +61,13 @@ export const updatePromptTemplate = async (req: Request, res: Response) => {
   } = {};
 
   if (req.body.project_space_id !== undefined || req.body.projectSpaceId !== undefined) {
-    updates.project_space_id = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId) ?? null;
+    updates.project_space_id = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId) ?? null;
   }
-  if (req.body.name !== undefined) updates.name = cleanText(req.body.name, 120);
-  if (req.body.content !== undefined) updates.content = cleanText(req.body.content, 8000);
-  if (req.body.description !== undefined) updates.description = cleanText(req.body.description, 500);
+  if (req.body.name !== undefined) updates.name = req.body.name;
+  if (req.body.content !== undefined) updates.content = req.body.content;
+  if (req.body.description !== undefined) updates.description = req.body.description;
   if (req.body.is_default !== undefined || req.body.isDefault !== undefined) {
-    updates.is_default = Boolean(req.body.is_default || req.body.isDefault);
-  }
-
-  if (updates.name === '' || updates.content === '') {
-    res.status(400).json({ error: 'Name and content cannot be empty' });
-    return;
+    updates.is_default = req.body.is_default ?? req.body.isDefault;
   }
 
   try {

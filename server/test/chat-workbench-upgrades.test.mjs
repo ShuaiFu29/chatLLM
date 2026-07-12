@@ -27,7 +27,7 @@ test('workbench migration adds branch metadata, conversation metadata, and promp
 });
 
 test('chat routes expose branching and comparison endpoints scoped by authentication', () => {
-  assert.match(chatRoutesSource, /router\.post\('\/conversations\/:conversationId\/branches', requireAuth, branchConversation\)/);
+  assert.match(chatRoutesSource, /router\.post\('\/conversations\/:conversationId\/branches', requireAuth, validateMutation\(mutationSchemas\.chatBranchConversation\), branchConversation\)/);
   assert.match(chatRoutesSource, /router\.get\('\/conversations\/:conversationId\/compare\/:otherConversationId', requireAuth, compareConversations\)/);
   assert.match(chatControllerSource, /createConversationBranchForUser\(\{\s*userId: req\.user\.id/s);
   assert.match(chatControllerSource, /compareConversationsForUser\(req\.user\.id/);
@@ -47,9 +47,9 @@ test('conversation repository stores tags, favorites, notes, and branch lineage'
 test('prompt templates have authenticated routes and a user-scoped repository', () => {
   assert.match(indexSource, /app\.use\('\/api\/prompt-templates', promptTemplateRoutes\)/);
   assert.match(promptRoutesSource, /router\.get\('\/', requireAuth, listPromptTemplates\)/);
-  assert.match(promptRoutesSource, /router\.post\('\/', requireAuth, createPromptTemplate\)/);
-  assert.match(promptRoutesSource, /router\.patch\('\/:templateId', requireAuth, updatePromptTemplate\)/);
-  assert.match(promptRoutesSource, /router\.delete\('\/:templateId', requireAuth, deletePromptTemplate\)/);
+  assert.match(promptRoutesSource, /router\.post\('\/', requireAuth, validateMutation\(mutationSchemas\.promptTemplateCreate\), createPromptTemplate\)/);
+  assert.match(promptRoutesSource, /router\.patch\('\/:templateId', requireAuth, validateMutation\(mutationSchemas\.promptTemplateUpdate\), updatePromptTemplate\)/);
+  assert.match(promptRoutesSource, /router\.delete\('\/:templateId', requireAuth, validateMutation\(mutationSchemas\.promptTemplateDelete\), deletePromptTemplate\)/);
   assert.match(promptRepositorySource, /where user_id = \$1/i);
 });
 

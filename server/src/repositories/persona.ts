@@ -128,20 +128,6 @@ const suggestionColumns = `
   updated_at
 `;
 
-const trimText = (value: unknown, maxLength: number) => {
-  if (typeof value !== 'string') return undefined;
-  return value.trim().slice(0, maxLength);
-};
-
-const trimTextArray = (value: unknown, maxItems: number, maxLength: number) => {
-  if (!Array.isArray(value)) return undefined;
-  return value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim().slice(0, maxLength))
-    .filter(Boolean)
-    .slice(0, maxItems);
-};
-
 const uniqueEvidenceIds = (items: Array<{ evidence_message_ids?: string[] }>) => (
   Array.from(new Set(items.flatMap((item) => item.evidence_message_ids || []))).slice(0, 200)
 );
@@ -177,19 +163,19 @@ export const normalizePersonaProfileUpdate = (body: unknown): PersonaProfileUpda
   const input = (body && typeof body === 'object') ? body as Record<string, unknown> : {};
   const update: PersonaProfileUpdate = {};
 
-  const summary = trimText(input.summary, 1200);
-  const roleLabel = trimText(input.role_label ?? input.roleLabel, 120);
-  const goals = trimTextArray(input.goals, 12, 160);
-  const preferences = trimTextArray(input.preferences, 12, 180);
-  const avoidedTopics = trimTextArray(input.avoided_topics ?? input.avoidedTopics, 12, 180);
+  if (input.summary !== undefined) update.summary = input.summary as string;
 
-  if (summary !== undefined) update.summary = summary;
-  if (roleLabel !== undefined) update.role_label = roleLabel;
-  if (goals !== undefined) update.goals = goals;
-  if (preferences !== undefined) update.preferences = preferences;
-  if (avoidedTopics !== undefined) update.avoided_topics = avoidedTopics;
-  if (typeof input.memory_enabled === 'boolean') update.memory_enabled = input.memory_enabled;
-  if (typeof input.memoryEnabled === 'boolean') update.memory_enabled = input.memoryEnabled;
+  const roleLabel = input.role_label ?? input.roleLabel;
+  if (roleLabel !== undefined) update.role_label = roleLabel as string;
+
+  if (input.goals !== undefined) update.goals = input.goals as string[];
+  if (input.preferences !== undefined) update.preferences = input.preferences as string[];
+
+  const avoidedTopics = input.avoided_topics ?? input.avoidedTopics;
+  if (avoidedTopics !== undefined) update.avoided_topics = avoidedTopics as string[];
+
+  const memoryEnabled = input.memory_enabled ?? input.memoryEnabled;
+  if (memoryEnabled !== undefined) update.memory_enabled = memoryEnabled as boolean;
 
   return update;
 };

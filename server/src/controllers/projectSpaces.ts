@@ -13,16 +13,6 @@ import {
   updateProjectSpaceForUser,
 } from '../repositories/projectSpaces';
 
-const normalizeName = (value: unknown) => {
-  if (typeof value !== 'string') return '';
-  return value.trim().slice(0, 80);
-};
-
-const normalizeDescription = (value: unknown) => {
-  if (typeof value !== 'string') return '';
-  return value.trim().slice(0, 500);
-};
-
 export const listProjectSpaces = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
@@ -39,9 +29,8 @@ export const listProjectSpaces = async (req: Request, res: Response) => {
 export const createProjectSpace = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const name = normalizeName(req.body.name);
-  const description = normalizeDescription(req.body.description);
-  if (!name) return res.status(400).json({ error: 'Project space name is required' });
+  const name = req.body.name as string;
+  const description = (req.body.description ?? '') as string;
 
   try {
     await ensureDefaultProjectSpaceForUser(req.user.id);
@@ -60,13 +49,11 @@ export const updateProjectSpace = async (req: Request, res: Response) => {
   const updates: { name?: string; description?: string } = {};
 
   if (req.body.name !== undefined) {
-    const name = normalizeName(req.body.name);
-    if (!name) return res.status(400).json({ error: 'Project space name is required' });
-    updates.name = name;
+    updates.name = req.body.name;
   }
 
   if (req.body.description !== undefined) {
-    updates.description = normalizeDescription(req.body.description);
+    updates.description = req.body.description;
   }
 
   if (Object.keys(updates).length === 0) {

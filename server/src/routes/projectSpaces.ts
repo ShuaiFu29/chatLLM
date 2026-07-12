@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { mutationSchemas } from '../lib/mutationSchemas';
+import { validateMutation } from '../lib/validation';
 import { requireAuth } from '../middleware/auth';
 import {
   createProjectSpace,
@@ -12,8 +14,8 @@ const router = Router();
 router.use(requireAuth);
 
 router.get('/', listProjectSpaces);
-router.post('/', createProjectSpace);
-router.patch('/:projectSpaceId', updateProjectSpace);
-router.delete('/:projectSpaceId', deleteProjectSpace);
+router.post('/', validateMutation(mutationSchemas.projectSpaceCreate), createProjectSpace);
+router.patch('/:projectSpaceId', validateMutation(mutationSchemas.projectSpaceUpdate), updateProjectSpace);
+router.delete('/:projectSpaceId', validateMutation(mutationSchemas.projectSpaceDelete), deleteProjectSpace);
 
 export default router;

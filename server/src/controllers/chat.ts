@@ -111,7 +111,7 @@ export const createConversation = async (req: Request, res: Response) => {
   const { title } = req.body;
 
   try {
-    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
@@ -146,20 +146,14 @@ export const updateConversation = async (req: Request, res: Response) => {
   if (temperature !== undefined) updates.temperature = temperature;
   if (system_prompt !== undefined) updates.system_prompt = system_prompt;
   if (enable_rag !== undefined) updates.enable_rag = enable_rag;
-  if (is_pinned !== undefined) updates.is_pinned = Boolean(is_pinned);
+  if (is_pinned !== undefined) updates.is_pinned = is_pinned;
   if (archived !== undefined) updates.archived_at = archived ? new Date().toISOString() : null;
-  if (is_favorite !== undefined) updates.is_favorite = Boolean(is_favorite);
-  if (Array.isArray(tags)) {
-    updates.tags = tags
-      .filter((tag): tag is string => typeof tag === 'string')
-      .map((tag) => tag.trim())
-      .filter(Boolean)
-      .slice(0, 12);
-  }
-  if (note !== undefined && typeof note === 'string') updates.note = note.slice(0, 2000);
+  if (is_favorite !== undefined) updates.is_favorite = is_favorite;
+  if (tags !== undefined) updates.tags = tags;
+  if (note !== undefined) updates.note = note;
 
   if (req.body.project_space_id !== undefined || req.body.projectSpaceId !== undefined) {
-    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     if (!requestedProjectSpaceId) {
       updates.project_space_id = null;
     } else {
@@ -190,8 +184,7 @@ export const updateConversation = async (req: Request, res: Response) => {
 export const branchConversation = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { conversationId } = req.params;
-  const messageId = typeof req.body.messageId === 'string' ? req.body.messageId : undefined;
-  const title = typeof req.body.title === 'string' ? req.body.title : undefined;
+  const { messageId, title } = req.body;
 
   try {
     const conversation = await createConversationBranchForUser({

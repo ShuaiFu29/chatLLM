@@ -32,20 +32,6 @@ const parseBoundedLimit = (value: unknown, defaultValue: number, maxValue: numbe
   return Math.min(parsed, maxValue);
 };
 
-const cleanText = (value: unknown, maxLength: number) => {
-  if (typeof value !== 'string') return '';
-  return value.trim().slice(0, maxLength);
-};
-
-const cleanStringList = (value: unknown, maxItems = 20, maxLength = 120) => {
-  if (!Array.isArray(value)) return [];
-  return value
-    .filter((item): item is string => typeof item === 'string')
-    .map((item) => item.trim().slice(0, maxLength))
-    .filter(Boolean)
-    .slice(0, maxItems);
-};
-
 const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -84,14 +70,13 @@ export const listRagEvalHistory = async (req: Request, res: Response) => {
 export const createRagEvalDataset = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const name = cleanText(req.body.name, 120);
-  const description = cleanText(req.body.description, 500);
-  if (!name) return res.status(400).json({ error: 'Dataset name is required' });
+  const name = req.body.name as string;
+  const description = (req.body.description ?? '') as string;
 
   try {
     const dataset = await createRagEvalDatasetForUser({
       userId: req.user.id,
-      projectSpaceId: readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId),
+      projectSpaceId: readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId),
       name,
       description,
     });
@@ -105,15 +90,14 @@ export const createRagEvalDataset = async (req: Request, res: Response) => {
 export const updateRagEvalDataset = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
-  const name = cleanText(req.body.name, 120);
-  const description = cleanText(req.body.description, 500);
-  if (!name) return res.status(400).json({ error: 'Dataset name is required' });
+  const name = req.body.name as string;
+  const description = (req.body.description ?? '') as string;
 
   try {
     const dataset = await updateRagEvalDatasetForUser({
       userId: req.user.id,
       datasetId: req.params.datasetId,
-      projectSpaceId: readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId),
+      projectSpaceId: readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId),
       name,
       description,
     });
@@ -142,8 +126,7 @@ export const createRagEvalCase = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
   const { datasetId } = req.params;
-  const question = cleanText(req.body.question, 4096);
-  if (!question) return res.status(400).json({ error: 'Question is required' });
+  const question = req.body.question as string;
 
   try {
     const dataset = await getRagEvalDatasetWithCasesForUser(datasetId, req.user.id);
@@ -156,9 +139,9 @@ export const createRagEvalCase = async (req: Request, res: Response) => {
       userId: req.user.id,
       datasetId,
       question,
-      expectedAnswer: cleanText(req.body.expected_answer || req.body.expectedAnswer, 4000),
-      expectedKeywords: cleanStringList(req.body.expected_keywords || req.body.expectedKeywords),
-      expectedSourceFiles: cleanStringList(req.body.expected_source_files || req.body.expectedSourceFiles),
+      expectedAnswer: req.body.expected_answer ?? req.body.expectedAnswer ?? '',
+      expectedKeywords: req.body.expected_keywords ?? req.body.expectedKeywords ?? [],
+      expectedSourceFiles: req.body.expected_source_files ?? req.body.expectedSourceFiles ?? [],
       maxCases: MAX_RAG_EVAL_CASES_PER_DATASET,
     });
 

@@ -180,7 +180,7 @@ export const checkFile = async (req: Request, res: Response) => {
   try {
     const normalizedHash = requireUploadHash(hash);
     ensureSupportedDocumentFilename(filename);
-    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
@@ -244,7 +244,7 @@ export const initUpload = async (req: Request, res: Response) => {
     const normalizedHash = requireUploadHash(hash);
     const normalizedSize = requireUploadSize(size);
     const contentType = ensureSupportedDocumentFilename(filename);
-    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
@@ -273,7 +273,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     const normalizedHash = requireUploadHash(hash);
     const normalizedSize = requireUploadSize(size);
     const contentType = ensureSupportedDocumentFilename(filename);
-    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id || req.body.projectSpaceId);
+    const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
     if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
 
@@ -374,7 +374,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
 export const presignMultipartParts = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { uploadId } = req.body;
-  const partNumbers = parseMultipartPartNumbers(req.body.partNumbers || req.body.part_numbers);
+  const partNumbers = parseMultipartPartNumbers(req.body.partNumbers ?? req.body.part_numbers);
 
   if (!uploadId || !partNumbers) {
     return res.status(400).json({ error: 'Missing multipart upload parameters' });
