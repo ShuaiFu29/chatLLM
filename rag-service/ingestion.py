@@ -18,7 +18,7 @@ from db import (
     start_ingestion_job,
     update_ingestion_job_checkpoint,
 )
-from embeddings import get_embeddings
+from embeddings import EmbeddingIntegrityError, get_embeddings
 from graph_store import delete_file_graph, index_graph_chunks
 from keyword_store import delete_file_keywords, index_chunks
 from safe_errors import safe_error_fields
@@ -227,13 +227,15 @@ def index_chunk_batch(file_data: dict, chunk_rows: list[dict], project_space_id:
         )
 
     batch_size = settings.rag_ingest_embedding_batch_size
+    vector_rows = []
     for i in range(0, len(chunk_rows), batch_size):
         batch_rows = chunk_rows[i: i + batch_size]
         batch_chunks = [row["content"] for row in batch_rows]
-        embeddings = get_embeddings(batch_chunks)
+        batch_embeddings = get_embeddings(batch_chunks)
+        if len(batch_embeddings) != len(batch_rows):
+            raise EmbeddingIntegrityError("item count does not match the ingestion batch")
 
-        vector_rows = []
-        for row, embedding in zip(batch_rows, embeddings):
+        for row, embedding in zip(batch_rows, batch_embeddings, strict=True):
             vector_rows.append({
                 "chunk_id": str(row["id"]),
                 "file_id": str(row["file_id"]),
@@ -244,10 +246,12 @@ def index_chunk_batch(file_data: dict, chunk_rows: list[dict], project_space_id:
                 "embedding": embedding,
             })
 
-        insert_vectors(vector_rows)
+    inserted_count = insert_vectors(vector_rows)
+    if type(inserted_count) is not int or inserted_count != len(vector_rows):
+        raise EmbeddingIntegrityError("vector store insert count does not match the ingestion batch")
 
     return {
-        "indexed_chunks": len(chunk_rows),
+        "indexed_chunks": inserted_count,
         "keyword_batches": 1,
         "graph_batches": graph_batches,
         "vector_batches": max(1, (len(chunk_rows) + batch_size - 1) // batch_size),
@@ -304,7 +308,7 @@ def process_streaming_file(
         assert_ingestion_lease(file_id, attempt_id, lease_token)
         chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
         batch_stats = index_chunk_batch(file_data, chunk_rows, project_space_id)
-        processed_count += len(chunk_rows)
+        processed_count += batch_stats["indexed_chunks"]
         next_chunk_index += len(pending_chunks)
         keyword_batches += batch_stats["keyword_batches"]
         graph_batches += batch_stats["graph_batches"]
@@ -333,7 +337,7 @@ def process_streaming_file(
         assert_ingestion_lease(file_id, attempt_id, lease_token)
         chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
         batch_stats = index_chunk_batch(file_data, chunk_rows, project_space_id)
-        processed_count += len(chunk_rows)
+        processed_count += batch_stats["indexed_chunks"]
         next_chunk_index += len(pending_chunks)
         keyword_batches += batch_stats["keyword_batches"]
         graph_batches += batch_stats["graph_batches"]
@@ -493,7 +497,7 @@ def process_file(file_id: str, attempt_id, lease_token):
             assert_ingestion_lease(file_id, attempt_id, lease_token)
             batch_rows = chunk_rows[i: i + batch_size]
             batch_stats = index_chunk_batch(file_data, batch_rows, project_space_id)
-            processed_count += len(batch_rows)
+            processed_count += batch_stats["indexed_chunks"]
             keyword_batches += batch_stats["keyword_batches"]
             graph_batches += batch_stats["graph_batches"]
             vector_batches += batch_stats["vector_batches"]
@@ -534,7 +538,7 @@ def process_file(file_id: str, attempt_id, lease_token):
             checkpoint={**last_checkpoint, "complete": True},
         )
 
-        return {"status": "success", "chunks": total_chunks}
+        return {"status": "success", "chunks": processed_count}
 
     except IngestionLeaseLostError:
         raise

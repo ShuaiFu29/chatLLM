@@ -47,9 +47,15 @@ class _EmbeddingsEndpoint:
             {"input": input, "model": model},
             self.timeout,
         )
+        response_data = response.get("data") if isinstance(response, dict) else None
+        if not isinstance(response_data, list):
+            return SimpleNamespace(data=response_data)
         return SimpleNamespace(
             data=[
-                SimpleNamespace(embedding=item.get("embedding", []))
-                for item in response.get("data", [])
+                SimpleNamespace(
+                    index=item.get("index") if isinstance(item, dict) else None,
+                    embedding=item.get("embedding") if isinstance(item, dict) else None,
+                )
+                for item in response_data
             ]
         )

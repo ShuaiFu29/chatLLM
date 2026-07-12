@@ -76,7 +76,9 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         ), patch("ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
             "ingestion.get_embeddings", side_effect=fake_get_embeddings
-        ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"):
+        ), patch("ingestion.insert_vectors", side_effect=lambda rows: len(rows)), patch(
+            "ingestion.index_chunks"
+        ), patch("ingestion.index_graph_chunks"):
             result = process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
         self.assertEqual(result, {"status": "success", "chunks": 12})
@@ -104,7 +106,9 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "content": "chunk",
         }]), patch("ingestion.get_embeddings", side_effect=RuntimeError(
             "Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}"
-        )), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"), patch(
+        )), patch("ingestion.insert_vectors", side_effect=lambda rows: len(rows)), patch(
+            "ingestion.index_chunks"
+        ), patch("ingestion.index_graph_chunks"), patch(
             "ingestion.fail_ingestion_job"
         ) as fail_job:
             with self.assertRaises(RuntimeError):
@@ -139,7 +143,9 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         ), patch("ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
-        ), patch("ingestion.insert_vectors"), patch("ingestion.index_graph_chunks"), patch(
+        ), patch("ingestion.insert_vectors", side_effect=lambda rows: len(rows)), patch(
+            "ingestion.index_graph_chunks"
+        ), patch(
             "ingestion.index_chunks"
         ) as index_chunks_mock, patch("ingestion.bump_project_knowledge_version"):
             process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
@@ -195,7 +201,9 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
-        ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch(
+        ), patch("ingestion.insert_vectors", side_effect=lambda rows: len(rows)), patch(
+            "ingestion.index_chunks"
+        ), patch(
             "ingestion.index_graph_chunks"
         ) as index_graph_mock, patch("ingestion.bump_project_knowledge_version"):
             process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
@@ -228,7 +236,10 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
-        ), patch("ingestion.insert_vectors") as insert_vectors_mock, patch(
+        ), patch(
+            "ingestion.insert_vectors",
+            side_effect=lambda rows: len(rows),
+        ) as insert_vectors_mock, patch(
             "ingestion.index_chunks"
         ), patch("ingestion.index_graph_chunks", side_effect=TimeoutError("timed out")), patch(
             "ingestion.logger.warning"

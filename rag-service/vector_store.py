@@ -128,14 +128,20 @@ def delete_file_vectors(file_id: str):
 
 def insert_vectors(rows: list[dict[str, Any]]):
     if not rows:
-        return
+        return 0
 
     client = get_client()
     ensure_collection()
     if not _has_project_space_field():
         rows = [{key: value for key, value in row.items() if key != "project_space_id"} for row in rows]
+    inserted_count = 0
     for batch in _batched(rows, settings.milvus_insert_batch_size):
-        client.insert(collection_name=settings.milvus_collection, data=batch)
+        result = client.insert(collection_name=settings.milvus_collection, data=batch)
+        batch_inserted_count = result.get("insert_count") if isinstance(result, dict) else None
+        if type(batch_inserted_count) is not int or batch_inserted_count != len(batch):
+            raise RuntimeError("Milvus insert count did not match the submitted vector batch")
+        inserted_count += batch_inserted_count
+    return inserted_count
 
 
 def search_vectors(

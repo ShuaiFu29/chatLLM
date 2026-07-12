@@ -89,7 +89,10 @@ class FakeEmbeddings:
     def create(self, input, model):
         calls.append(list(input))
         return SimpleNamespace(data=[
-            SimpleNamespace(embedding=[float(len(calls)), float(index)])
+            SimpleNamespace(
+                index=index,
+                embedding=[float(len(calls)), float(index)] + [0.0] * 1022,
+            )
             for index, _ in enumerate(input)
         ])
 

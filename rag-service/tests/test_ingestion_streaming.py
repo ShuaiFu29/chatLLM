@@ -77,6 +77,10 @@ class StreamingIngestionTests(unittest.TestCase):
             self.assertLessEqual(len(chunks), 2)
             return [[0.1, 0.2] for _ in chunks]
 
+        def fake_insert_vectors(rows):
+            vector_batches.append(list(rows))
+            return len(rows)
+
         stream_payload = [
             b"# Title\n\n",
             ("Alpha " * 220).encode("utf-8"),
@@ -103,7 +107,7 @@ class StreamingIngestionTests(unittest.TestCase):
         ), patch("ingestion.index_chunks", side_effect=lambda rows: keyword_batches.append(list(rows))), patch(
             "ingestion.index_graph_chunks", side_effect=lambda _file, rows: graph_batches.append(list(rows))
         ), patch("ingestion.get_embeddings", side_effect=fake_embeddings), patch(
-            "ingestion.insert_vectors", side_effect=lambda rows: vector_batches.append(list(rows))
+            "ingestion.insert_vectors", side_effect=fake_insert_vectors
         ), patch("ingestion.bump_project_knowledge_version"), patch(
             "ingestion.complete_ingestion_job"
         ) as complete_job:
@@ -166,7 +170,7 @@ class StreamingIngestionTests(unittest.TestCase):
         ), patch("ingestion.insert_file_chunk_batch", side_effect=fake_insert_batch), patch(
             "ingestion.index_chunks"
         ), patch("ingestion.index_graph_chunks"), patch("ingestion.get_embeddings", return_value=[[0.1, 0.2]]), patch(
-            "ingestion.insert_vectors"
+            "ingestion.insert_vectors", side_effect=lambda rows: len(rows)
         ), patch("ingestion.bump_project_knowledge_version"), patch(
             "ingestion.start_ingestion_job"
         ) as start_job, patch(
