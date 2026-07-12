@@ -45,6 +45,7 @@ export function buildRagServiceSpawnConfig({
   isPythonUsable = defaultIsPythonUsable,
 } = {}) {
   const port = env.RAG_PORT || env.PORT || '8000';
+  const host = env.RAG_BIND_HOST || '127.0.0.1';
 
   return {
     command: resolvePythonExecutable({ rootDir, env, platform, existsSync, isPythonUsable }),
@@ -54,7 +55,7 @@ export function buildRagServiceSpawnConfig({
       'main:app',
       '--reload',
       '--host',
-      '0.0.0.0',
+      host,
       '--port',
       port,
     ],
@@ -73,13 +74,26 @@ export function buildRagTestSpawnConfig({
   existsSync = fs.existsSync,
   isPythonUsable = defaultIsPythonUsable,
 } = {}) {
+  const testEnv = {
+    ...env,
+    DATABASE_URL: env.DATABASE_URL || 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: env.S3_ENDPOINT || 'http://localhost:9000',
+    S3_ACCESS_KEY: env.S3_ACCESS_KEY || 'test-access-key',
+    S3_SECRET_KEY: env.S3_SECRET_KEY || 'test-secret-key',
+    MILVUS_URI: env.MILVUS_URI || 'http://localhost:19530',
+    MILVUS_COLLECTION: env.MILVUS_COLLECTION || 'document_chunks',
+    EMBEDDING_PROVIDER: env.EMBEDDING_PROVIDER || 'local',
+    EMBEDDING_DIMENSION: env.EMBEDDING_DIMENSION || '1024',
+    RAG_SERVICE_TOKEN: env.RAG_SERVICE_TOKEN || 'test-rag-service-token-at-least-32-characters',
+  };
+
   return {
-    command: resolvePythonExecutable({ rootDir, env, platform, existsSync, isPythonUsable }),
+    command: resolvePythonExecutable({ rootDir, env: testEnv, platform, existsSync, isPythonUsable }),
     args: ['-m', 'unittest', 'discover', '-s', 'tests'],
     options: {
       cwd: path.join(rootDir, 'rag-service'),
       stdio: 'inherit',
-      env,
+      env: testEnv,
     },
   };
 }

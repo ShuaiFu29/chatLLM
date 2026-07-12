@@ -13,6 +13,7 @@ const enterpriseServerEnv = {
   S3_SECRET_KEY: 'minioadmin',
   JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
   QWEN_API_KEY: 'sk-test',
+  RAG_SERVICE_TOKEN: 'test-rag-service-token-at-least-32-characters',
   DB_POOL_MAX: '30',
   DB_QUERY_TIMEOUT_MS: '15000',
   DB_SLOW_QUERY_THRESHOLD_MS: '500',
@@ -59,6 +60,7 @@ const enterpriseRagEnv = {
   RAG_INGEST_CHUNK_BATCH_SIZE: '100',
   RAG_INGEST_EMBEDDING_BATCH_SIZE: '10',
   RAG_READINESS_TIMEOUT_MS: '2000',
+  RAG_SERVICE_TOKEN: 'test-rag-service-token-at-least-32-characters',
 };
 
 const tunedCompose = `

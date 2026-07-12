@@ -24,6 +24,7 @@ def local_env(extra=None):
         "S3_SECRET_KEY": "minioadmin",
         "MILVUS_URI": "http://localhost:19530",
         "MILVUS_COLLECTION": "document_chunks_local_test",
+        "RAG_SERVICE_TOKEN": "test-rag-service-token-at-least-32-characters",
         "EMBEDDING_PROVIDER": "local",
         "EMBEDDING_DIMENSION": "32",
     }

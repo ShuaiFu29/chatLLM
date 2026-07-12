@@ -10,6 +10,7 @@ load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
 @dataclass
 class Settings:
     port: int
+    rag_bind_host: str
     database_url: str
     s3_endpoint: str
     s3_access_key: str
@@ -112,13 +113,19 @@ def load_settings() -> Settings:
             "EMBEDDING_MODEL",
         ])
     required_keys.append("EMBEDDING_DIMENSION")
+    required_keys.append("RAG_SERVICE_TOKEN")
     missing = [key for key in required_keys if not _required(key)]
 
     if missing:
         raise ValueError(f"Missing required RAG environment variables: {', '.join(missing)}")
 
+    rag_service_token = _required("RAG_SERVICE_TOKEN")
+    if len(rag_service_token) < 32:
+        raise ValueError("RAG_SERVICE_TOKEN must be at least 32 characters")
+
     return Settings(
         port=_positive_int("PORT", "8000"),
+        rag_bind_host=os.environ.get("RAG_BIND_HOST", "127.0.0.1").strip() or "127.0.0.1",
         database_url=_required("DATABASE_URL"),
         s3_endpoint=_required("S3_ENDPOINT"),
         s3_access_key=_required("S3_ACCESS_KEY"),
@@ -164,7 +171,7 @@ def load_settings() -> Settings:
         rag_ingest_streaming_threshold_bytes=_positive_int("RAG_INGEST_STREAMING_THRESHOLD_BYTES", str(50 * 1024 * 1024)),
         rag_ingest_chunk_batch_size=_positive_int("RAG_INGEST_CHUNK_BATCH_SIZE", "100"),
         rag_ingest_embedding_batch_size=_positive_int("RAG_INGEST_EMBEDDING_BATCH_SIZE", "10"),
-        rag_service_token=os.environ.get("RAG_SERVICE_TOKEN", "").strip(),
+        rag_service_token=rag_service_token,
         rag_db_pool_max=_positive_int("RAG_DB_POOL_MAX", "10"),
         rag_db_pool_timeout_ms=_positive_int("RAG_DB_POOL_TIMEOUT_MS", "5000"),
         rag_allowed_origins=_string_list(

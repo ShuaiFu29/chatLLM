@@ -4,8 +4,22 @@ import { test } from 'node:test';
 import {
   parseEnvContent,
   validateEnvMap,
-  validateProjectEnvMaps,
+  validateProjectEnvMaps as validateProjectEnvMapsRaw,
 } from './check-env.mjs';
+
+const TEST_RAG_SERVICE_TOKEN = 'test-rag-service-token-at-least-32-characters';
+
+const validateProjectEnvMaps = (envMaps) => validateProjectEnvMapsRaw({
+  ...envMaps,
+  'server/.env': {
+    RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN,
+    ...(envMaps['server/.env'] || {}),
+  },
+  'rag-service/.env': {
+    RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN,
+    ...(envMaps['rag-service/.env'] || {}),
+  },
+});
 
 test('parseEnvContent parses keys and ignores comments without exposing values', () => {
   const env = parseEnvContent(`
@@ -146,6 +160,50 @@ test('validateProjectEnvMaps accepts valid server and RAG env maps', () => {
   });
 
   assert.deepEqual(issues, []);
+});
+
+test('validateProjectEnvMaps requires one matching strong RAG service token', () => {
+  const validServer = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  };
+  const validRag = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    MILVUS_URI: 'http://localhost:19530',
+    MILVUS_COLLECTION: 'document_chunks',
+    EMBEDDING_PROVIDER: 'local',
+    EMBEDDING_DIMENSION: '1024',
+  };
+
+  const missing = validateProjectEnvMapsRaw({
+    'server/.env': validServer,
+    'rag-service/.env': validRag,
+  });
+  assert.ok(missing.some((issue) => /server\/\.env.*RAG_SERVICE_TOKEN/.test(issue)));
+  assert.ok(missing.some((issue) => /rag-service\/\.env.*RAG_SERVICE_TOKEN/.test(issue)));
+
+  const weak = validateProjectEnvMapsRaw({
+    'server/.env': { ...validServer, RAG_SERVICE_TOKEN: 'server-short' },
+    'rag-service/.env': { ...validRag, RAG_SERVICE_TOKEN: 'rag-short' },
+  });
+  assert.ok(weak.some((issue) => /RAG_SERVICE_TOKEN must be at least 32 characters/.test(issue)));
+
+  const serverToken = 'server-rag-service-token-at-least-32-characters';
+  const ragToken = 'different-rag-service-token-at-least-32-characters';
+  const mismatched = validateProjectEnvMapsRaw({
+    'server/.env': { ...validServer, RAG_SERVICE_TOKEN: serverToken },
+    'rag-service/.env': { ...validRag, RAG_SERVICE_TOKEN: ragToken },
+  });
+  assert.ok(mismatched.some((issue) => /must match/.test(issue)));
+  assert.doesNotMatch(mismatched.join('\n'), new RegExp(serverToken));
+  assert.doesNotMatch(mismatched.join('\n'), new RegExp(ragToken));
 });
 
 test('validateProjectEnvMaps rejects dangerously low file queue ingest timeouts', () => {

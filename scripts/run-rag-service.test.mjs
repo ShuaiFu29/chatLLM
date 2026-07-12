@@ -73,7 +73,7 @@ test('buildRagServiceSpawnConfig runs uvicorn from the rag-service directory', (
     'main:app',
     '--reload',
     '--host',
-    '0.0.0.0',
+    '127.0.0.1',
     '--port',
     '8100',
   ]);
@@ -94,4 +94,16 @@ test('buildRagTestSpawnConfig runs RAG unittest discovery with the resolved Pyth
   assert.equal(config.command, projectPython);
   assert.deepEqual(config.args, ['-m', 'unittest', 'discover', '-s', 'tests']);
   assert.equal(config.options.cwd, path.join(rootDir, 'rag-service'));
+});
+
+test('buildRagServiceSpawnConfig honors an explicit RAG bind host', () => {
+  const config = buildRagServiceSpawnConfig({
+    rootDir,
+    env: { RAG_BIND_HOST: '10.20.30.40' },
+    platform: 'win32',
+    existsSync: () => false,
+  });
+
+  const hostIndex = config.args.indexOf('--host');
+  assert.equal(config.args[hostIndex + 1], '10.20.30.40');
 });

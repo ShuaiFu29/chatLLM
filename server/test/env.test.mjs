@@ -16,13 +16,15 @@ const baseEnv = {
   NODE_ENV: 'test',
 };
 
+const TEST_RAG_SERVICE_TOKEN = 'test-rag-service-token-at-least-32-characters';
+
 function importServerEnv(overrides, expression = 'serverEnv.DATABASE_URL') {
   return spawnSync(
     process.execPath,
     ['-e', `const { serverEnv } = require(${JSON.stringify(envModulePath)}); console.log(JSON.stringify(${expression}));`],
     {
       cwd: serverRoot,
-      env: { ...baseEnv, ...overrides },
+      env: { ...baseEnv, RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN, ...overrides },
       encoding: 'utf8',
     }
   );
@@ -115,7 +117,7 @@ test('server env loads valid required values', () => {
   assert.match(result.stdout, /postgres:\/\/chatllm:chatllm@localhost:5432\/chatllm/);
 });
 
-test('server env exposes internal RAG and metrics tokens without requiring them in local development', () => {
+test('server env exposes configured internal RAG and metrics tokens', () => {
   const result = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
     S3_ENDPOINT: 'http://localhost:9000',
@@ -123,15 +125,43 @@ test('server env exposes internal RAG and metrics tokens without requiring them 
     S3_SECRET_KEY: 'minioadmin',
     JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
     DEEPSEEK_API_KEY: 'sk-test',
-    RAG_SERVICE_TOKEN: 'rag-token',
+    RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN,
     METRICS_TOKEN: 'metrics-token',
   }, '({ rag: serverEnv.RAG_SERVICE_TOKEN, metrics: serverEnv.METRICS_TOKEN })');
 
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(parseLastJsonLine(result.stdout), {
-    rag: 'rag-token',
+    rag: TEST_RAG_SERVICE_TOKEN,
     metrics: 'metrics-token',
   });
+});
+
+test('server env requires a strong RAG service token outside production too', () => {
+  const missing = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_SERVICE_TOKEN: '',
+  });
+
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /RAG_SERVICE_TOKEN is required/);
+
+  const weak = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_SERVICE_TOKEN: 'short-token',
+  });
+
+  assert.notEqual(weak.status, 0);
+  assert.match(weak.stderr, /RAG_SERVICE_TOKEN must be at least 32 characters/);
 });
 
 test('server env requires internal service tokens in production', () => {
@@ -148,7 +178,7 @@ test('server env requires internal service tokens in production', () => {
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /RAG_SERVICE_TOKEN is required in production/);
+  assert.match(result.stderr, /RAG_SERVICE_TOKEN is required/);
   assert.match(result.stderr, /METRICS_TOKEN is required in production/);
 });
 

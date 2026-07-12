@@ -11,7 +11,7 @@ const weakJwtSecrets = new Set([
 ]);
 
 const serverRules = {
-  required: ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'],
+  required: ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET', 'RAG_SERVICE_TOKEN'],
   forbiddenPrefixes: ['SUPABASE_', 'OPENAI_'],
   jwtSecretKey: 'JWT_SECRET',
   atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY']],
@@ -28,6 +28,7 @@ const ragRules = {
     'MILVUS_URI',
     'MILVUS_COLLECTION',
     'EMBEDDING_DIMENSION',
+    'RAG_SERVICE_TOKEN',
   ],
   forbiddenPrefixes: ['SUPABASE_'],
 };
@@ -93,13 +94,28 @@ export function validateProjectEnvMaps(envMaps) {
   const serverEnv = envMaps['server/.env'] || {};
   const ragEnv = envMaps['rag-service/.env'] || {};
 
-  return [
+  const issues = [
     ...validateEnvMap('server/.env', serverEnv, serverRules),
     ...validateServerModelConfig(serverEnv),
     ...validateServerBackendUrl(serverEnv),
     ...validateServerQueueConfig(serverEnv),
     ...validateRagEnvMap(ragEnv),
   ];
+
+  for (const [label, env] of [['server/.env', serverEnv], ['rag-service/.env', ragEnv]]) {
+    const token = env.RAG_SERVICE_TOKEN?.trim();
+    if (token && token.length < 32) {
+      issues.push(`${label} RAG_SERVICE_TOKEN must be at least 32 characters`);
+    }
+  }
+
+  const serverToken = serverEnv.RAG_SERVICE_TOKEN?.trim();
+  const ragToken = ragEnv.RAG_SERVICE_TOKEN?.trim();
+  if (serverToken && ragToken && serverToken !== ragToken) {
+    issues.push('server/.env and rag-service/.env RAG_SERVICE_TOKEN values must match');
+  }
+
+  return issues;
 }
 
 function validateServerQueueConfig(env) {

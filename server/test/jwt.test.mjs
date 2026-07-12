@@ -22,6 +22,7 @@ const baseEnv = {
   S3_SECRET_KEY: 'minioadmin',
   JWT_SECRET: jwtSecret,
   DEEPSEEK_API_KEY: 'sk-test',
+  RAG_SERVICE_TOKEN: 'test-rag-service-token-at-least-32-characters',
 };
 
 function runJwtExpression(expression) {

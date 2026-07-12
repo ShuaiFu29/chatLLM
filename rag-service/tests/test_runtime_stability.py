@@ -58,6 +58,7 @@ def valid_env(extra=None):
         "EMBEDDING_BASE_URL": "https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
         "EMBEDDING_MODEL": "text-embedding-v4",
         "EMBEDDING_DIMENSION": "1024",
+        "RAG_SERVICE_TOKEN": "test-rag-service-token-at-least-32-characters",
     }
     if extra:
         env.update(extra)
@@ -118,7 +119,7 @@ class RuntimeStabilityTests(unittest.TestCase):
 from fastapi import HTTPException
 import main
 
-main.settings.rag_service_token = "expected-token"
+main.settings.rag_service_token = "expected-rag-service-token-at-least-32-characters"
 
 for token in (None, "", "wrong"):
     try:
@@ -128,10 +129,10 @@ for token in (None, "", "wrong"):
     else:
         raise SystemExit("accepted invalid token")
 
-assert main.require_internal_auth("expected-token") is True
+assert main.require_internal_auth("expected-rag-service-token-at-least-32-characters") is True
 print("ok")
 """
-        result = run_main_script(valid_env({"RAG_SERVICE_TOKEN": "expected-token"}), script)
+        result = run_main_script(valid_env({"RAG_SERVICE_TOKEN": "expected-rag-service-token-at-least-32-characters"}), script)
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn("ok", result.stdout)

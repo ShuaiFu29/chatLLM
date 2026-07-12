@@ -6,12 +6,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+TEST_RAG_SERVICE_TOKEN = "test-rag-service-token-at-least-32-characters"
 
 
 def base_env():
     keys = ["PATH", "SystemRoot", "ComSpec", "PATHEXT"]
     env = {key: os.environ[key] for key in keys if key in os.environ}
     env["PYTHONPATH"] = str(ROOT)
+    env["RAG_SERVICE_TOKEN"] = TEST_RAG_SERVICE_TOKEN
     return env
 
 
@@ -41,12 +43,13 @@ class ConfigTests(unittest.TestCase):
             "EMBEDDING_BASE_URL": "",
             "EMBEDDING_MODEL": "",
             "EMBEDDING_DIMENSION": "",
+            "RAG_SERVICE_TOKEN": "",
         })
 
         self.assertNotEqual(result.returncode, 0)
         self.assertRegex(
             result.stderr,
-            r"Missing required RAG environment variables: DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, MILVUS_URI, MILVUS_COLLECTION, EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL, EMBEDDING_DIMENSION",
+            r"Missing required RAG environment variables: DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, MILVUS_URI, MILVUS_COLLECTION, EMBEDDING_API_KEY, EMBEDDING_BASE_URL, EMBEDDING_MODEL, EMBEDDING_DIMENSION, RAG_SERVICE_TOKEN",
         )
 
     def test_config_rejects_invalid_embedding_dimension(self):
@@ -83,6 +86,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("postgres://chatllm:chatllm@localhost:5432/chatllm", result.stdout)
 
+    def test_config_rejects_short_rag_service_tokens(self):
+        result = import_config({
+            "DATABASE_URL": "postgres://chatllm:chatllm@localhost:5432/chatllm",
+            "S3_ENDPOINT": "http://localhost:9000",
+            "S3_ACCESS_KEY": "minioadmin",
+            "S3_SECRET_KEY": "minioadmin",
+            "MILVUS_URI": "http://localhost:19530",
+            "MILVUS_COLLECTION": "document_chunks",
+            "EMBEDDING_API_KEY": "embedding-key",
+            "EMBEDDING_BASE_URL": "https://example.invalid/v1",
+            "EMBEDDING_MODEL": "text-embedding-v4",
+            "EMBEDDING_DIMENSION": "1024",
+            "RAG_SERVICE_TOKEN": "short-token",
+        })
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr, r"RAG_SERVICE_TOKEN must be at least 32 characters")
+
     def test_config_exposes_internal_auth_and_database_pool_knobs(self):
         env = {
             "DATABASE_URL": "postgres://chatllm:chatllm@localhost:5432/chatllm",
@@ -95,7 +116,7 @@ class ConfigTests(unittest.TestCase):
             "EMBEDDING_BASE_URL": "https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
             "EMBEDDING_MODEL": "text-embedding-v4",
             "EMBEDDING_DIMENSION": "1024",
-            "RAG_SERVICE_TOKEN": "internal-token",
+            "RAG_SERVICE_TOKEN": TEST_RAG_SERVICE_TOKEN,
             "RAG_DB_POOL_MAX": "9",
             "RAG_DB_POOL_TIMEOUT_MS": "1200",
         }
@@ -115,7 +136,7 @@ class ConfigTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("('internal-token', 9, 1200)", result.stdout)
+        self.assertIn(f"('{TEST_RAG_SERVICE_TOKEN}', 9, 1200)", result.stdout)
 
 
 if __name__ == "__main__":

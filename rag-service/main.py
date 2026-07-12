@@ -321,4 +321,4 @@ def cleanup_file_endpoint(request: CleanupFileRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=settings.port)
+    uvicorn.run(app, host=settings.rag_bind_host, port=settings.port)

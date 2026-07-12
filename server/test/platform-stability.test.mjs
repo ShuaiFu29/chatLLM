@@ -22,6 +22,7 @@ const baseEnv = {
   S3_SECRET_KEY: 'minioadmin',
   JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
   DEEPSEEK_API_KEY: 'sk-test',
+  RAG_SERVICE_TOKEN: 'test-rag-service-token-at-least-32-characters',
 };
 
 test('server env exposes runtime stability knobs', () => {
@@ -49,7 +50,7 @@ test('server env exposes runtime stability knobs', () => {
     RAG_CLEANUP_TIMEOUT_MS: '30000',
     RAG_CIRCUIT_FAILURE_THRESHOLD: '4',
     RAG_CIRCUIT_RESET_MS: '45000',
-    RAG_SERVICE_TOKEN: 'internal-rag-token',
+    RAG_SERVICE_TOKEN: 'internal-rag-service-token-at-least-32-characters',
     METRICS_TOKEN: 'internal-metrics-token',
     RAG_EVAL_RATE_LIMIT_MAX: '12',
     RAG_EVAL_STALE_RUN_MS: '900000',
@@ -80,7 +81,7 @@ test('server env exposes runtime stability knobs', () => {
   assert.equal(env.RAG_CLEANUP_TIMEOUT_MS, 30000);
   assert.equal(env.RAG_CIRCUIT_FAILURE_THRESHOLD, 4);
   assert.equal(env.RAG_CIRCUIT_RESET_MS, 45000);
-  assert.equal(env.RAG_SERVICE_TOKEN, 'internal-rag-token');
+  assert.equal(env.RAG_SERVICE_TOKEN, 'internal-rag-service-token-at-least-32-characters');
   assert.equal(env.METRICS_TOKEN, 'internal-metrics-token');
   assert.equal(env.RAG_EVAL_RATE_LIMIT_MAX, 12);
   assert.equal(env.RAG_EVAL_STALE_RUN_MS, 900000);
