@@ -6,12 +6,13 @@ import { serverEnv } from '../lib/env';
 import { generateAccessToken } from '../lib/jwt';
 import { cleanupRagFileVectors } from '../lib/ragClient';
 import { deleteObject } from '../lib/storage';
-import { createSession, deleteSession, deleteSessionsByUser, findSessionWithUser } from '../repositories/sessions';
+import { createSession, deleteSession, deleteSessionsByUser, rotateSession } from '../repositories/sessions';
 import { createUser, deleteUser, findUserByGithubId, findUserById, updateUser } from '../repositories/users';
 import { listFilesForUserCleanup } from '../repositories/files';
 
 const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000;
 const ACCESS_TOKEN_DURATION = 15 * 60 * 1000;
+const generateRefreshToken = () => crypto.randomBytes(32).toString('base64url');
 
 const stringifyError = (error: unknown) => {
   if (axios.isAxiosError(error)) {
@@ -178,7 +179,7 @@ export const githubCallback = async (req: Request, res: Response) => {
       });
     }
 
-    const refreshToken = crypto.randomUUID();
+    const refreshToken = generateRefreshToken();
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DURATION).toISOString();
     await createSession(refreshToken, user.id, expiresAt);
 
@@ -201,24 +202,14 @@ export const refreshToken = async (req: Request, res: Response) => {
   }
 
   try {
-    const session = await findSessionWithUser(oldRefreshToken);
+    const newRefreshToken = generateRefreshToken();
+    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DURATION).toISOString();
+    const session = await rotateSession(oldRefreshToken, newRefreshToken, expiresAt);
 
     if (!session) {
       clearAuthCookies(res);
-      return res.status(401).json({ error: 'Invalid refresh token' });
+      return res.status(401).json({ error: 'Invalid or expired refresh token' });
     }
-
-    if (new Date(session.expires_at) < new Date()) {
-      await deleteSession(oldRefreshToken);
-      clearAuthCookies(res);
-      return res.status(401).json({ error: 'Refresh token expired' });
-    }
-
-    await deleteSession(oldRefreshToken);
-
-    const newRefreshToken = crypto.randomUUID();
-    const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DURATION).toISOString();
-    await createSession(newRefreshToken, session.user.id, expiresAt);
 
     const newAccessToken = generateAccessToken(session.user);
     setAuthCookies(res, newAccessToken, newRefreshToken);
