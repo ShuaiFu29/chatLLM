@@ -1,5 +1,6 @@
-import { query } from '../lib/db';
+import { query, withTransaction } from '../lib/db';
 import { User } from '../types';
+import { enqueueAvatarCleanupWithClient } from './cleanupJobs';
 
 export interface DbUser extends User {
   avatar_object_key?: string | null;
@@ -80,4 +81,53 @@ export const updateUser = async (
   );
 
   return rows[0] || null;
+};
+
+interface ReplaceUserAvatarOptions {
+  runInTransaction?: typeof withTransaction;
+  enqueueCleanupWithClient?: typeof enqueueAvatarCleanupWithClient;
+}
+
+export const replaceUserAvatar = async (
+  id: string,
+  input: { avatarUrl: string; objectKey: string },
+  options: ReplaceUserAvatarOptions = {}
+) => {
+  const runInTransaction = options.runInTransaction || withTransaction;
+  const enqueueCleanupWithClient = options.enqueueCleanupWithClient
+    || enqueueAvatarCleanupWithClient;
+
+  return runInTransaction(async (client) => {
+    const { rows: currentRows } = await client.query<{
+      id: string;
+      avatar_object_key?: string | null;
+    }>(
+      `select id, avatar_object_key
+       from users
+       where id = $1
+         and deletion_status = 'active'
+       for update`,
+      [id]
+    );
+    const current = currentRows[0];
+    if (!current) return null;
+
+    const { rows } = await client.query<DbUser>(
+      `update users
+       set avatar_url = $2,
+           avatar_object_key = $3
+       where id = $1
+         and deletion_status = 'active'
+       returning ${userColumns}`,
+      [id, input.avatarUrl, input.objectKey]
+    );
+    const user = rows[0];
+    if (!user) return null;
+
+    const previousObjectKey = current.avatar_object_key || null;
+    const cleanupJob = previousObjectKey && previousObjectKey !== input.objectKey
+      ? await enqueueCleanupWithClient(client, previousObjectKey)
+      : null;
+    return { user, previousObjectKey, cleanupJob };
+  });
 };

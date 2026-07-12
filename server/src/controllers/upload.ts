@@ -29,12 +29,12 @@ import {
   retryFailedFileForUser,
   updateFile,
 } from '../repositories/files';
-import { enqueueFileCleanup } from '../repositories/cleanupJobs';
+import { enqueueAvatarCleanup, enqueueFileCleanup } from '../repositories/cleanupJobs';
 import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
 } from '../repositories/projectSpaces';
-import { findUserById, updateUser } from '../repositories/users';
+import { findUserById, replaceUserAvatar, updateUser } from '../repositories/users';
 import {
   type MultipartUploadSessionRow,
   claimMultipartUploadAbort,
@@ -1293,24 +1293,52 @@ export const uploadAvatar = async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Only image files are supported' });
   }
 
+  const objectKey = buildAvatarKey(req.user.id, file.originalname);
   try {
-    const currentUser = await findUserById(req.user.id);
-    const objectKey = buildAvatarKey(req.user.id, file.originalname);
     await uploadBuffer(objectKey, file.buffer, file.mimetype);
 
-    if (currentUser?.avatar_object_key) {
-      await deleteObject(currentUser.avatar_object_key).catch((err) => {
-        console.warn('[Upload] Failed to delete old avatar object:', toSafeError(err, res.locals.requestId));
+    const avatarUrl = `/api/upload/avatar/${req.user.id}`;
+    let replacement;
+    try {
+      replacement = await replaceUserAvatar(req.user.id, {
+        avatarUrl,
+        objectKey,
       });
+      if (!replacement) throw new Error('Avatar user is unavailable');
+    } catch (updateError) {
+      try {
+        await deleteObject(objectKey);
+      } catch (deleteError) {
+        try {
+          await enqueueAvatarCleanup(objectKey);
+          artifactCleanupQueue.trigger();
+        } catch (queueError) {
+          console.error(
+            '[Upload] Failed to queue new avatar compensation:',
+            toSafeError(queueError, res.locals.requestId)
+          );
+        }
+        console.warn(
+          '[Upload] Failed to delete uncommitted avatar object:',
+          toSafeError(deleteError, res.locals.requestId)
+        );
+      }
+      throw updateError;
     }
 
-    const avatarUrl = `/api/upload/avatar/${req.user.id}`;
-    const user = await updateUser(req.user.id, {
-      avatar_url: avatarUrl,
-      avatar_object_key: objectKey,
-    });
+    if (replacement.previousObjectKey && replacement.cleanupJob) {
+      try {
+        await deleteObject(replacement.previousObjectKey);
+      } catch (deleteError) {
+        console.warn(
+          '[Upload] Failed to delete old avatar object:',
+          toSafeError(deleteError, res.locals.requestId)
+        );
+      }
+      artifactCleanupQueue.trigger();
+    }
 
-    res.json({ url: avatarUrl, user });
+    res.json({ url: avatarUrl, user: replacement.user });
   } catch (err) {
     return sendUploadError(res, 500, 'Avatar upload failed', err, 'Avatar upload');
   }

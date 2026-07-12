@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 
@@ -63,6 +63,10 @@ const columns = `
 
 const cleanupResourceKey = (type: CleanupResourceType, resourceId: string) => (
   `${type}:${resourceId}`
+);
+
+const avatarCleanupResourceId = (objectKey: string) => (
+  createHash('sha256').update(objectKey, 'utf8').digest('hex')
 );
 
 const insertCleanupJobWithClient = async (
@@ -183,6 +187,50 @@ const prepareFileCleanupWithClient = async (
 interface EnqueueOptions {
   runInTransaction?: typeof withTransaction;
 }
+
+export const enqueueAvatarCleanupWithClient = async (
+  client: PoolClient,
+  objectKey: string
+) => {
+  if (!objectKey) throw new Error('Avatar cleanup object key is required');
+  const resourceId = avatarCleanupResourceId(objectKey);
+  const { rows } = await client.query<CleanupJobRow>(
+    `insert into artifact_cleanup_jobs (
+       resource_key,
+       resource_type,
+       resource_id,
+       payload
+     )
+     values ($1, 'avatar', $2, jsonb_build_object('object_key', $3::text))
+     on conflict (resource_key) do update set
+       status = 'queued',
+       step_state = artifact_cleanup_jobs.step_state - 'storage_deleted' - 'finalized',
+       payload = artifact_cleanup_jobs.payload || jsonb_build_object('object_key', $3::text),
+       attempts = case
+         when artifact_cleanup_jobs.attempts >= artifact_cleanup_jobs.max_attempts then 0
+         else artifact_cleanup_jobs.attempts
+       end,
+       next_attempt_at = null,
+       worker_id = null,
+       lease_token = null,
+       lease_expires_at = null,
+       last_error = '',
+       completed_at = null,
+       updated_at = now()
+     returning ${columns}`,
+    [cleanupResourceKey('avatar', resourceId), resourceId, objectKey]
+  );
+  if (!rows[0]) throw new Error('Avatar cleanup could not be queued');
+  return rows[0];
+};
+
+export const enqueueAvatarCleanup = async (
+  objectKey: string,
+  options: EnqueueOptions = {}
+) => {
+  const runInTransaction = options.runInTransaction || withTransaction;
+  return runInTransaction((client) => enqueueAvatarCleanupWithClient(client, objectKey));
+};
 
 export const enqueueFileCleanup = async (
   fileId: string,

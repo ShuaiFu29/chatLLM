@@ -14,6 +14,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { randomUUID } from 'crypto';
 import fs from 'fs-extra';
 import path from 'path';
 import { Readable } from 'stream';
@@ -54,7 +55,7 @@ export const buildDocumentKey = (userId: string, fileId: string, filename: strin
   `users/${userId}/files/${fileId}/${sanitizeFilename(filename)}`;
 
 export const buildAvatarKey = (userId: string, filename: string) =>
-  `users/${userId}/avatars/${Date.now()}-${sanitizeFilename(filename)}`;
+  `users/${userId}/avatars/${randomUUID()}-${sanitizeFilename(filename)}`;
 
 export const uploadFilePath = async (
   key: string,
