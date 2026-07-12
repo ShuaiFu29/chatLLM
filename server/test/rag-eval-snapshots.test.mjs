@@ -6,6 +6,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { acquirePostgresIntegrationLock } from './postgres-integration-lock.mjs';
+
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
@@ -120,8 +122,10 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
   const secondCaseId = randomUUID();
   const workerId = `snapshot-worker-${randomUUID()}`;
   const githubId = String(BigInt(Date.now()) * 10_000n + 217n);
+  let releaseIntegrationLock = async () => undefined;
 
   try {
+    releaseIntegrationLock = await acquirePostgresIntegrationLock(pool);
     await runMigrations();
     await pool.query(
       `insert into users (id, github_id, username, avatar_url, display_name)
@@ -371,6 +375,10 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
     assert.equal(finalCount.rows[0].count, 50);
   } finally {
     await pool.query('delete from users where id = $1', [userId]).catch(() => undefined);
-    await closeDatabasePool();
+    try {
+      await releaseIntegrationLock();
+    } finally {
+      await closeDatabasePool();
+    }
   }
 });

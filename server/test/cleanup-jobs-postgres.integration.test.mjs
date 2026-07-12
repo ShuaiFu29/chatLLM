@@ -4,6 +4,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { acquirePostgresIntegrationLock } from './postgres-integration-lock.mjs';
+
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
@@ -39,6 +41,7 @@ test('PostgreSQL cleanup jobs fence workers, resume steps, and serialize deletio
     maxUserActiveUploadBytes: 100_000,
   };
   let githubId = BigInt(Date.now()) * 1000n;
+  let releaseIntegrationLock = async () => undefined;
 
   const insertUser = async (id, username) => {
     githubId += 1n;
@@ -75,6 +78,7 @@ test('PostgreSQL cleanup jobs fence workers, resume steps, and serialize deletio
   });
 
   try {
+    releaseIntegrationLock = await acquirePostgresIntegrationLock(pool);
     await runMigrations();
     await insertUser(userId, `cleanup-${userId}`);
     await pool.query(
@@ -334,6 +338,10 @@ test('PostgreSQL cleanup jobs fence workers, resume steps, and serialize deletio
     await pool.query('delete from users where id = any($1::uuid[])', [
       [userId, accountUserId],
     ]).catch(() => undefined);
-    await closeDatabasePool();
+    try {
+      await releaseIntegrationLock();
+    } finally {
+      await closeDatabasePool();
+    }
   }
 });

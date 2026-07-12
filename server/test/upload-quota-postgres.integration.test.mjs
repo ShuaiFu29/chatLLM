@@ -5,6 +5,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+import { acquirePostgresIntegrationLock } from './postgres-integration-lock.mjs';
+
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
@@ -36,8 +38,10 @@ test('PostgreSQL serializes upload quota reservations and canonical claims acros
     maxUserStorageBytes: 1000,
     maxUserActiveUploadBytes: 100,
   };
+  let releaseIntegrationLock = async () => undefined;
 
   try {
+    releaseIntegrationLock = await acquirePostgresIntegrationLock(pool);
     await runMigrations();
 
     const lifecycleSql = readFileSync(
@@ -277,6 +281,10 @@ test('PostgreSQL serializes upload quota reservations and canonical claims acros
     assert.equal(reclaimRace.filter(Boolean).length, 1);
   } finally {
     await pool.query('delete from users where id = $1', [userId]).catch(() => undefined);
-    await closeDatabasePool();
+    try {
+      await releaseIntegrationLock();
+    } finally {
+      await closeDatabasePool();
+    }
   }
 });
