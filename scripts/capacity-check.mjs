@@ -169,9 +169,11 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
 
   const hasEsHeap = /ES_JAVA_OPTS=-Xms\d+[gGmM]\s+-Xmx\d+[gGmM]/.test(composeText);
   const hasEsMemlock = /bootstrap\.memory_lock=true/.test(composeText) && /memlock:/.test(composeText);
-  const hasNeo4jMemory = /NEO4J_server_memory_heap_initial__size=/.test(composeText)
-    && /NEO4J_server_memory_heap_max__size=/.test(composeText)
-    && /NEO4J_server_memory_pagecache_size=/.test(composeText);
+  const hasNeo4jMemory = [
+    'NEO4J_server_memory_heap_initial__size',
+    'NEO4J_server_memory_heap_max__size',
+    'NEO4J_server_memory_pagecache_size',
+  ].every((key) => new RegExp(`${key}(?:=|\\s*:)`).test(composeText));
   const hasMilvusHealth = /milvus-standalone:[\s\S]*?healthcheck:/.test(composeText);
 
   checks.push({ label: 'Elasticsearch JVM heap', status: hasEsHeap ? 'ok' : 'warn', detail: hasEsHeap ? 'configured' : 'missing' });

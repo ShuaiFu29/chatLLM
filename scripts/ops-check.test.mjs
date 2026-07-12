@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   buildOpsReport,
@@ -7,6 +10,71 @@ import {
   hasFailedOpsChecks,
   runOpsChecks,
 } from './ops-check.mjs';
+
+const rootDir = fileURLToPath(new URL('..', import.meta.url));
+const composeSource = fs.readFileSync(new URL('../docker-compose.yml', import.meta.url), 'utf8');
+const rootEnvExampleUrl = new URL('../.env.example', import.meta.url);
+const rootEnvExample = fs.existsSync(rootEnvExampleUrl)
+  ? fs.readFileSync(rootEnvExampleUrl, 'utf8')
+  : '';
+
+test('docker compose binds every published infrastructure port to loopback by default', () => {
+  const expectedPorts = [
+    '5432:5432',
+    '9000:9000',
+    '9001:9001',
+    '9200:9200',
+    '7474:7474',
+    '7687:7687',
+    '19530:19530',
+    '9091:9091',
+    '3001:3000',
+  ];
+  const publishedPorts = [...composeSource.matchAll(/^\s*-\s*"([^"]+)"\s*$/gm)]
+    .map((match) => match[1])
+    .filter((value) => /(?:^|:)\d+:\d+$/.test(value));
+
+  assert.deepEqual(
+    publishedPorts,
+    expectedPorts.map((port) => `\${INFRA_BIND_HOST:-127.0.0.1}:${port}`),
+  );
+});
+
+test('docker compose requires external infrastructure credentials and documents generation', () => {
+  const requiredVariables = [
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'MINIO_ROOT_USER',
+    'MINIO_ROOT_PASSWORD',
+    'MILVUS_MINIO_ROOT_USER',
+    'MILVUS_MINIO_ROOT_PASSWORD',
+    'NEO4J_USER',
+    'NEO4J_PASSWORD',
+  ];
+
+  for (const variable of requiredVariables) {
+    assert.match(composeSource, new RegExp(`\\$\\{${variable}:\\?${variable} is required\\}`));
+    assert.match(rootEnvExample, new RegExp(`^${variable}=`, 'm'));
+  }
+
+  assert.match(rootEnvExample, /openssl rand -hex 32/);
+  assert.doesNotMatch(composeSource, /POSTGRES_PASSWORD:\s*chatllm\b/);
+  assert.doesNotMatch(composeSource, /MINIO_(?:ROOT_PASSWORD|SECRET_ACCESS_KEY):\s*minioadmin\b/);
+  assert.doesNotMatch(composeSource, /NEO4J_AUTH=neo4j\/chatllm-password/);
+  assert.doesNotMatch(rootEnvExample, /^POSTGRES_PASSWORD=chatllm\s*$/m);
+  assert.doesNotMatch(rootEnvExample, /^(?:MINIO_ROOT_(?:USER|PASSWORD)|MILVUS_MINIO_ROOT_(?:USER|PASSWORD))=minioadmin\s*$/m);
+  assert.doesNotMatch(rootEnvExample, /^NEO4J_PASSWORD=chatllm-password\s*$/m);
+});
+
+test('docker compose renders with the documented secure example configuration', () => {
+  const result = spawnSync(
+    'docker',
+    ['compose', '--env-file', '.env.example', 'config', '--quiet'],
+    { cwd: rootDir, encoding: 'utf8' },
+  );
+
+  assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
+});
 
 test('buildOpsTargets includes app, RAG, and infra readiness endpoints by default', () => {
   const targets = buildOpsTargets({

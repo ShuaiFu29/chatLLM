@@ -8,9 +8,25 @@ import {
 } from './check-env.mjs';
 
 const TEST_RAG_SERVICE_TOKEN = 'test-rag-service-token-at-least-32-characters';
+const TEST_INFRA_ENV = {
+  INFRA_BIND_HOST: '127.0.0.1',
+  POSTGRES_DB: 'chatllm',
+  POSTGRES_USER: 'test-postgres-user',
+  POSTGRES_PASSWORD: 'test-postgres-password-at-least-32-characters',
+  MINIO_ROOT_USER: 'test-minio-root-user',
+  MINIO_ROOT_PASSWORD: 'test-minio-password-at-least-32-characters',
+  MILVUS_MINIO_ROOT_USER: 'test-milvus-minio-root-user',
+  MILVUS_MINIO_ROOT_PASSWORD: 'test-milvus-minio-password-at-least-32-characters',
+  NEO4J_USER: 'neo4j',
+  NEO4J_PASSWORD: 'test-neo4j-password-at-least-32-characters',
+};
 
 const validateProjectEnvMaps = (envMaps) => validateProjectEnvMapsRaw({
   ...envMaps,
+  '.env': {
+    ...TEST_INFRA_ENV,
+    ...(envMaps['.env'] || {}),
+  },
   'server/.env': {
     RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN,
     ...(envMaps['server/.env'] || {}),
@@ -204,6 +220,73 @@ test('validateProjectEnvMaps requires one matching strong RAG service token', ()
   assert.ok(mismatched.some((issue) => /must match/.test(issue)));
   assert.doesNotMatch(mismatched.join('\n'), new RegExp(serverToken));
   assert.doesNotMatch(mismatched.join('\n'), new RegExp(ragToken));
+});
+
+test('validateProjectEnvMaps rejects audited infrastructure credentials on non-loopback binds without echoing values', () => {
+  const legacyValues = {
+    POSTGRES_PASSWORD: 'chatllm',
+    MINIO_ROOT_USER: 'minioadmin',
+    MINIO_ROOT_PASSWORD: 'minioadmin',
+    MILVUS_MINIO_ROOT_USER: 'minioadmin',
+    MILVUS_MINIO_ROOT_PASSWORD: 'minioadmin',
+    NEO4J_PASSWORD: 'chatllm-password',
+  };
+  const issues = validateProjectEnvMaps({
+    '.env': {
+      ...TEST_INFRA_ENV,
+      ...legacyValues,
+      INFRA_BIND_HOST: '0.0.0.0',
+    },
+    'server/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      DEEPSEEK_API_KEY: 'sk-test',
+    },
+    'rag-service/.env': {
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      MILVUS_URI: 'http://localhost:19530',
+      MILVUS_COLLECTION: 'document_chunks',
+      EMBEDDING_PROVIDER: 'local',
+      EMBEDDING_DIMENSION: '1024',
+    },
+  });
+  const output = issues.join('\n');
+
+  for (const variable of Object.keys(legacyValues)) {
+    assert.match(output, new RegExp(variable));
+  }
+  for (const value of new Set(Object.values(legacyValues))) {
+    assert.doesNotMatch(output, new RegExp(value));
+  }
+});
+
+test('validateProjectEnvMaps rejects documented infrastructure password placeholders without echoing values', () => {
+  const placeholders = {
+    POSTGRES_PASSWORD: 'replace-with-generated-postgres-password',
+    MINIO_ROOT_PASSWORD: 'replace-with-generated-minio-password',
+    MILVUS_MINIO_ROOT_PASSWORD: 'replace-with-generated-milvus-minio-password',
+    NEO4J_PASSWORD: 'replace-with-generated-neo4j-password',
+  };
+  const issues = validateProjectEnvMaps({
+    '.env': {
+      ...TEST_INFRA_ENV,
+      ...placeholders,
+    },
+  });
+  const output = issues.join('\n');
+
+  for (const variable of Object.keys(placeholders)) {
+    assert.match(output, new RegExp(variable));
+  }
+  for (const value of Object.values(placeholders)) {
+    assert.doesNotMatch(output, new RegExp(value));
+  }
 });
 
 test('validateProjectEnvMaps rejects dangerously low file queue ingest timeouts', () => {

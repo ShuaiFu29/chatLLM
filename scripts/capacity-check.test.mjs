@@ -6,6 +6,19 @@ import {
   validateCapacityConfig,
 } from './capacity-check.mjs';
 
+const enterpriseInfrastructureEnv = {
+  INFRA_BIND_HOST: '127.0.0.1',
+  POSTGRES_DB: 'chatllm',
+  POSTGRES_USER: 'test-postgres-user',
+  POSTGRES_PASSWORD: 'test-postgres-password-at-least-32-characters',
+  MINIO_ROOT_USER: 'test-minio-root-user',
+  MINIO_ROOT_PASSWORD: 'test-minio-password-at-least-32-characters',
+  MILVUS_MINIO_ROOT_USER: 'test-milvus-minio-root-user',
+  MILVUS_MINIO_ROOT_PASSWORD: 'test-milvus-minio-password-at-least-32-characters',
+  NEO4J_USER: 'neo4j',
+  NEO4J_PASSWORD: 'test-neo4j-password-at-least-32-characters',
+};
+
 const enterpriseServerEnv = {
   DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
   S3_ENDPOINT: 'http://localhost:9000',
@@ -77,9 +90,9 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
   neo4j:
     environment:
-      - NEO4J_server_memory_heap_initial__size=512m
-      - NEO4J_server_memory_heap_max__size=1G
-      - NEO4J_server_memory_pagecache_size=512m
+      NEO4J_server_memory_heap_initial__size: 512m
+      NEO4J_server_memory_heap_max__size: 1G
+      NEO4J_server_memory_pagecache_size: 512m
     healthcheck:
       test: ["CMD-SHELL", "wget -q --spider http://localhost:7474 || exit 1"]
   milvus-standalone:
@@ -90,6 +103,7 @@ services:
 test('validateCapacityConfig accepts an enterprise-oriented capacity profile', () => {
   const report = validateCapacityConfig({
     envMaps: {
+      '.env': enterpriseInfrastructureEnv,
       'server/.env': enterpriseServerEnv,
       'rag-service/.env': enterpriseRagEnv,
     },
@@ -104,6 +118,7 @@ test('validateCapacityConfig accepts an enterprise-oriented capacity profile', (
 test('validateCapacityConfig reports risky bottleneck settings for enterprise mode', () => {
   const report = validateCapacityConfig({
     envMaps: {
+      '.env': enterpriseInfrastructureEnv,
       'server/.env': {
         ...enterpriseServerEnv,
         DB_POOL_MAX: '5',

@@ -33,6 +33,36 @@ const ragRules = {
   forbiddenPrefixes: ['SUPABASE_'],
 };
 
+const infrastructureRules = {
+  required: [
+    'POSTGRES_DB',
+    'POSTGRES_USER',
+    'POSTGRES_PASSWORD',
+    'MINIO_ROOT_USER',
+    'MINIO_ROOT_PASSWORD',
+    'MILVUS_MINIO_ROOT_USER',
+    'MILVUS_MINIO_ROOT_PASSWORD',
+    'NEO4J_USER',
+    'NEO4J_PASSWORD',
+  ],
+};
+
+const auditedLegacyInfrastructureValues = new Map([
+  ['POSTGRES_PASSWORD', new Set(['chatllm'])],
+  ['MINIO_ROOT_USER', new Set(['minioadmin'])],
+  ['MINIO_ROOT_PASSWORD', new Set(['minioadmin'])],
+  ['MILVUS_MINIO_ROOT_USER', new Set(['minioadmin'])],
+  ['MILVUS_MINIO_ROOT_PASSWORD', new Set(['minioadmin'])],
+  ['NEO4J_PASSWORD', new Set(['chatllm-password'])],
+]);
+
+const infrastructureSecretKeys = [
+  'POSTGRES_PASSWORD',
+  'MINIO_ROOT_PASSWORD',
+  'MILVUS_MINIO_ROOT_PASSWORD',
+  'NEO4J_PASSWORD',
+];
+
 export function parseEnvContent(content) {
   const result = {};
 
@@ -91,10 +121,12 @@ export function validateEnvMap(label, env, rules) {
 }
 
 export function validateProjectEnvMaps(envMaps) {
+  const infrastructureEnv = envMaps['.env'] || {};
   const serverEnv = envMaps['server/.env'] || {};
   const ragEnv = envMaps['rag-service/.env'] || {};
 
   const issues = [
+    ...validateInfrastructureEnv(infrastructureEnv),
     ...validateEnvMap('server/.env', serverEnv, serverRules),
     ...validateServerModelConfig(serverEnv),
     ...validateServerBackendUrl(serverEnv),
@@ -113,6 +145,33 @@ export function validateProjectEnvMaps(envMaps) {
   const ragToken = ragEnv.RAG_SERVICE_TOKEN?.trim();
   if (serverToken && ragToken && serverToken !== ragToken) {
     issues.push('server/.env and rag-service/.env RAG_SERVICE_TOKEN values must match');
+  }
+
+  return issues;
+}
+
+function validateInfrastructureEnv(env) {
+  const issues = validateEnvMap('.env', env, infrastructureRules);
+  const bindHost = env.INFRA_BIND_HOST?.trim().toLowerCase() || '127.0.0.1';
+  const loopbackHosts = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+  const placeholderKeys = infrastructureSecretKeys.filter((key) =>
+    /^replace-with-generated-/i.test(env[key]?.trim() || '')
+  );
+
+  if (placeholderKeys.length > 0) {
+    issues.push(`.env has unsafe infrastructure credential placeholders: ${placeholderKeys.join(', ')}`);
+  }
+
+  if (!loopbackHosts.has(bindHost)) {
+    const unsafeKeys = [];
+    for (const [key, legacyValues] of auditedLegacyInfrastructureValues) {
+      if (legacyValues.has(env[key]?.trim())) {
+        unsafeKeys.push(key);
+      }
+    }
+    if (unsafeKeys.length > 0) {
+      issues.push(`.env has audited legacy infrastructure credentials on a non-loopback bind: ${unsafeKeys.join(', ')}`);
+    }
   }
 
   return issues;
@@ -192,7 +251,7 @@ function validateServerBackendUrl(env) {
 }
 
 export function readProjectEnvMaps(rootDir = process.cwd()) {
-  const files = ['server/.env', 'rag-service/.env'];
+  const files = ['.env', 'server/.env', 'rag-service/.env'];
   const envMaps = {};
   const issues = [];
 

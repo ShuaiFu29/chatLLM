@@ -446,10 +446,10 @@ test('docker compose infrastructure has restart policies and health-gated depend
   assert.match(composeSource, /memlock:/);
   assert.match(composeSource, /9200:9200/);
   assert.match(composeSource, /neo4j:/);
-  assert.match(composeSource, /NEO4J_AUTH=neo4j\/chatllm-password/);
-  assert.match(composeSource, /NEO4J_server_memory_heap_initial__size=512m/);
-  assert.match(composeSource, /NEO4J_server_memory_heap_max__size=1G/);
-  assert.match(composeSource, /NEO4J_server_memory_pagecache_size=512m/);
+  assert.match(composeSource, /NEO4J_AUTH:\s*"\$\{NEO4J_USER:\?NEO4J_USER is required\}\/\$\{NEO4J_PASSWORD:\?NEO4J_PASSWORD is required\}"/);
+  assert.match(composeSource, /NEO4J_server_memory_heap_initial__size:\s*512m/);
+  assert.match(composeSource, /NEO4J_server_memory_heap_max__size:\s*1G/);
+  assert.match(composeSource, /NEO4J_server_memory_pagecache_size:\s*512m/);
   assert.match(composeSource, /7474:7474/);
   assert.match(composeSource, /7687:7687/);
 });
