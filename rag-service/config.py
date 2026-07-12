@@ -57,6 +57,7 @@ class Settings:
     rag_ingest_chunk_batch_size: int
     rag_ingest_embedding_batch_size: int
     rag_service_token: str
+    rag_max_request_bytes: int
     rag_db_pool_max: int
     rag_db_pool_timeout_ms: int
     rag_allowed_origins: list[str]
@@ -172,6 +173,7 @@ def load_settings() -> Settings:
         rag_ingest_chunk_batch_size=_positive_int("RAG_INGEST_CHUNK_BATCH_SIZE", "100"),
         rag_ingest_embedding_batch_size=_positive_int("RAG_INGEST_EMBEDDING_BATCH_SIZE", "10"),
         rag_service_token=rag_service_token,
+        rag_max_request_bytes=_positive_int("RAG_MAX_REQUEST_BYTES", str(1024 * 1024)),
         rag_db_pool_max=_positive_int("RAG_DB_POOL_MAX", "10"),
         rag_db_pool_timeout_ms=_positive_int("RAG_DB_POOL_TIMEOUT_MS", "5000"),
         rag_allowed_origins=_string_list(

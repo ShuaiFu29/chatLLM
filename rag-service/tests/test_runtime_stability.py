@@ -114,25 +114,47 @@ class RuntimeStabilityTests(unittest.TestCase):
         self.assertIn('Header(alias="X-ChatLLM-RAG-Token")', source)
         self.assertIn("Depends(require_internal_auth)", source)
 
-    def test_internal_auth_dependency_rejects_missing_or_wrong_tokens_when_configured(self):
+    def test_internal_auth_dependency_rejects_missing_or_wrong_tokens_even_if_runtime_setting_is_blank(self):
         script = """
 from fastapi import HTTPException
 import main
 
+for expected in ("", "expected-rag-service-token-at-least-32-characters"):
+    main.settings.rag_service_token = expected
+    for token in (None, "", "wrong"):
+        try:
+            main.require_internal_auth(token)
+        except HTTPException as error:
+            assert error.status_code == 401
+        else:
+            raise SystemExit(f"accepted invalid token with expected={expected!r}")
+
 main.settings.rag_service_token = "expected-rag-service-token-at-least-32-characters"
-
-for token in (None, "", "wrong"):
-    try:
-        main.require_internal_auth(token)
-    except HTTPException as error:
-        assert error.status_code == 401
-    else:
-        raise SystemExit("accepted invalid token")
-
 assert main.require_internal_auth("expected-rag-service-token-at-least-32-characters") is True
 print("ok")
 """
         result = run_main_script(valid_env({"RAG_SERVICE_TOKEN": "expected-rag-service-token-at-least-32-characters"}), script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
+    def test_internal_auth_uses_constant_time_token_comparison(self):
+        script = """
+import hmac
+from unittest.mock import patch
+import main
+
+expected = "expected-rag-service-token-at-least-32-characters"
+main.settings.rag_service_token = expected
+original_compare = hmac.compare_digest
+
+with patch("hmac.compare_digest", wraps=original_compare) as compare_digest:
+    assert main.require_internal_auth(expected) is True
+    compare_digest.assert_called_once_with(expected, expected)
+
+print("ok")
+"""
+        result = run_main_script(valid_env(), script)
 
         self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
         self.assertIn("ok", result.stdout)
