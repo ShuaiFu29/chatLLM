@@ -232,6 +232,7 @@ export const cancelRagEvalRun = async (req: Request, res: Response) => {
     const run = await cancelRagEvalRunForUser(req.params.runId, req.user.id);
     if (!run) return res.status(404).json({ error: 'Running eval run not found' });
 
+    ragEvalQueue.abortRun(run.id);
     metrics.recordRagEvalRunCompleted('cancelled');
     res.json(run);
   } catch (error) {

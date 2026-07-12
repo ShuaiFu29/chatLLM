@@ -57,6 +57,10 @@ export interface RagEvalRunRow {
   max_attempts: number;
   next_attempt_at?: string | null;
   last_error: string;
+  deadline_at?: string | Date | null;
+  case_timeout_ms: number;
+  heartbeat_at?: string | Date | null;
+  lease_expires_at?: string | Date | null;
   created_at: string;
   completed_at?: string | null;
   results?: RagEvalResultRow[];
@@ -66,7 +70,14 @@ export type CreatedRagEvalRunRow = RagEvalRunRow & {
   created: boolean;
 };
 
-export type ClaimedRagEvalRunJob = RagEvalRunRow & {
+type RagEvalRunClaimRow = RagEvalRunRow & {
+  lease_token: string;
+  deadline_at: string | Date;
+  heartbeat_at: string | Date;
+  lease_expires_at: string | Date;
+};
+
+export type ClaimedRagEvalRunJob = RagEvalRunClaimRow & {
   dataset: RagEvalDatasetRow & {
     cases: RagEvalCaseRow[];
   };
@@ -255,8 +266,17 @@ const runColumns = `
   max_attempts,
   next_attempt_at,
   last_error,
+  deadline_at,
+  case_timeout_ms,
   created_at,
   completed_at
+`;
+
+const claimedRunColumns = `
+  ${runColumns},
+  lease_token,
+  heartbeat_at,
+  lease_expires_at
 `;
 
 interface RagEvalRunOutput {
@@ -754,12 +774,29 @@ export const createRunningRagEvalRunForUser = async (input: {
          user_id,
          status,
          case_count,
-         max_attempts
+         max_attempts,
+         case_timeout_ms,
+         deadline_at
        )
-       values ($1, $2, 'running', $3, $4)
+       values (
+         $1,
+         $2,
+         'running',
+         $3,
+         $4,
+         $5,
+         now() + ($6::double precision * interval '1 millisecond')
+       )
        on conflict (dataset_id) where status = 'running' do nothing
        returning ${runColumns}`,
-      [dataset.id, dataset.user_id, actualCaseCount, serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS]
+      [
+        dataset.id,
+        dataset.user_id,
+        actualCaseCount,
+        serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
+        serverEnv.RAG_EVAL_CASE_TIMEOUT_MS,
+        serverEnv.RAG_EVAL_RUN_TIMEOUT_MS,
+      ]
     );
 
     if (rows[0]) {
@@ -822,18 +859,21 @@ export const claimNextRagEvalRunJob = async (input: {
   retryBaseDelayMs?: number;
   staleAfterMs?: number;
   maxAttempts?: number;
+  runTimeoutMs?: number;
 }): Promise<ClaimedRagEvalRunJob | null> => {
   const retryBaseDelayMs = input.retryBaseDelayMs ?? serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS;
   const staleAfterMs = input.staleAfterMs ?? serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS;
   const maxAttempts = input.maxAttempts ?? serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS;
+  const runTimeoutMs = input.runTimeoutMs ?? serverEnv.RAG_EVAL_RUN_TIMEOUT_MS;
 
   return withTransaction(async (client) => {
-    const { rows: runRows } = await client.query<RagEvalRunRow>(
+    const { rows: runRows } = await client.query<RagEvalRunClaimRow>(
       `with next_run as (
          select id
          from rag_eval_runs
          where status = 'running'
            and attempts < greatest(max_attempts, $3)
+           and (deadline_at is null or deadline_at > now())
            and (
              (
                claimed_at is null
@@ -844,7 +884,10 @@ export const claimNextRagEvalRunJob = async (input: {
              )
              or (
                claimed_at is not null
-               and claimed_at <= now() - ($2::double precision * interval '1 millisecond')
+               and (
+                 lease_expires_at is null
+                 or lease_expires_at <= now()
+               )
              )
              or (
                claimed_at is null
@@ -863,14 +906,21 @@ export const claimNextRagEvalRunJob = async (input: {
        update rag_eval_runs
        set claimed_at = now(),
            worker_id = $4,
+           lease_token = gen_random_uuid(),
+           heartbeat_at = now(),
+           lease_expires_at = now() + ($2::double precision * interval '1 millisecond'),
+           deadline_at = coalesce(
+             deadline_at,
+             now() + ($5::double precision * interval '1 millisecond')
+           ),
            attempts = least(greatest(max_attempts, $3), attempts + 1),
            max_attempts = greatest(max_attempts, $3),
            next_attempt_at = null,
            last_error = '',
            queued_at = coalesce(queued_at, created_at)
        where id in (select id from next_run)
-       returning ${runColumns}`,
-      [retryBaseDelayMs, staleAfterMs, maxAttempts, input.workerId]
+       returning ${claimedRunColumns}`,
+      [retryBaseDelayMs, staleAfterMs, maxAttempts, input.workerId, runTimeoutMs]
     );
 
     const run = runRows[0];
@@ -917,11 +967,39 @@ export const claimNextRagEvalRunJob = async (input: {
   });
 };
 
+export const renewRagEvalRunLease = async (input: {
+  runId: string;
+  workerId: string;
+  leaseToken: string;
+  leaseDurationMs?: number;
+}) => {
+  const leaseDurationMs = input.leaseDurationMs ?? serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS;
+  const { rows } = await query<{ lease_expires_at: string | Date }>(
+    `update rag_eval_runs
+     set heartbeat_at = now(),
+         lease_expires_at = now() + ($4::double precision * interval '1 millisecond')
+     where id = $1
+       and status = 'running'
+       and worker_id = $2
+       and lease_token = $3
+       and lease_expires_at > now()
+       and deadline_at > now()
+     returning lease_expires_at`,
+    [input.runId, input.workerId, input.leaseToken, leaseDurationMs]
+  );
+
+  const leaseExpiresAt = rows[0]?.lease_expires_at;
+  if (!leaseExpiresAt) return null;
+  return leaseExpiresAt instanceof Date ? leaseExpiresAt.toISOString() : String(leaseExpiresAt);
+};
+
 export const resetStaleRagEvalRunJobs = async (staleAfterMs: number) => {
   const { rowCount } = await query(
     `update rag_eval_runs
      set claimed_at = null,
          worker_id = null,
+         lease_token = null,
+         lease_expires_at = null,
          next_attempt_at = now(),
          last_error = case
            when last_error = '' then 'RAG eval worker claim expired'
@@ -929,7 +1007,14 @@ export const resetStaleRagEvalRunJobs = async (staleAfterMs: number) => {
          end
      where status = 'running'
        and claimed_at is not null
-       and claimed_at <= now() - ($1::double precision * interval '1 millisecond')
+       and (
+         (lease_token is not null and lease_expires_at <= now())
+         or (
+           lease_token is null
+           and claimed_at <= now() - ($1::double precision * interval '1 millisecond')
+         )
+       )
+       and (deadline_at is null or deadline_at > now())
        and attempts < max_attempts`,
     [staleAfterMs]
   );
@@ -944,6 +1029,8 @@ export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
          failed_count = case_count,
          claimed_at = null,
          worker_id = null,
+         lease_token = null,
+         lease_expires_at = null,
          next_attempt_at = null,
          last_error = case
            when last_error = '' then 'RAG eval run exceeded stale timeout'
@@ -951,8 +1038,13 @@ export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
          end,
          completed_at = now()
      where status = 'running'
-       and created_at < now() - ($1::text || ' milliseconds')::interval
-       and attempts >= max_attempts`,
+       and (
+         deadline_at <= now()
+         or (
+           created_at < now() - ($1::text || ' milliseconds')::interval
+           and attempts >= max_attempts
+         )
+       )`,
     [staleAfterMs]
   );
 
@@ -962,7 +1054,8 @@ export const failStaleRunningRagEvalRuns = async (staleAfterMs: number) => {
 export const completeRagEvalRunWithResults = async (input: {
   userId: string;
   runId: string;
-  workerId?: string | null;
+  workerId: string;
+  leaseToken: string;
   output: RagEvalRunOutput;
 }) => {
   return withTransaction(async (client) => {
@@ -989,13 +1082,19 @@ export const completeRagEvalRunWithResults = async (input: {
            duration_ms = $19,
            claimed_at = null,
            worker_id = null,
+           lease_token = null,
+           heartbeat_at = now(),
+           lease_expires_at = null,
            next_attempt_at = null,
            last_error = '',
            completed_at = now()
        where id = $1
          and user_id = $2
          and status in ('running')
-         and ($20::text is null or worker_id = $20)
+         and worker_id = $20
+         and lease_token = $21
+         and lease_expires_at > now()
+         and deadline_at > now()
        returning ${runColumns}`,
       [
         input.runId,
@@ -1017,7 +1116,8 @@ export const completeRagEvalRunWithResults = async (input: {
         input.output.average_expected_answer_support_score ?? 0,
         input.output.average_verification_score ?? 0,
         input.output.duration_ms,
-        input.workerId || null,
+        input.workerId,
+        input.leaseToken,
       ]
     );
 
@@ -1103,6 +1203,8 @@ export const failRagEvalRunForUser = async (input: {
   runId: string;
   errorMessage: string;
   durationMs?: number;
+  workerId: string;
+  leaseToken: string;
 }) => {
   const { rows } = await query<RagEvalRunRow>(
     `update rag_eval_runs
@@ -1111,12 +1213,28 @@ export const failRagEvalRunForUser = async (input: {
          duration_ms = $3,
          claimed_at = null,
          worker_id = null,
+         lease_token = null,
+         heartbeat_at = now(),
+         lease_expires_at = null,
          next_attempt_at = null,
          last_error = $4,
          completed_at = now()
-     where id = $1 and user_id = $2 and status in ('running')
+     where id = $1
+       and user_id = $2
+       and status in ('running')
+       and worker_id = $5
+       and lease_token = $6
+       and lease_expires_at > now()
+       and deadline_at > now()
      returning ${runColumns}`,
-    [input.runId, input.userId, input.durationMs || 0, input.errorMessage]
+    [
+      input.runId,
+      input.userId,
+      input.durationMs || 0,
+      input.errorMessage,
+      input.workerId,
+      input.leaseToken,
+    ]
   );
 
   if (!rows[0]) return null;
@@ -1127,17 +1245,20 @@ export const failRagEvalRunForUser = async (input: {
 };
 
 export const markRagEvalRunAttemptFailed = async (input: {
-  run: Pick<RagEvalRunRow, 'id' | 'user_id' | 'attempts' | 'max_attempts'>;
+  run: Pick<RagEvalRunRow, 'id' | 'user_id' | 'attempts' | 'max_attempts' | 'deadline_at'>;
   errorMessage: string;
   durationMs?: number;
-  workerId?: string | null;
+  workerId: string;
+  leaseToken: string;
 }) => {
   const maxAttempts = Math.max(
     input.run.max_attempts || 0,
     serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS
   );
   const attempts = input.run.attempts || 1;
-  const exhausted = attempts >= maxAttempts;
+  const deadlineAtMs = input.run.deadline_at ? new Date(input.run.deadline_at).getTime() : null;
+  const exhausted = attempts >= maxAttempts
+    || (deadlineAtMs !== null && Number.isFinite(deadlineAtMs) && deadlineAtMs <= Date.now());
   const retryDelayMs = Math.min(
     60 * 60 * 1000,
     serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS * 2 ** Math.max(attempts - 1, 0)
@@ -1150,6 +1271,9 @@ export const markRagEvalRunAttemptFailed = async (input: {
          duration_ms = $6,
          claimed_at = null,
          worker_id = null,
+         lease_token = null,
+         heartbeat_at = now(),
+         lease_expires_at = null,
          max_attempts = $4,
          next_attempt_at = case
            when $5 then null
@@ -1160,7 +1284,8 @@ export const markRagEvalRunAttemptFailed = async (input: {
      where id = $1
        and user_id = $2
        and status = 'running'
-       and ($8::text is null or worker_id = $8)
+       and worker_id = $8
+       and lease_token = $9
      returning ${runColumns}`,
     [
       input.run.id,
@@ -1172,7 +1297,8 @@ export const markRagEvalRunAttemptFailed = async (input: {
       exhausted,
       input.durationMs || 0,
       retryDelayMs,
-      input.workerId || null,
+      input.workerId,
+      input.leaseToken,
     ]
   );
 
@@ -1186,6 +1312,9 @@ export const cancelRagEvalRunForUser = async (runId: string, userId: string) => 
          duration_ms = greatest(duration_ms, floor(extract(epoch from (now() - created_at)) * 1000)::int),
          claimed_at = null,
          worker_id = null,
+         lease_token = null,
+         heartbeat_at = now(),
+         lease_expires_at = null,
          next_attempt_at = null,
          completed_at = now()
      where id = $1 and user_id = $2 and status = 'running'

@@ -84,6 +84,26 @@ const successfulResult = (testCase) => ({
   error_message: '',
 });
 
+const successfulOutput = (cases) => ({
+  case_count: cases.length,
+  failed_count: 0,
+  duration_ms: 2,
+  average_overall_score: 1,
+  average_retrieval_score: 1,
+  average_answer_score: 1,
+  average_source_score: 1,
+  average_source_recall_score: 1,
+  average_source_precision_score: 1,
+  average_citation_accuracy_score: 1,
+  average_keyword_score: 1,
+  average_answer_keyword_score: 1,
+  average_grounding_score: 1,
+  average_judge_score: 1,
+  average_expected_answer_support_score: 1,
+  average_verification_score: 1,
+  results: cases.map(successfulResult),
+});
+
 test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', {
   skip: integrationEnabled
     ? false
@@ -183,6 +203,13 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
       maxAttempts: 3,
     });
     assert.equal(claimed.id, run.id);
+    assert.match(claimed.lease_token, /^[0-9a-f-]{36}$/i);
+    assert.equal(claimed.worker_id, workerId);
+    assert.equal(claimed.case_timeout_ms, 60000);
+    assert.ok(Date.parse(claimed.deadline_at) > Date.now());
+    assert.ok(Date.parse(claimed.lease_expires_at) > Date.now());
+    const publicRun = await repository.getRagEvalRunForUser(run.id, userId);
+    assert.equal(publicRun.lease_token, undefined);
     assert.deepEqual(claimed.dataset.cases.map((item) => ({
       id: item.id,
       question: item.question,
@@ -206,29 +233,27 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
       },
     ]);
 
+    const renewedUntil = await repository.renewRagEvalRunLease({
+      runId: run.id,
+      workerId,
+      leaseToken: claimed.lease_token,
+      leaseDurationMs: 60_000,
+    });
+    assert.ok(Date.parse(renewedUntil) > Date.now());
+    await pool.query(
+      `update rag_eval_runs
+       set claimed_at = now() - interval '1 hour'
+       where id = $1`,
+      [run.id],
+    );
+    assert.equal(await repository.resetStaleRagEvalRunJobs(1000), 0);
+
     const completed = await repository.completeRagEvalRunWithResults({
       userId,
       runId: run.id,
       workerId,
-      output: {
-        case_count: 2,
-        failed_count: 0,
-        duration_ms: 2,
-        average_overall_score: 1,
-        average_retrieval_score: 1,
-        average_answer_score: 1,
-        average_source_score: 1,
-        average_source_recall_score: 1,
-        average_source_precision_score: 1,
-        average_citation_accuracy_score: 1,
-        average_keyword_score: 1,
-        average_answer_keyword_score: 1,
-        average_grounding_score: 1,
-        average_judge_score: 1,
-        average_expected_answer_support_score: 1,
-        average_verification_score: 1,
-        results: claimed.dataset.cases.map(successfulResult),
-      },
+      leaseToken: claimed.lease_token,
+      output: successfulOutput(claimed.dataset.cases),
     });
     assert.equal(completed.status, 'completed');
     const linkedResults = await pool.query(
@@ -242,6 +267,79 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
       { question: 'original question one', case_id: null },
       { question: 'original question two', case_id: secondCaseId },
     ]);
+
+    const cancelledRun = await repository.createRunningRagEvalRunForUser({
+      userId,
+      datasetId,
+      caseCount: 2,
+    });
+    await pool.query(
+      `update rag_eval_runs
+       set queued_at = now() - interval '100 years'
+       where id = $1`,
+      [cancelledRun.id],
+    );
+    const staleClaim = await repository.claimNextRagEvalRunJob({
+      workerId: `${workerId}-stale`,
+      retryBaseDelayMs: 1,
+      staleAfterMs: 60_000,
+      maxAttempts: 3,
+    });
+    assert.equal(staleClaim.id, cancelledRun.id);
+    await pool.query(
+      `update rag_eval_runs
+       set lease_expires_at = now() - interval '1 second'
+       where id = $1`,
+      [cancelledRun.id],
+    );
+    assert.equal(await repository.resetStaleRagEvalRunJobs(1000), 1);
+    const replacementClaim = await repository.claimNextRagEvalRunJob({
+      workerId: `${workerId}-replacement`,
+      retryBaseDelayMs: 1,
+      staleAfterMs: 60_000,
+      maxAttempts: 3,
+    });
+    assert.equal(replacementClaim.id, cancelledRun.id);
+    assert.notEqual(replacementClaim.lease_token, staleClaim.lease_token);
+    assert.equal(await repository.completeRagEvalRunWithResults({
+      userId,
+      runId: cancelledRun.id,
+      workerId: `${workerId}-stale`,
+      leaseToken: staleClaim.lease_token,
+      output: successfulOutput(staleClaim.dataset.cases),
+    }), null);
+    assert.equal(await repository.markRagEvalRunAttemptFailed({
+      run: staleClaim,
+      workerId: `${workerId}-stale`,
+      leaseToken: staleClaim.lease_token,
+      errorMessage: 'RAG evaluation failed',
+    }), null);
+
+    const cancelled = await repository.cancelRagEvalRunForUser(cancelledRun.id, userId);
+    assert.equal(cancelled.status, 'cancelled');
+    const cancelledLease = await pool.query(
+      `select lease_token, lease_expires_at
+       from rag_eval_runs
+       where id = $1`,
+      [cancelledRun.id],
+    );
+    assert.deepEqual(cancelledLease.rows[0], {
+      lease_token: null,
+      lease_expires_at: null,
+    });
+    assert.equal(await repository.renewRagEvalRunLease({
+      runId: cancelledRun.id,
+      workerId: `${workerId}-replacement`,
+      leaseToken: replacementClaim.lease_token,
+      leaseDurationMs: 60_000,
+    }), null);
+    assert.equal(await repository.completeRagEvalRunWithResults({
+      userId,
+      runId: cancelledRun.id,
+      workerId: `${workerId}-replacement`,
+      leaseToken: replacementClaim.lease_token,
+      output: successfulOutput(replacementClaim.dataset.cases),
+    }), null);
 
     await pool.query(
       `insert into rag_eval_cases (dataset_id, user_id, question)

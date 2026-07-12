@@ -381,3 +381,42 @@ test('local ingestion cancellation after lease loss does not open the ingest cir
 
   assert.equal(transport.calls.length, 2);
 });
+
+test('evaluation forwards its durable lease, deadlines, timeout, and cancellation signal', async () => {
+  const transport = createTransport(() => ok({ case_count: 1, failed_count: 0, results: [] }));
+  const client = createClient({ transport });
+  const controller = new AbortController();
+
+  await client.runRagEvaluation({
+    run_id: '11111111-1111-4111-8111-111111111111',
+    lease_token: '22222222-2222-4222-8222-222222222222',
+    deadline_at: '2099-01-01T00:00:00.000Z',
+    case_timeout_ms: 60000,
+    user_id: 'user-1',
+    project_space_id: 'space-1',
+    cases: [{ id: 'case-1', question: 'What is durable?' }],
+    limit: 10,
+    threshold: 0.1,
+  }, controller.signal, 120000);
+
+  assert.deepEqual(transport.calls, [{
+    method: 'post',
+    url: 'http://rag.test/eval/run',
+    data: {
+      run_id: '11111111-1111-4111-8111-111111111111',
+      lease_token: '22222222-2222-4222-8222-222222222222',
+      deadline_at: '2099-01-01T00:00:00.000Z',
+      case_timeout_ms: 60000,
+      user_id: 'user-1',
+      project_space_id: 'space-1',
+      cases: [{ id: 'case-1', question: 'What is durable?' }],
+      limit: 10,
+      threshold: 0.1,
+    },
+    config: {
+      timeout: 120000,
+      headers: { 'X-ChatLLM-RAG-Token': 'internal-rag-token' },
+      signal: controller.signal,
+    },
+  }]);
+});

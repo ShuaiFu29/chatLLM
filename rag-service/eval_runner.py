@@ -3,12 +3,26 @@ import re
 from typing import Callable, Protocol
 
 from agentic_retrieval import agentic_retrieve
+from db import assert_eval_lease_active
 from evidence_verifier import verify_evidence_support
 from judge import evaluate_case_with_judge
 from reranker import classify_source_role, extract_exact_markers
 
 
 JudgeFn = Callable[[dict, dict, list[dict]], dict]
+LeaseAssertFn = Callable[[str, str], None]
+
+
+class EvalExecutionStopped(RuntimeError):
+    """Raised when cancellation or lease replacement stops an evaluation."""
+
+
+class EvalRunDeadlineExceeded(TimeoutError):
+    """Raised when the whole evaluation run has reached its deadline."""
+
+
+class EvalCaseDeadlineExceeded(TimeoutError):
+    """Raised when one evaluation case has reached its deadline."""
 
 
 class AgenticRetrieveFn(Protocol):
@@ -22,6 +36,28 @@ class AgenticRetrieveFn(Protocol):
         threshold: float = 0.1,
     ) -> dict:
         ...
+
+
+def _assert_eval_execution_active(
+    *,
+    run_id: str | None,
+    lease_token: str | None,
+    deadline_at: float | None,
+    case_deadline_at: float | None,
+    assert_lease_fn: LeaseAssertFn,
+    now_fn: Callable[[], float],
+):
+    if run_id and lease_token:
+        try:
+            assert_lease_fn(run_id, lease_token)
+        except Exception as error:
+            raise EvalExecutionStopped(str(error)) from error
+
+    now = now_fn()
+    if deadline_at is not None and now >= deadline_at:
+        raise EvalRunDeadlineExceeded("Evaluation run deadline exceeded")
+    if case_deadline_at is not None and now >= case_deadline_at:
+        raise EvalCaseDeadlineExceeded("Evaluation case deadline exceeded")
 
 
 def _normalize_expected_list(value) -> list[str]:
@@ -291,6 +327,41 @@ def _weighted_score(components: list[tuple[float, float]]) -> float:
     return round(sum(score * weight for score, weight in components) / total_weight, 4)
 
 
+def _failed_case_result(
+    case_id: str,
+    question: str,
+    case_started_at: float,
+    now_fn: Callable[[], float],
+    error_message: str,
+) -> dict:
+    return {
+        "case_id": case_id,
+        "question": question,
+        "status": "failed",
+        "overall_score": 0,
+        "retrieval_score": 0,
+        "answer_score": 0,
+        "source_score": 0,
+        "source_recall_score": 0,
+        "source_precision_score": 0,
+        "citation_accuracy_score": 0,
+        "keyword_score": 0,
+        "answer_keyword_score": 0,
+        "grounding_score": 0,
+        "judge_score": 0,
+        "expected_answer_support_score": 0,
+        "expected_answer_support_label": "unsupported",
+        "evidence_label": "weak",
+        "support_label": "unsupported",
+        "verification_score": 0,
+        "risk_level": "unknown",
+        "matched_sources": [],
+        "latency_ms": int((now_fn() - case_started_at) * 1000),
+        "trace_summary": {},
+        "error_message": error_message,
+    }
+
+
 def run_eval_cases(
     cases: list[dict],
     user_id: str,
@@ -299,12 +370,33 @@ def run_eval_cases(
     threshold: float = 0.1,
     agentic_retrieve_fn: AgenticRetrieveFn = agentic_retrieve,
     judge_fn: JudgeFn | None = evaluate_case_with_judge,
+    run_id: str | None = None,
+    lease_token: str | None = None,
+    deadline_at: float | None = None,
+    case_timeout_ms: int = 60000,
+    assert_lease_fn: LeaseAssertFn = assert_eval_lease_active,
+    now_fn: Callable[[], float] = time.time,
 ) -> dict:
-    started_at = time.time()
+    if bool(run_id) != bool(lease_token):
+        raise ValueError("run_id and lease_token must be provided together")
+    if case_timeout_ms <= 0:
+        raise ValueError("case_timeout_ms must be positive")
+
+    started_at = now_fn()
     results = []
 
+    _assert_eval_execution_active(
+        run_id=run_id,
+        lease_token=lease_token,
+        deadline_at=deadline_at,
+        case_deadline_at=None,
+        assert_lease_fn=assert_lease_fn,
+        now_fn=now_fn,
+    )
+
     for case in cases:
-        case_started_at = time.time()
+        case_started_at = now_fn()
+        case_deadline_at = case_started_at + (case_timeout_ms / 1000)
         case_id = str(case.get("id") or "")
         question = str(case.get("question") or "").strip()
         expected_answer = str(case.get("expected_answer") or "").strip()
@@ -312,12 +404,28 @@ def run_eval_cases(
         expected_source_files = _normalize_expected_list(case.get("expected_source_files"))
 
         try:
+            _assert_eval_execution_active(
+                run_id=run_id,
+                lease_token=lease_token,
+                deadline_at=deadline_at,
+                case_deadline_at=case_deadline_at,
+                assert_lease_fn=assert_lease_fn,
+                now_fn=now_fn,
+            )
             retrieval = agentic_retrieve_fn(
                 question,
                 user_id,
                 project_space_id=project_space_id,
                 limit=limit,
                 threshold=threshold,
+            )
+            _assert_eval_execution_active(
+                run_id=run_id,
+                lease_token=lease_token,
+                deadline_at=deadline_at,
+                case_deadline_at=case_deadline_at,
+                assert_lease_fn=assert_lease_fn,
+                now_fn=now_fn,
             )
             documents = retrieval.get("results") or []
             quality = retrieval.get("quality") or {}
@@ -333,7 +441,26 @@ def run_eval_cases(
             retrieval_score = float(quality.get("retrieval_score") or 0)
             evidence_score = float(quality.get("evidence_score") or 0)
             verification_score = float(quality.get("verification_score") or 0)
-            judge = judge_fn(case, retrieval, documents) if judge_fn else {"enabled": False, "score": 0.0}
+            if judge_fn:
+                _assert_eval_execution_active(
+                    run_id=run_id,
+                    lease_token=lease_token,
+                    deadline_at=deadline_at,
+                    case_deadline_at=case_deadline_at,
+                    assert_lease_fn=assert_lease_fn,
+                    now_fn=now_fn,
+                )
+                judge = judge_fn(case, retrieval, documents)
+                _assert_eval_execution_active(
+                    run_id=run_id,
+                    lease_token=lease_token,
+                    deadline_at=deadline_at,
+                    case_deadline_at=case_deadline_at,
+                    assert_lease_fn=assert_lease_fn,
+                    now_fn=now_fn,
+                )
+            else:
+                judge = {"enabled": False, "score": 0.0}
             judge_score = float(judge.get("score") or 0)
             grounding_score = _score_grounding(
                 answer_score,
@@ -363,6 +490,15 @@ def run_eval_cases(
                 overall_components.append((judge_score, 0.30))
             overall_score = _weighted_score(overall_components)
 
+            _assert_eval_execution_active(
+                run_id=run_id,
+                lease_token=lease_token,
+                deadline_at=deadline_at,
+                case_deadline_at=case_deadline_at,
+                assert_lease_fn=assert_lease_fn,
+                now_fn=now_fn,
+            )
+
             results.append({
                 "case_id": case_id,
                 "question": question,
@@ -385,7 +521,7 @@ def run_eval_cases(
                 "verification_score": verification_score,
                 "risk_level": quality.get("risk_level") or "low",
                 "matched_sources": _matched_sources(documents),
-                "latency_ms": int((time.time() - case_started_at) * 1000),
+                "latency_ms": int((now_fn() - case_started_at) * 1000),
                 "trace_summary": {
                     "run_id": retrieval.get("run_id"),
                     "mode": retrieval.get("mode"),
@@ -397,39 +533,38 @@ def run_eval_cases(
                 },
                 "error_message": "",
             })
+        except (EvalExecutionStopped, EvalRunDeadlineExceeded):
+            raise
+        except EvalCaseDeadlineExceeded:
+            results.append(_failed_case_result(
+                case_id,
+                question,
+                case_started_at,
+                now_fn,
+                "Evaluation case deadline exceeded",
+            ))
         except Exception:
-            results.append({
-                "case_id": case_id,
-                "question": question,
-                "status": "failed",
-                "overall_score": 0,
-                "retrieval_score": 0,
-                "answer_score": 0,
-                "source_score": 0,
-                "source_recall_score": 0,
-                "source_precision_score": 0,
-                "citation_accuracy_score": 0,
-                "keyword_score": 0,
-                "answer_keyword_score": 0,
-                "grounding_score": 0,
-                "judge_score": 0,
-                "expected_answer_support_score": 0,
-                "expected_answer_support_label": "unsupported",
-                "evidence_label": "weak",
-                "support_label": "unsupported",
-                "verification_score": 0,
-                "risk_level": "unknown",
-                "matched_sources": [],
-                "latency_ms": int((time.time() - case_started_at) * 1000),
-                "trace_summary": {},
-                "error_message": "Evaluation case failed",
-            })
+            results.append(_failed_case_result(
+                case_id,
+                question,
+                case_started_at,
+                now_fn,
+                "Evaluation case failed",
+            ))
 
+    _assert_eval_execution_active(
+        run_id=run_id,
+        lease_token=lease_token,
+        deadline_at=deadline_at,
+        case_deadline_at=None,
+        assert_lease_fn=assert_lease_fn,
+        now_fn=now_fn,
+    )
     successful_results = [result for result in results if result["status"] == "success"]
     return {
         "case_count": len(cases),
         "failed_count": len(results) - len(successful_results),
-        "duration_ms": int((time.time() - started_at) * 1000),
+        "duration_ms": int((now_fn() - started_at) * 1000),
         "average_overall_score": _average([result["overall_score"] for result in successful_results]),
         "average_retrieval_score": _average([result["retrieval_score"] for result in successful_results]),
         "average_answer_score": _average([result["answer_score"] for result in successful_results]),

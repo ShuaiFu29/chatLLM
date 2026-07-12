@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
+const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 
@@ -234,6 +236,131 @@ test('RAG eval queue worker claims persisted jobs and retries safely', () => {
   assert.match(maintenanceSource, /resetStaleRagEvalRunJobs/);
   assert.match(metricsSource, /recordRagEvalRunRetried/);
   assert.match(metricsSource, /recordRagEvalRunQueueClaimed/);
+});
+
+test('RAG eval claims and terminal writes are fenced by renewable leases', () => {
+  const migrationSource = readOptionalSource('migrations/0027_rag_eval_snapshots_leases.sql');
+  const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
+  const queueSource = readOptionalSource('src/services/ragEvalQueue.ts');
+  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+
+  assert.match(migrationSource, /add column if not exists lease_token uuid/i);
+  assert.match(migrationSource, /add column if not exists heartbeat_at timestamptz/i);
+  assert.match(migrationSource, /add column if not exists lease_expires_at timestamptz/i);
+  assert.match(migrationSource, /add column if not exists deadline_at timestamptz/i);
+  assert.match(migrationSource, /add column if not exists case_timeout_ms integer/i);
+  assert.match(migrationSource, /rag_eval_runs_lease_expiry_idx/i);
+  assert.match(migrationSource, /rag_eval_runs_deadline_idx/i);
+
+  assert.match(repositorySource, /export const renewRagEvalRunLease/);
+  assert.match(repositorySource, /lease_token = gen_random_uuid\(\)/i);
+  assert.match(repositorySource, /heartbeat_at = now\(\)/i);
+  assert.match(repositorySource, /lease_expires_at = now\(\) \+/i);
+  assert.match(repositorySource, /worker_id = \$[0-9]+[\s\S]*lease_token = \$[0-9]+/i);
+  assert.match(repositorySource, /lease_expires_at > now\(\)/i);
+  assert.match(repositorySource, /deadline_at > now\(\)/i);
+
+  assert.match(queueSource, /executeRagEvalRequest/);
+  assert.match(queueSource, /RAG_EVAL_QUEUE_STALE_AFTER_MS \/ 4/);
+  assert.match(queueSource, /new AbortController\(\)/);
+  assert.match(queueSource, /abortRun\(runId: string\)/);
+  assert.match(controllerSource, /ragEvalQueue\.abortRun\(run\.id\)/);
+});
+
+test('RAG eval request execution forwards the claim and stops its heartbeat', async () => {
+  const queue = require(path.join(serverRoot, 'dist', 'services', 'ragEvalQueue.js'));
+  assert.equal(typeof queue.executeRagEvalRequest, 'function');
+
+  const deadlineAt = '2026-07-13T10:01:00.000Z';
+  const job = {
+    id: '11111111-1111-4111-8111-111111111111',
+    user_id: 'user-1',
+    worker_id: 'worker-1',
+    lease_token: '22222222-2222-4222-8222-222222222222',
+    deadline_at: deadlineAt,
+    case_timeout_ms: 45000,
+    dataset: {
+      project_space_id: 'space-1',
+      cases: [{
+        id: 'case-1',
+        question: 'What is fenced?',
+        expected_answer: 'By a lease.',
+        expected_keywords: ['lease'],
+        expected_source_files: ['lease.md'],
+      }],
+    },
+  };
+  const expectedOutput = { case_count: 1, failed_count: 0, results: [] };
+  const calls = [];
+  let stopped = false;
+  let unregistered = false;
+
+  const result = await queue.executeRagEvalRequest(job, {
+    now: () => Date.parse('2026-07-13T10:00:00.000Z'),
+    runEvaluation: async (input, signal, timeoutMs) => {
+      calls.push({ input, signal, timeoutMs });
+      return expectedOutput;
+    },
+    startHeartbeat: (_job, _onLeaseLost) => async () => { stopped = true; },
+    registerController: (runId, leaseToken, controller) => {
+      assert.equal(runId, job.id);
+      assert.equal(leaseToken, job.lease_token);
+      assert.equal(controller.signal.aborted, false);
+      return () => { unregistered = true; };
+    },
+  });
+
+  assert.equal(result, expectedOutput);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(calls[0].input, {
+    run_id: job.id,
+    lease_token: job.lease_token,
+    deadline_at: deadlineAt,
+    case_timeout_ms: 45000,
+    user_id: 'user-1',
+    project_space_id: 'space-1',
+    cases: [{
+      id: 'case-1',
+      question: 'What is fenced?',
+      expected_answer: 'By a lease.',
+      expected_keywords: ['lease'],
+      expected_source_files: ['lease.md'],
+    }],
+    limit: 10,
+    threshold: 0.1,
+  });
+  assert.equal(calls[0].signal.aborted, false);
+  assert.equal(calls[0].timeoutMs, 60000);
+  assert.equal(stopped, true);
+  assert.equal(unregistered, true);
+});
+
+test('RAG eval request execution aborts before transport work after lease loss', async () => {
+  const queue = require(path.join(serverRoot, 'dist', 'services', 'ragEvalQueue.js'));
+  const job = {
+    id: '33333333-3333-4333-8333-333333333333',
+    user_id: 'user-1',
+    worker_id: 'worker-1',
+    lease_token: '44444444-4444-4444-8444-444444444444',
+    deadline_at: '2099-01-01T00:00:00.000Z',
+    case_timeout_ms: 60000,
+    dataset: { project_space_id: null, cases: [{ id: 'case-1', question: 'Stop?' }] },
+  };
+  let stopped = false;
+
+  await assert.rejects(queue.executeRagEvalRequest(job, {
+    runEvaluation: async (_input, signal) => {
+      assert.equal(signal.aborted, true);
+      throw new Error('evaluation aborted');
+    },
+    startHeartbeat: (_job, onLeaseLost) => {
+      onLeaseLost();
+      return () => { stopped = true; };
+    },
+    registerController: () => () => undefined,
+  }), /evaluation aborted/);
+
+  assert.equal(stopped, true);
 });
 
 test('RAG eval runs are bounded before calling the RAG service', () => {

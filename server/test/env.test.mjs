@@ -517,7 +517,9 @@ test('server env exposes configurable RAG evaluation queue controls', () => {
     concurrency: serverEnv.RAG_EVAL_QUEUE_CONCURRENCY,
     maxAttempts: serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
     retryBaseDelayMs: serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS,
-    staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS
+    staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS,
+    caseTimeoutMs: serverEnv.RAG_EVAL_CASE_TIMEOUT_MS,
+    runTimeoutMs: serverEnv.RAG_EVAL_RUN_TIMEOUT_MS
   })`);
 
   assert.equal(defaultResult.status, 0, defaultResult.stderr);
@@ -527,6 +529,8 @@ test('server env exposes configurable RAG evaluation queue controls', () => {
     maxAttempts: 3,
     retryBaseDelayMs: 60000,
     staleAfterMs: 15 * 60 * 1000,
+    caseTimeoutMs: 60000,
+    runTimeoutMs: 30 * 60 * 1000,
   });
 
   const explicitResult = importServerEnv({
@@ -541,12 +545,16 @@ test('server env exposes configurable RAG evaluation queue controls', () => {
     RAG_EVAL_QUEUE_MAX_ATTEMPTS: '5',
     RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: '30000',
     RAG_EVAL_QUEUE_STALE_AFTER_MS: '120000',
+    RAG_EVAL_CASE_TIMEOUT_MS: '45000',
+    RAG_EVAL_RUN_TIMEOUT_MS: '600000',
   }, `({
     interval: serverEnv.RAG_EVAL_QUEUE_INTERVAL_MS,
     concurrency: serverEnv.RAG_EVAL_QUEUE_CONCURRENCY,
     maxAttempts: serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
     retryBaseDelayMs: serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS,
-    staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS
+    staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS,
+    caseTimeoutMs: serverEnv.RAG_EVAL_CASE_TIMEOUT_MS,
+    runTimeoutMs: serverEnv.RAG_EVAL_RUN_TIMEOUT_MS
   })`);
 
   assert.equal(explicitResult.status, 0, explicitResult.stderr);
@@ -556,5 +564,60 @@ test('server env exposes configurable RAG evaluation queue controls', () => {
     maxAttempts: 5,
     retryBaseDelayMs: 30000,
     staleAfterMs: 120000,
+    caseTimeoutMs: 45000,
+    runTimeoutMs: 600000,
   });
+});
+
+test('server env rejects an Eval case deadline longer than the whole-run deadline', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_EVAL_CASE_TIMEOUT_MS: '120000',
+    RAG_EVAL_RUN_TIMEOUT_MS: '60000',
+  }, 'serverEnv.RAG_EVAL_RUN_TIMEOUT_MS');
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /RAG_EVAL_RUN_TIMEOUT_MS must be at least RAG_EVAL_CASE_TIMEOUT_MS/);
+});
+
+test('server env rejects an Eval stale lease too short for safe heartbeats', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    RAG_EVAL_QUEUE_STALE_AFTER_MS: '3000',
+  }, 'serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS');
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /RAG_EVAL_QUEUE_STALE_AFTER_MS must be at least 4000/);
+});
+
+test('server env caps Eval timers to PostgreSQL and Node timer ranges', () => {
+  for (const [key, extra] of [
+    ['RAG_EVAL_CASE_TIMEOUT_MS', { RAG_EVAL_RUN_TIMEOUT_MS: '2147483648' }],
+    ['RAG_EVAL_RUN_TIMEOUT_MS', {}],
+    ['RAG_EVAL_QUEUE_STALE_AFTER_MS', {}],
+  ]) {
+    const result = importServerEnv({
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      DEEPSEEK_API_KEY: 'sk-test',
+      [key]: '2147483648',
+      ...extra,
+    }, `serverEnv.${key}`);
+
+    assert.notEqual(result.status, 0, key);
+    assert.match(result.stderr, new RegExp(`${key} must be at most 2147483647`));
+  }
 });

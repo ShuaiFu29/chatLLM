@@ -17,6 +17,10 @@ class IngestionLeaseLostError(RuntimeError):
     """Raised when an ingestion worker no longer owns the current attempt."""
 
 
+class EvalLeaseLostError(RuntimeError):
+    """Raised when an evaluation worker no longer owns the current run."""
+
+
 class _ConnectionPool:
     def __init__(self, max_size: int, timeout_ms: int):
         self.max_size = max_size
@@ -141,7 +145,29 @@ def check_database_ready() -> bool:
                     where table_schema = 'public'
                       and table_name = 'file_ingestion_jobs'
                       and column_name = 'lease_expires_at'
-                  ) as has_ingestion_lease_expiry
+                  ) as has_ingestion_lease_expiry,
+                  to_regclass('public.rag_eval_runs') is not null as has_rag_eval_runs,
+                  exists (
+                    select 1
+                    from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'rag_eval_runs'
+                      and column_name = 'lease_token'
+                  ) as has_eval_lease_token,
+                  exists (
+                    select 1
+                    from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'rag_eval_runs'
+                      and column_name = 'lease_expires_at'
+                  ) as has_eval_lease_expiry,
+                  exists (
+                    select 1
+                    from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'rag_eval_runs'
+                      and column_name = 'deadline_at'
+                  ) as has_eval_deadline
                 """
             )
             schema = cur.fetchone() or {}
@@ -156,6 +182,10 @@ def check_database_ready() -> bool:
                     "file_ingestion_jobs.attempt_id": schema.get("has_ingestion_attempt_id"),
                     "file_ingestion_jobs.lease_token": schema.get("has_ingestion_lease_token"),
                     "file_ingestion_jobs.lease_expires_at": schema.get("has_ingestion_lease_expiry"),
+                    "rag_eval_runs": schema.get("has_rag_eval_runs"),
+                    "rag_eval_runs.lease_token": schema.get("has_eval_lease_token"),
+                    "rag_eval_runs.lease_expires_at": schema.get("has_eval_lease_expiry"),
+                    "rag_eval_runs.deadline_at": schema.get("has_eval_deadline"),
                 }.items()
                 if not ok
             ]
@@ -413,6 +443,27 @@ def assert_ingestion_lease(file_id: str, attempt_id, lease_token):
             if not cur.fetchone():
                 raise IngestionLeaseLostError(
                     f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
+                )
+
+
+def assert_eval_lease_active(run_id, lease_token):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select 1
+                from rag_eval_runs
+                where id = %s
+                  and lease_token = %s
+                  and status = 'running'
+                  and lease_expires_at > now()
+                  and deadline_at > now()
+                """,
+                (run_id, lease_token),
+            )
+            if not cur.fetchone():
+                raise EvalLeaseLostError(
+                    f"Evaluation lease is no longer active for run {run_id}"
                 )
 
 

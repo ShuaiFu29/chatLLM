@@ -1,3 +1,51 @@
+alter table rag_eval_runs
+  add column if not exists lease_token uuid;
+
+alter table rag_eval_runs
+  add column if not exists heartbeat_at timestamptz;
+
+alter table rag_eval_runs
+  add column if not exists lease_expires_at timestamptz;
+
+alter table rag_eval_runs
+  add column if not exists deadline_at timestamptz;
+
+alter table rag_eval_runs
+  add column if not exists case_timeout_ms integer not null default 60000;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'rag_eval_runs_case_timeout_positive_check'
+      and conrelid = 'rag_eval_runs'::regclass
+  ) then
+    alter table rag_eval_runs
+      add constraint rag_eval_runs_case_timeout_positive_check
+      check (case_timeout_ms > 0);
+  end if;
+
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'rag_eval_runs_lease_pair_check'
+      and conrelid = 'rag_eval_runs'::regclass
+  ) then
+    alter table rag_eval_runs
+      add constraint rag_eval_runs_lease_pair_check
+      check ((lease_token is null) = (lease_expires_at is null));
+  end if;
+end $$;
+
+create index if not exists rag_eval_runs_lease_expiry_idx
+  on rag_eval_runs(lease_expires_at)
+  where status = 'running' and lease_token is not null;
+
+create index if not exists rag_eval_runs_deadline_idx
+  on rag_eval_runs(deadline_at)
+  where status = 'running';
+
 create table if not exists rag_eval_run_cases (
   run_id uuid not null references rag_eval_runs(id) on delete cascade,
   case_id uuid not null,

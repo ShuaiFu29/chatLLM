@@ -29,6 +29,10 @@ const DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY = 1;
 const DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS = 3;
 const DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS = 60000;
 const DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
+const DEFAULT_RAG_EVAL_CASE_TIMEOUT_MS = 60 * 1000;
+const DEFAULT_RAG_EVAL_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const MIN_RAG_EVAL_QUEUE_STALE_AFTER_MS = 4000;
+const MAX_RAG_EVAL_TIMEOUT_MS = 2147483647;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_FILE_QUEUE_CONCURRENCY = 2;
 const DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS = 5 * 60 * 1000;
@@ -102,6 +106,8 @@ export interface ServerEnv {
   RAG_EVAL_QUEUE_MAX_ATTEMPTS: number;
   RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: number;
   RAG_EVAL_QUEUE_STALE_AFTER_MS: number;
+  RAG_EVAL_CASE_TIMEOUT_MS: number;
+  RAG_EVAL_RUN_TIMEOUT_MS: number;
   FILE_QUEUE_INTERVAL_MS: number;
   FILE_QUEUE_CONCURRENCY: number;
   FILE_QUEUE_INGEST_TIMEOUT_MS: number;
@@ -271,6 +277,23 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const ragEvalQueueMaxAttempts = getPositiveInteger(env, 'RAG_EVAL_QUEUE_MAX_ATTEMPTS', DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS, errors);
   const ragEvalQueueRetryBaseDelayMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS', DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS, errors);
   const ragEvalQueueStaleAfterMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_STALE_AFTER_MS', DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS, errors);
+  const ragEvalCaseTimeoutMs = getPositiveInteger(env, 'RAG_EVAL_CASE_TIMEOUT_MS', DEFAULT_RAG_EVAL_CASE_TIMEOUT_MS, errors);
+  const ragEvalRunTimeoutMs = getPositiveInteger(env, 'RAG_EVAL_RUN_TIMEOUT_MS', DEFAULT_RAG_EVAL_RUN_TIMEOUT_MS, errors);
+  if (ragEvalQueueStaleAfterMs < MIN_RAG_EVAL_QUEUE_STALE_AFTER_MS) {
+    errors.push(`RAG_EVAL_QUEUE_STALE_AFTER_MS must be at least ${MIN_RAG_EVAL_QUEUE_STALE_AFTER_MS}`);
+  }
+  if (ragEvalQueueStaleAfterMs > MAX_RAG_EVAL_TIMEOUT_MS) {
+    errors.push(`RAG_EVAL_QUEUE_STALE_AFTER_MS must be at most ${MAX_RAG_EVAL_TIMEOUT_MS}`);
+  }
+  if (ragEvalCaseTimeoutMs > MAX_RAG_EVAL_TIMEOUT_MS) {
+    errors.push(`RAG_EVAL_CASE_TIMEOUT_MS must be at most ${MAX_RAG_EVAL_TIMEOUT_MS}`);
+  }
+  if (ragEvalRunTimeoutMs > MAX_RAG_EVAL_TIMEOUT_MS) {
+    errors.push(`RAG_EVAL_RUN_TIMEOUT_MS must be at most ${MAX_RAG_EVAL_TIMEOUT_MS}`);
+  }
+  if (ragEvalRunTimeoutMs < ragEvalCaseTimeoutMs) {
+    errors.push('RAG_EVAL_RUN_TIMEOUT_MS must be at least RAG_EVAL_CASE_TIMEOUT_MS');
+  }
   const fileQueueIntervalMs = getPositiveInteger(env, 'FILE_QUEUE_INTERVAL_MS', DEFAULT_FILE_QUEUE_INTERVAL_MS, errors);
   const fileQueueConcurrency = getPositiveInteger(env, 'FILE_QUEUE_CONCURRENCY', DEFAULT_FILE_QUEUE_CONCURRENCY, errors);
   const fileQueueIngestTimeoutMs = getPositiveInteger(env, 'FILE_QUEUE_INGEST_TIMEOUT_MS', DEFAULT_FILE_QUEUE_INGEST_TIMEOUT_MS, errors);
@@ -360,6 +383,8 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     RAG_EVAL_QUEUE_MAX_ATTEMPTS: ragEvalQueueMaxAttempts,
     RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS: ragEvalQueueRetryBaseDelayMs,
     RAG_EVAL_QUEUE_STALE_AFTER_MS: ragEvalQueueStaleAfterMs,
+    RAG_EVAL_CASE_TIMEOUT_MS: ragEvalCaseTimeoutMs,
+    RAG_EVAL_RUN_TIMEOUT_MS: ragEvalRunTimeoutMs,
     FILE_QUEUE_INTERVAL_MS: fileQueueIntervalMs,
     FILE_QUEUE_CONCURRENCY: fileQueueConcurrency,
     FILE_QUEUE_INGEST_TIMEOUT_MS: fileQueueIngestTimeoutMs,

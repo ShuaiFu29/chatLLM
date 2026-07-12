@@ -51,6 +51,18 @@ export interface RagEvalCaseInput {
   expected_source_files?: string[];
 }
 
+export interface RagEvalRunInput {
+  run_id: string;
+  lease_token: string;
+  deadline_at: string;
+  case_timeout_ms: number;
+  user_id: string;
+  project_space_id?: string | null;
+  cases: RagEvalCaseInput[];
+  limit?: number;
+  threshold?: number;
+}
+
 export interface RagEvalRunResponse {
   case_count: number;
   failed_count: number;
@@ -248,23 +260,26 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     return response.results || [];
   };
 
-  const runRagEvaluation = (input: {
-    user_id: string;
-    project_space_id?: string | null;
-    cases: RagEvalCaseInput[];
-    limit?: number;
-    threshold?: number;
-  }): Promise<RagEvalRunResponse> => postRagService<RagEvalRunResponse>(
+  const runRagEvaluation = (
+    input: RagEvalRunInput,
+    signal?: AbortSignal,
+    timeoutMs = serverEnv.RAG_EVAL_RUN_TIMEOUT_MS,
+  ): Promise<RagEvalRunResponse> => postRagService<RagEvalRunResponse>(
     'eval',
     '/eval/run',
     {
+      run_id: input.run_id,
+      lease_token: input.lease_token,
+      deadline_at: input.deadline_at,
+      case_timeout_ms: input.case_timeout_ms,
       user_id: input.user_id,
       project_space_id: input.project_space_id || undefined,
       cases: input.cases,
-      limit: input.limit || 10,
+      limit: input.limit ?? 10,
       threshold: input.threshold ?? 0.1,
     },
-    Math.max(retrieveTimeoutMs, 30000),
+    Math.max(1, timeoutMs),
+    signal,
   );
 
   const ingestRagFile = (

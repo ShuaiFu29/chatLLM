@@ -279,6 +279,155 @@ class EvalRunnerTests(unittest.TestCase):
 
         self.assertIn("cases: list[EvalCaseRequest] = Field(..., min_length=1, max_length=50)", source)
 
+    def test_eval_lease_loss_after_retrieval_stops_judge_and_later_cases(self):
+        active = True
+        checks = []
+        retrieval_calls = []
+        judge_calls = []
+
+        def assert_lease(run_id, lease_token):
+            checks.append((run_id, lease_token))
+            if not active:
+                raise RuntimeError("eval lease lost")
+
+        def retrieve(query, user_id, project_space_id, limit, threshold):
+            nonlocal active
+            retrieval_calls.append(query)
+            active = False
+            return {"results": [], "quality": {}}
+
+        def judge(case, retrieval, documents):
+            judge_calls.append(case["id"])
+            return {"enabled": True, "score": 1.0}
+
+        with self.assertRaisesRegex(RuntimeError, "eval lease lost"):
+            run_eval_cases(
+                cases=[
+                    {"id": "case-1", "question": "first"},
+                    {"id": "case-2", "question": "second"},
+                ],
+                user_id="user-1",
+                run_id="11111111-1111-4111-8111-111111111111",
+                lease_token="22222222-2222-4222-8222-222222222222",
+                deadline_at=100.0,
+                case_timeout_ms=10000,
+                assert_lease_fn=assert_lease,
+                now_fn=lambda: 0.0,
+                agentic_retrieve_fn=retrieve,
+                judge_fn=judge,
+            )
+
+        self.assertGreaterEqual(len(checks), 2)
+        self.assertEqual(retrieval_calls, ["first"])
+        self.assertEqual(judge_calls, [])
+
+    def test_eval_lease_loss_after_judge_stops_later_cases(self):
+        active = True
+        retrieval_calls = []
+        judge_calls = []
+
+        def assert_lease(_run_id, _lease_token):
+            if not active:
+                raise RuntimeError("eval cancelled after judge")
+
+        def retrieve(query, user_id, project_space_id, limit, threshold):
+            retrieval_calls.append(query)
+            return {"results": [], "quality": {}}
+
+        def judge(case, retrieval, documents):
+            nonlocal active
+            judge_calls.append(case["id"])
+            active = False
+            return {"enabled": True, "score": 1.0}
+
+        with self.assertRaisesRegex(RuntimeError, "eval cancelled after judge"):
+            run_eval_cases(
+                cases=[
+                    {"id": "case-1", "question": "first"},
+                    {"id": "case-2", "question": "second"},
+                ],
+                user_id="user-1",
+                run_id="33333333-3333-4333-8333-333333333333",
+                lease_token="44444444-4444-4444-8444-444444444444",
+                deadline_at=100.0,
+                case_timeout_ms=10000,
+                assert_lease_fn=assert_lease,
+                now_fn=lambda: 0.0,
+                agentic_retrieve_fn=retrieve,
+                judge_fn=judge,
+            )
+
+        self.assertEqual(retrieval_calls, ["first"])
+        self.assertEqual(judge_calls, ["case-1"])
+
+    def test_case_deadline_fails_only_the_slow_case(self):
+        clock = [0.0]
+
+        def retrieve(query, user_id, project_space_id, limit, threshold):
+            if query == "slow":
+                clock[0] = 2.0
+            return {"results": [], "quality": {}}
+
+        output = run_eval_cases(
+            cases=[
+                {"id": "case-slow", "question": "slow"},
+                {"id": "case-fast", "question": "fast"},
+            ],
+            user_id="user-1",
+            run_id="55555555-5555-4555-8555-555555555555",
+            lease_token="66666666-6666-4666-8666-666666666666",
+            deadline_at=100.0,
+            case_timeout_ms=1000,
+            assert_lease_fn=lambda _run_id, _lease_token: None,
+            now_fn=lambda: clock[0],
+            agentic_retrieve_fn=retrieve,
+            judge_fn=None,
+        )
+
+        self.assertEqual(output["case_count"], 2)
+        self.assertEqual(output["failed_count"], 1)
+        self.assertEqual(output["results"][0]["error_message"], "Evaluation case deadline exceeded")
+        self.assertEqual(output["results"][1]["status"], "success")
+
+    def test_whole_run_deadline_stops_before_retrieval(self):
+        retrieval_calls = []
+
+        with self.assertRaises(TimeoutError):
+            run_eval_cases(
+                cases=[{"id": "case-1", "question": "too late"}],
+                user_id="user-1",
+                run_id="77777777-7777-4777-8777-777777777777",
+                lease_token="88888888-8888-4888-8888-888888888888",
+                deadline_at=1.0,
+                case_timeout_ms=1000,
+                assert_lease_fn=lambda _run_id, _lease_token: None,
+                now_fn=lambda: 2.0,
+                agentic_retrieve_fn=lambda *args, **kwargs: retrieval_calls.append(args),
+                judge_fn=None,
+            )
+
+        self.assertEqual(retrieval_calls, [])
+
+    def test_eval_endpoint_and_database_require_the_current_lease(self):
+        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+        db_source = (ROOT / "db.py").read_text(encoding="utf-8")
+
+        self.assertIn("run_id: UUID", main_source)
+        self.assertIn("lease_token: UUID", main_source)
+        self.assertIn("deadline_at: datetime", main_source)
+        self.assertIn(
+            "case_timeout_ms: int = Field(..., ge=1, le=2147483647)",
+            main_source,
+        )
+        self.assertIn("assert_eval_lease_active", db_source)
+        self.assertRegex(db_source, r"lease_token\s*=\s*%s")
+        self.assertRegex(db_source, r"lease_expires_at\s*>\s*now\(\)")
+        self.assertRegex(db_source, r"deadline_at\s*>\s*now\(\)")
+        self.assertIn("except EvalExecutionStopped", main_source)
+        self.assertIn("status_code=409", main_source)
+        self.assertIn("except EvalRunDeadlineExceeded", main_source)
+        self.assertIn("status_code=408", main_source)
+
 
 if __name__ == "__main__":
     unittest.main()

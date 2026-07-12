@@ -1,5 +1,6 @@
 import hmac
 import threading
+from datetime import datetime
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
@@ -8,8 +9,8 @@ from pydantic import Field, field_validator
 
 from config import settings
 from agentic_retrieval import agentic_retrieve
-from db import bump_project_knowledge_version, check_database_ready, get_file
-from eval_runner import run_eval_cases
+from db import assert_eval_lease_active, bump_project_knowledge_version, check_database_ready, get_file
+from eval_runner import EvalExecutionStopped, EvalRunDeadlineExceeded, run_eval_cases
 from graph_store import check_graph_store_ready, delete_file_graph, ensure_graph_schema, list_graph, search_graph
 from http_safety import RequestBodyLimitMiddleware, StrictRequestModel, public_internal_error_handler
 from ingestion import process_file
@@ -122,6 +123,10 @@ class EvalCaseRequest(StrictRequestModel):
 
 
 class EvalRunRequest(StrictRequestModel):
+    run_id: UUID
+    lease_token: UUID
+    deadline_at: datetime
+    case_timeout_ms: int = Field(..., ge=1, le=2147483647)
     cases: list[EvalCaseRequest] = Field(..., min_length=1, max_length=50)
     user_id: str = Field(..., min_length=1, max_length=128)
     project_space_id: str | None = Field(default=None, max_length=128)
@@ -132,6 +137,13 @@ class EvalRunRequest(StrictRequestModel):
     @classmethod
     def strip_optional_fields(cls, value: str | None):
         return strip_and_reject_blank_value(value)
+
+    @field_validator("deadline_at")
+    @classmethod
+    def require_timezone_aware_deadline(cls, value: datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("deadline_at must include a timezone")
+        return value
 
 
 class CleanupFileRequest(FileIdRequest):
@@ -290,13 +302,29 @@ def graph_list_endpoint(request: GraphListRequest):
 # Protected route marker for legacy source checks: @app.post("/eval/run")
 @app.post("/eval/run", dependencies=[Depends(require_internal_auth)])
 def eval_run_endpoint(request: EvalRunRequest):
-    return run_eval_cases(
-        cases=[case.model_dump() for case in request.cases],
-        user_id=request.user_id,
-        project_space_id=request.project_space_id,
-        limit=request.limit,
-        threshold=request.threshold,
-    )
+    try:
+        return run_eval_cases(
+            cases=[case.model_dump() for case in request.cases],
+            user_id=request.user_id,
+            project_space_id=request.project_space_id,
+            limit=request.limit,
+            threshold=request.threshold,
+            run_id=str(request.run_id),
+            lease_token=str(request.lease_token),
+            deadline_at=request.deadline_at.timestamp(),
+            case_timeout_ms=request.case_timeout_ms,
+            assert_lease_fn=assert_eval_lease_active,
+        )
+    except EvalExecutionStopped as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "eval_lease_inactive"},
+        ) from error
+    except EvalRunDeadlineExceeded as error:
+        raise HTTPException(
+            status_code=408,
+            detail={"code": "eval_deadline_exceeded"},
+        ) from error
 
 
 @app.post("/cleanup-file", dependencies=[Depends(require_internal_auth)])
