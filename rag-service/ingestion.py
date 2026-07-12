@@ -19,7 +19,7 @@ from db import (
     update_ingestion_job_checkpoint,
 )
 from embeddings import EmbeddingIntegrityError, get_embeddings
-from graph_store import delete_file_graph, index_graph_chunks
+from graph_store import delete_file_graph, graph_file_transaction, index_graph_chunks
 from keyword_store import delete_file_keywords, index_chunks
 from safe_errors import safe_error_fields
 from storage import download_object, stream_object_bytes
@@ -205,25 +205,30 @@ def enrich_chunk_rows(file_data: dict, chunk_rows: list[dict], project_space_id:
     return indexed_chunk_rows
 
 
-def index_chunk_batch(file_data: dict, chunk_rows: list[dict], project_space_id: str):
+def index_chunk_batch(
+    file_data: dict,
+    chunk_rows: list[dict],
+    project_space_id: str,
+    graph_transaction=None,
+):
     if not chunk_rows:
         return {
             "indexed_chunks": 0,
             "keyword_batches": 0,
             "graph_batches": 0,
+            "graph_status": "skipped",
             "vector_batches": 0,
         }
 
     indexed_chunk_rows = enrich_chunk_rows(file_data, chunk_rows, project_space_id)
     index_chunks(indexed_chunk_rows)
-    graph_batches = 0
-    try:
-        index_graph_chunks(file_data, indexed_chunk_rows)
-        graph_batches = 1
-    except Exception as graph_error:
-        logger.warning(
-            "Optional graph indexing failed: %s",
-            safe_error_fields(graph_error),
+    if graph_transaction is None:
+        graph_result = index_graph_chunks(file_data, indexed_chunk_rows)
+    else:
+        graph_result = index_graph_chunks(
+            file_data,
+            indexed_chunk_rows,
+            transaction=graph_transaction,
         )
 
     batch_size = settings.rag_ingest_embedding_batch_size
@@ -253,7 +258,8 @@ def index_chunk_batch(file_data: dict, chunk_rows: list[dict], project_space_id:
     return {
         "indexed_chunks": inserted_count,
         "keyword_batches": 1,
-        "graph_batches": graph_batches,
+        "graph_batches": int(graph_result["batches"]),
+        "graph_status": str(graph_result["status"]),
         "vector_batches": max(1, (len(chunk_rows) + batch_size - 1) // batch_size),
     }
 
@@ -297,68 +303,87 @@ def process_streaming_file(
     processed_count = 0
     keyword_batches = 0
     graph_batches = 0
+    graph_status = "pending"
     vector_batches = 0
     batch_size = settings.rag_ingest_chunk_batch_size
 
-    for chunk in iter_verified_streaming_chunks(object_key, file_data):
-        pending_chunks.append(chunk)
-        if len(pending_chunks) < batch_size:
-            continue
+    with graph_file_transaction() as graph_transaction:
+        for chunk in iter_verified_streaming_chunks(object_key, file_data):
+            pending_chunks.append(chunk)
+            if len(pending_chunks) < batch_size:
+                continue
+
+            assert_ingestion_lease(file_id, attempt_id, lease_token)
+            chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
+            batch_stats = index_chunk_batch(
+                file_data,
+                chunk_rows,
+                project_space_id,
+                graph_transaction,
+            )
+            processed_count += batch_stats["indexed_chunks"]
+            next_chunk_index += len(pending_chunks)
+            keyword_batches += batch_stats["keyword_batches"]
+            graph_status = batch_stats["graph_status"]
+            vector_batches += batch_stats["vector_batches"]
+            pending_chunks = []
+            progress = min(95, 10 + processed_count)
+            update_ingestion_job_checkpoint(
+                file_id,
+                attempt_id,
+                lease_token,
+                stage="indexing_vectors",
+                progress=progress,
+                indexed_chunks=processed_count,
+                keyword_batches=keyword_batches,
+                graph_batches=graph_batches,
+                vector_batches=vector_batches,
+                checkpoint={
+                    "mode": "streaming",
+                    "next_chunk_index": next_chunk_index,
+                    "indexed_chunks": processed_count,
+                    "last_batch_size": len(chunk_rows),
+                    "graph_status": graph_status,
+                },
+            )
+
+        if pending_chunks:
+            assert_ingestion_lease(file_id, attempt_id, lease_token)
+            chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
+            batch_stats = index_chunk_batch(
+                file_data,
+                chunk_rows,
+                project_space_id,
+                graph_transaction,
+            )
+            processed_count += batch_stats["indexed_chunks"]
+            next_chunk_index += len(pending_chunks)
+            keyword_batches += batch_stats["keyword_batches"]
+            graph_status = batch_stats["graph_status"]
+            vector_batches += batch_stats["vector_batches"]
+            update_ingestion_job_checkpoint(
+                file_id,
+                attempt_id,
+                lease_token,
+                stage="indexing_vectors",
+                progress=95,
+                indexed_chunks=processed_count,
+                keyword_batches=keyword_batches,
+                graph_batches=graph_batches,
+                vector_batches=vector_batches,
+                checkpoint={
+                    "mode": "streaming",
+                    "next_chunk_index": next_chunk_index,
+                    "indexed_chunks": processed_count,
+                    "last_batch_size": len(chunk_rows),
+                    "graph_status": graph_status,
+                },
+            )
 
         assert_ingestion_lease(file_id, attempt_id, lease_token)
-        chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
-        batch_stats = index_chunk_batch(file_data, chunk_rows, project_space_id)
-        processed_count += batch_stats["indexed_chunks"]
-        next_chunk_index += len(pending_chunks)
-        keyword_batches += batch_stats["keyword_batches"]
-        graph_batches += batch_stats["graph_batches"]
-        vector_batches += batch_stats["vector_batches"]
-        pending_chunks = []
-        progress = min(95, 10 + processed_count)
-        update_ingestion_job_checkpoint(
-            file_id,
-            attempt_id,
-            lease_token,
-            stage="indexing_vectors",
-            progress=progress,
-            indexed_chunks=processed_count,
-            keyword_batches=keyword_batches,
-            graph_batches=graph_batches,
-            vector_batches=vector_batches,
-            checkpoint={
-                "mode": "streaming",
-                "next_chunk_index": next_chunk_index,
-                "indexed_chunks": processed_count,
-                "last_batch_size": len(chunk_rows),
-            },
-        )
 
-    if pending_chunks:
-        assert_ingestion_lease(file_id, attempt_id, lease_token)
-        chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
-        batch_stats = index_chunk_batch(file_data, chunk_rows, project_space_id)
-        processed_count += batch_stats["indexed_chunks"]
-        next_chunk_index += len(pending_chunks)
-        keyword_batches += batch_stats["keyword_batches"]
-        graph_batches += batch_stats["graph_batches"]
-        vector_batches += batch_stats["vector_batches"]
-        update_ingestion_job_checkpoint(
-            file_id,
-            attempt_id,
-            lease_token,
-            stage="indexing_vectors",
-            progress=95,
-            indexed_chunks=processed_count,
-            keyword_batches=keyword_batches,
-            graph_batches=graph_batches,
-            vector_batches=vector_batches,
-            checkpoint={
-                "mode": "streaming",
-                "next_chunk_index": next_chunk_index,
-                "indexed_chunks": processed_count,
-                "last_batch_size": len(chunk_rows),
-            },
-        )
+    graph_batches = graph_transaction.committed_batches
+    graph_status = graph_transaction.status
 
     if processed_count == 0:
         raise ValueError("File produced no chunks")
@@ -367,6 +392,7 @@ def process_streaming_file(
         "mode": "streaming",
         "next_chunk_index": next_chunk_index,
         "indexed_chunks": processed_count,
+        "graph_status": graph_status,
         "complete": True,
     }
     assert_ingestion_lease(file_id, attempt_id, lease_token)
@@ -491,37 +517,51 @@ def process_file(file_id: str, attempt_id, lease_token):
         processed_count = 0
         keyword_batches = 0
         graph_batches = 0
+        graph_status = "pending"
         vector_batches = 0
         batch_size = settings.rag_ingest_chunk_batch_size
-        for i in range(0, total_chunks, batch_size):
+        with graph_file_transaction() as graph_transaction:
+            for i in range(0, total_chunks, batch_size):
+                assert_ingestion_lease(file_id, attempt_id, lease_token)
+                batch_rows = chunk_rows[i: i + batch_size]
+                batch_stats = index_chunk_batch(
+                    file_data,
+                    batch_rows,
+                    project_space_id,
+                    graph_transaction,
+                )
+                processed_count += batch_stats["indexed_chunks"]
+                keyword_batches += batch_stats["keyword_batches"]
+                graph_status = batch_stats["graph_status"]
+                vector_batches += batch_stats["vector_batches"]
+                progress = int((processed_count / total_chunks) * 100)
+                last_checkpoint = {
+                    "mode": "standard",
+                    "next_chunk_index": processed_count,
+                    "indexed_chunks": processed_count,
+                    "total_chunks": total_chunks,
+                    "last_batch_size": len(batch_rows),
+                    "graph_status": graph_status,
+                }
+                update_ingestion_job_checkpoint(
+                    file_id,
+                    attempt_id,
+                    lease_token,
+                    stage="indexing_vectors",
+                    progress=progress,
+                    total_chunks=total_chunks,
+                    indexed_chunks=processed_count,
+                    keyword_batches=keyword_batches,
+                    graph_batches=graph_batches,
+                    vector_batches=vector_batches,
+                    checkpoint=last_checkpoint,
+                )
+
             assert_ingestion_lease(file_id, attempt_id, lease_token)
-            batch_rows = chunk_rows[i: i + batch_size]
-            batch_stats = index_chunk_batch(file_data, batch_rows, project_space_id)
-            processed_count += batch_stats["indexed_chunks"]
-            keyword_batches += batch_stats["keyword_batches"]
-            graph_batches += batch_stats["graph_batches"]
-            vector_batches += batch_stats["vector_batches"]
-            progress = int((processed_count / total_chunks) * 100)
-            last_checkpoint = {
-                "mode": "standard",
-                "next_chunk_index": processed_count,
-                "indexed_chunks": processed_count,
-                "total_chunks": total_chunks,
-                "last_batch_size": len(batch_rows),
-            }
-            update_ingestion_job_checkpoint(
-                file_id,
-                attempt_id,
-                lease_token,
-                stage="indexing_vectors",
-                progress=progress,
-                total_chunks=total_chunks,
-                indexed_chunks=processed_count,
-                keyword_batches=keyword_batches,
-                graph_batches=graph_batches,
-                vector_batches=vector_batches,
-                checkpoint=last_checkpoint,
-            )
+
+        graph_batches = graph_transaction.committed_batches
+        graph_status = graph_transaction.status
+        last_checkpoint = {**last_checkpoint, "graph_status": graph_status}
 
         assert_ingestion_lease(file_id, attempt_id, lease_token)
         bump_project_knowledge_version(user_id, project_space_id or None, "file_ingested")

@@ -173,13 +173,19 @@ class GraphStoreTests(unittest.TestCase):
             },
         ]
 
-        with patch("graph_store.ensure_graph_schema"), patch("graph_store._run_cypher") as run_cypher:
+        with patch("graph_store.ensure_graph_schema"), patch(
+            "graph_store._neo4j_request",
+            side_effect=[
+                {"commit": "http://localhost:7474/db/neo4j/tx/7/commit"},
+                {"results": [], "errors": []},
+            ],
+        ) as neo4j_request:
             index_graph_chunks(file_data, chunk_rows)
 
-        write_statement = run_cypher.call_args.args[0]
+        write_statement = neo4j_request.call_args_list[0].args[1][0]["statement"]
 
-        self.assertIn("WITH DISTINCT d\n            UNWIND $entities AS entity", write_statement)
-        self.assertIn("WITH DISTINCT d\n            UNWIND $relationships AS rel", write_statement)
+        self.assertIn("WITH DISTINCT d\nUNWIND $entities AS entity", write_statement)
+        self.assertIn("WITH DISTINCT d\nUNWIND $relationships AS rel", write_statement)
 
 
 if __name__ == "__main__":

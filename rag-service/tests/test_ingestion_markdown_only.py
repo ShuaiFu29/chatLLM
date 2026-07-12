@@ -211,7 +211,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         self.assertEqual(index_graph_mock.call_args.args[0], get_file_mock.return_value)
         self.assertEqual(index_graph_mock.call_args.args[1][0]["metadata"]["project_space_id"], "space-1")
 
-    def test_process_file_keeps_core_ingestion_when_graph_index_times_out(self):
+    def test_process_file_fails_when_enabled_graph_index_times_out(self):
         chunk_rows = [{
             "id": "chunk-1",
             "file_id": "file-1",
@@ -242,16 +242,15 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         ) as insert_vectors_mock, patch(
             "ingestion.index_chunks"
         ), patch("ingestion.index_graph_chunks", side_effect=TimeoutError("timed out")), patch(
-            "ingestion.logger.warning"
-        ) as warning_mock, patch("ingestion.bump_project_knowledge_version"), patch(
+            "ingestion.bump_project_knowledge_version"
+        ), patch(
             "ingestion.complete_ingestion_job"
         ) as complete_job:
-            result = process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
+            with self.assertRaisesRegex(TimeoutError, "timed out"):
+                process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
-        self.assertEqual(result, {"status": "success", "chunks": 1})
-        complete_job.assert_called_once()
-        insert_vectors_mock.assert_called_once()
-        warning_mock.assert_called_once()
+        complete_job.assert_not_called()
+        insert_vectors_mock.assert_not_called()
 
 
 if __name__ == "__main__":

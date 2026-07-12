@@ -105,7 +105,11 @@ class StreamingIngestionTests(unittest.TestCase):
         ), patch("ingestion.delete_file_chunks"), patch(
             "ingestion.insert_file_chunk_batch", side_effect=fake_insert_batch
         ), patch("ingestion.index_chunks", side_effect=lambda rows: keyword_batches.append(list(rows))), patch(
-            "ingestion.index_graph_chunks", side_effect=lambda _file, rows: graph_batches.append(list(rows))
+            "ingestion.index_graph_chunks",
+            side_effect=lambda _file, rows, transaction=None: (
+                graph_batches.append(list(rows)),
+                {"status": "pending", "batches": 0},
+            )[1],
         ), patch("ingestion.get_embeddings", side_effect=fake_embeddings), patch(
             "ingestion.insert_vectors", side_effect=fake_insert_vectors
         ), patch("ingestion.bump_project_knowledge_version"), patch(

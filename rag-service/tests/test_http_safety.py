@@ -71,7 +71,7 @@ class HttpSafetyTests(unittest.TestCase):
         self.assertNotIn('file %s: %s", file_id, cleanup_error', ingestion_source)
         self.assertIn("safe_error_fields(cleanup_error)", ingestion_source)
         self.assertNotIn("graph_error,", ingestion_source)
-        self.assertIn("safe_error_fields(graph_error)", ingestion_source)
+        self.assertNotIn("Optional graph indexing failed", ingestion_source)
 
     def test_config_exposes_a_positive_request_body_limit(self):
         result = run_script(

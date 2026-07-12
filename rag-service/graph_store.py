@@ -2,6 +2,7 @@ import base64
 import json
 import re
 import urllib.request
+from urllib.parse import urlparse
 
 from config import settings
 
@@ -117,10 +118,13 @@ def _batched(rows: list[dict], batch_size: int):
 
 
 def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
+    project_space_id = str(file_data.get("project_space_id")) if file_data.get("project_space_id") else None
+    scope_key = project_space_id or "__global__"
     document = {
         "file_id": str(file_data["id"]),
         "user_id": str(file_data["user_id"]),
-        "project_space_id": str(file_data.get("project_space_id")) if file_data.get("project_space_id") else None,
+        "project_space_id": project_space_id,
+        "scope_key": scope_key,
         "filename": file_data["filename"],
     }
     chunks = []
@@ -133,6 +137,7 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
             "file_id": document["file_id"],
             "user_id": document["user_id"],
             "project_space_id": document["project_space_id"],
+            "scope_key": document["scope_key"],
             "filename": document["filename"],
             "chunk_index": int(row["chunk_index"]),
             "content": row["content"],
@@ -143,6 +148,9 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
             "type": "HAS_CHUNK",
             "from": document["file_id"],
             "to": chunk["chunk_id"],
+            "user_id": document["user_id"],
+            "project_space_id": document["project_space_id"],
+            "scope_key": document["scope_key"],
         })
 
         content = row.get("content") or ""
@@ -151,11 +159,15 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
                 "name": term,
                 "user_id": document["user_id"],
                 "project_space_id": document["project_space_id"],
+                "scope_key": document["scope_key"],
             }
             relationships.append({
                 "type": "MENTIONS",
                 "from": chunk["chunk_id"],
                 "to": term,
+                "user_id": document["user_id"],
+                "project_space_id": document["project_space_id"],
+                "scope_key": document["scope_key"],
             })
 
         for relation in _relation_candidates(content):
@@ -164,6 +176,7 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
                     "name": entity_name,
                     "user_id": document["user_id"],
                     "project_space_id": document["project_space_id"],
+                    "scope_key": document["scope_key"],
                 }
             relationships.append({
                 **relation,
@@ -171,6 +184,7 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
                 "file_id": document["file_id"],
                 "user_id": document["user_id"],
                 "project_space_id": document["project_space_id"],
+                "scope_key": document["scope_key"],
             })
 
     return {
@@ -181,47 +195,84 @@ def extract_graph_facts(file_data: dict, chunk_rows: list[dict]) -> dict:
     }
 
 
-def _run_cypher(statement: str, parameters: dict | None = None) -> list[dict]:
-    if not settings.neo4j_enabled:
-        return []
-
-    payload = {
-        "statements": [{
-            "statement": statement,
-            "parameters": parameters or {},
-            "resultDataContents": ["row"],
-        }],
+def _statement_payload(statement: str, parameters: dict | None = None) -> dict:
+    return {
+        "statement": statement,
+        "parameters": parameters or {},
+        "resultDataContents": ["row"],
     }
+
+
+def _neo4j_request(url: str, statements: list[dict] | None = None, method: str = "POST") -> dict:
     auth = base64.b64encode(f"{settings.neo4j_user}:{settings.neo4j_password}".encode("utf-8")).decode("ascii")
+    request_data = None
+    if method != "DELETE":
+        request_data = json.dumps({"statements": statements or []}).encode("utf-8")
     request = urllib.request.Request(
-        f"{settings.neo4j_url.rstrip('/')}/db/{settings.neo4j_database}/tx/commit",
-        data=json.dumps(payload).encode("utf-8"),
+        url,
+        data=request_data,
         headers={
             "Authorization": f"Basic {auth}",
             "Content-Type": "application/json",
         },
-        method="POST",
+        method=method,
     )
     with urllib.request.urlopen(request, timeout=settings.neo4j_timeout_ms / 1000) as response:
         raw = response.read().decode("utf-8")
         data = json.loads(raw) if raw else {}
 
+    if not isinstance(data, dict):
+        raise RuntimeError("Neo4j returned an invalid response")
     errors = data.get("errors") or []
     if errors:
-        raise RuntimeError(errors[0].get("message") or "Neo4j query failed")
+        first_error = errors[0] if isinstance(errors[0], dict) else {}
+        raise RuntimeError(first_error.get("message") or "Neo4j query failed")
+    return data
 
+
+def _rows_from_response(data: dict) -> list[dict]:
     results = data.get("results") or []
-    if not results:
+    if not results or not isinstance(results[0], dict):
         return []
 
-    rows = []
+    rows: list[dict] = []
     for item in results[0].get("data") or []:
+        if not isinstance(item, dict):
+            continue
         row = item.get("row")
         if isinstance(row, list) and len(row) == 1 and isinstance(row[0], dict):
             rows.append(row[0])
         elif isinstance(row, dict):
             rows.append(row)
     return rows
+
+
+def _run_cypher(statement: str, parameters: dict | None = None) -> list[dict]:
+    if not settings.neo4j_enabled:
+        return []
+
+    data = _neo4j_request(
+        f"{settings.neo4j_url.rstrip('/')}/db/{settings.neo4j_database}/tx/commit",
+        [_statement_payload(statement, parameters)],
+    )
+    return _rows_from_response(data)
+
+
+def _transaction_urls(commit_url: object) -> tuple[str, str]:
+    if not isinstance(commit_url, str):
+        raise RuntimeError("Neo4j transaction response did not include a commit URL")
+    path = urlparse(commit_url).path
+    expected_prefix = f"/db/{settings.neo4j_database}/tx/"
+    if not path.startswith(expected_prefix) or not path.endswith("/commit"):
+        raise RuntimeError("Neo4j transaction response included an invalid commit URL")
+    transaction_id = path[len(expected_prefix):-len("/commit")]
+    if not transaction_id or "/" in transaction_id:
+        raise RuntimeError("Neo4j transaction response included an invalid transaction ID")
+
+    transaction_url = (
+        f"{settings.neo4j_url.rstrip('/')}/db/{settings.neo4j_database}/tx/{transaction_id}"
+    )
+    return transaction_url, f"{transaction_url}/commit"
 
 
 def check_graph_store_ready() -> bool:
@@ -238,9 +289,143 @@ def ensure_graph_schema():
         "CREATE CONSTRAINT chatllm_document_id IF NOT EXISTS FOR (d:Document) REQUIRE d.file_id IS UNIQUE",
         "CREATE CONSTRAINT chatllm_chunk_id IF NOT EXISTS FOR (c:Chunk) REQUIRE c.chunk_id IS UNIQUE",
         "CREATE INDEX chatllm_entity_name IF NOT EXISTS FOR (e:Entity) ON (e.name)",
+        "CREATE INDEX chatllm_entity_scope IF NOT EXISTS FOR (e:Entity) ON (e.user_id, e.scope_key, e.name)",
     ]
     for statement in statements:
         _run_cypher(statement)
+
+
+_GRAPH_INDEX_STATEMENT = """
+MERGE (d:Document {file_id: $document.file_id})
+SET d += $document
+WITH d
+UNWIND $chunks AS chunk
+  MERGE (c:Chunk {chunk_id: chunk.chunk_id})
+  SET c += chunk
+  MERGE (d)-[:HAS_CHUNK]->(c)
+WITH DISTINCT d
+UNWIND $entities AS entity
+  MERGE (e:Entity {name: entity.name, user_id: entity.user_id, scope_key: entity.scope_key})
+  SET e += entity
+WITH DISTINCT d
+UNWIND $relationships AS rel
+  OPTIONAL MATCH (c:Chunk {chunk_id: rel.from})
+  OPTIONAL MATCH (e:Entity {name: rel.to, user_id: $document.user_id, scope_key: $document.scope_key})
+  FOREACH (_ IN CASE WHEN rel.type = 'MENTIONS' AND c IS NOT NULL AND e IS NOT NULL THEN [1] ELSE [] END |
+    MERGE (c)-[:MENTIONS]->(e)
+  )
+WITH DISTINCT d
+UNWIND $relationships AS rel
+  OPTIONAL MATCH (fromEntity:Entity {name: rel.from, user_id: $document.user_id, scope_key: $document.scope_key})
+  OPTIONAL MATCH (toEntity:Entity {name: rel.to, user_id: $document.user_id, scope_key: $document.scope_key})
+  FOREACH (_ IN CASE WHEN rel.type <> 'MENTIONS' AND rel.type <> 'HAS_CHUNK' AND fromEntity IS NOT NULL AND toEntity IS NOT NULL THEN [1] ELSE [] END |
+    MERGE (fromEntity)-[typed:RELATED_TO {relation_type: rel.type, chunk_id: rel.chunk_id, file_id: rel.file_id}]->(toEntity)
+    SET typed.confidence = rel.confidence,
+        typed.evidence = rel.evidence,
+        typed.user_id = rel.user_id,
+        typed.project_space_id = rel.project_space_id,
+        typed.scope_key = rel.scope_key
+  )
+RETURN {ok: true} AS row
+"""
+
+
+class GraphFileTransaction:
+    def __init__(self):
+        self.enabled = settings.neo4j_enabled
+        self.status = "skipped" if not self.enabled else "pending"
+        self.pending_batches = 0
+        self.committed_batches = 0
+        self._transaction_url: str | None = None
+        self._commit_url: str | None = None
+        self._schema_ready = False
+        self._closed = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, _exc, _traceback):
+        if exc_type is not None:
+            self._rollback_without_masking()
+            return False
+        try:
+            self.commit()
+        except Exception:
+            self._rollback_without_masking()
+            raise
+        return False
+
+    @property
+    def result(self) -> dict:
+        return {
+            "status": self.status,
+            "batches": self.committed_batches,
+        }
+
+    def index_chunks(self, file_data: dict, chunk_rows: list[dict]) -> dict:
+        if not self.enabled:
+            return self.result
+        if self._closed:
+            raise RuntimeError("Neo4j graph transaction is already closed")
+        if not chunk_rows:
+            return {"status": "pending", "batches": 0}
+        if not self._schema_ready:
+            ensure_graph_schema()
+            self._schema_ready = True
+
+        for batch in _batched(chunk_rows, settings.neo4j_batch_size):
+            facts = extract_graph_facts(file_data, batch)
+            statement = _statement_payload(_GRAPH_INDEX_STATEMENT, facts)
+            if self._transaction_url is None:
+                response = _neo4j_request(
+                    f"{settings.neo4j_url.rstrip('/')}/db/{settings.neo4j_database}/tx",
+                    [statement],
+                )
+                self._transaction_url, self._commit_url = _transaction_urls(response.get("commit"))
+            else:
+                _neo4j_request(self._transaction_url, [statement])
+            self.pending_batches += 1
+
+        return {"status": "pending", "batches": 0}
+
+    def commit(self) -> dict:
+        if self._closed:
+            return self.result
+        if not self.enabled:
+            self.status = "skipped"
+            self._closed = True
+            return self.result
+        if self._commit_url is not None:
+            _neo4j_request(self._commit_url, [])
+        self.committed_batches = self.pending_batches
+        self.status = "indexed"
+        self._closed = True
+        return self.result
+
+    def rollback(self):
+        if self._closed:
+            return
+        try:
+            if self._transaction_url is not None:
+                _neo4j_request(self._transaction_url, method="DELETE")
+        finally:
+            self.pending_batches = 0
+            self.committed_batches = 0
+            self.status = "failed" if self.enabled else "skipped"
+            self._closed = True
+
+    def _rollback_without_masking(self):
+        try:
+            self.rollback()
+        except Exception:
+            self.pending_batches = 0
+            self.committed_batches = 0
+            self.status = "failed" if self.enabled else "skipped"
+            self._closed = True
+
+
+def graph_file_transaction() -> GraphFileTransaction:
+    return GraphFileTransaction()
 
 
 def delete_file_graph(file_id: str):
@@ -248,63 +433,38 @@ def delete_file_graph(file_id: str):
         return
     _run_cypher(
         """
-        MATCH ()-[r:RELATED_TO {file_id: $file_id}]-()
-        DELETE r
-        """,
-        {"file_id": file_id},
-    )
-    _run_cypher(
-        """
         MATCH (d:Document {file_id: $file_id})
+        WITH d,
+             d.user_id AS owner_user_id,
+             coalesce(d.scope_key, d.project_space_id, '__global__') AS owner_scope_key
+        OPTIONAL MATCH ()-[r:RELATED_TO {file_id: $file_id}]-()
+        DELETE r
+        WITH DISTINCT d, owner_user_id, owner_scope_key
         OPTIONAL MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
         DETACH DELETE d, c
+        WITH DISTINCT owner_user_id, owner_scope_key
+        MATCH (e:Entity)
+        WHERE NOT (e)--()
+          AND e.user_id = owner_user_id
+          AND coalesce(e.scope_key, e.project_space_id, '__global__') = owner_scope_key
+        DELETE e
         """,
         {"file_id": file_id},
     )
 
 
-def index_graph_chunks(file_data: dict, chunk_rows: list[dict]):
-    if not settings.neo4j_enabled or not chunk_rows:
-        return
+def index_graph_chunks(
+    file_data: dict,
+    chunk_rows: list[dict],
+    *,
+    transaction: GraphFileTransaction | None = None,
+) -> dict:
+    if transaction is not None:
+        return transaction.index_chunks(file_data, chunk_rows)
 
-    ensure_graph_schema()
-    for batch in _batched(chunk_rows, settings.neo4j_batch_size):
-        facts = extract_graph_facts(file_data, batch)
-        _run_cypher(
-            """
-            MERGE (d:Document {file_id: $document.file_id})
-            SET d += $document
-            WITH d
-            UNWIND $chunks AS chunk
-              MERGE (c:Chunk {chunk_id: chunk.chunk_id})
-              SET c += chunk
-              MERGE (d)-[:HAS_CHUNK]->(c)
-            WITH DISTINCT d
-            UNWIND $entities AS entity
-              MERGE (e:Entity {name: entity.name, user_id: entity.user_id, project_space_id: entity.project_space_id})
-              SET e += entity
-            WITH DISTINCT d
-            UNWIND $relationships AS rel
-              OPTIONAL MATCH (c:Chunk {chunk_id: rel.from})
-              OPTIONAL MATCH (e:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})
-              FOREACH (_ IN CASE WHEN rel.type = 'MENTIONS' AND c IS NOT NULL AND e IS NOT NULL THEN [1] ELSE [] END |
-                MERGE (c)-[:MENTIONS]->(e)
-              )
-            WITH DISTINCT d
-            UNWIND $relationships AS rel
-              OPTIONAL MATCH (fromEntity:Entity {name: rel.from, user_id: $document.user_id, project_space_id: $document.project_space_id})
-              OPTIONAL MATCH (toEntity:Entity {name: rel.to, user_id: $document.user_id, project_space_id: $document.project_space_id})
-              FOREACH (_ IN CASE WHEN rel.type <> 'MENTIONS' AND rel.type <> 'HAS_CHUNK' AND fromEntity IS NOT NULL AND toEntity IS NOT NULL THEN [1] ELSE [] END |
-                MERGE (fromEntity)-[typed:RELATED_TO {relation_type: rel.type, chunk_id: rel.chunk_id, file_id: rel.file_id}]->(toEntity)
-                SET typed.confidence = rel.confidence,
-                    typed.evidence = rel.evidence,
-                    typed.user_id = rel.user_id,
-                    typed.project_space_id = rel.project_space_id
-              )
-            RETURN {ok: true} AS row
-            """,
-            facts,
-        )
+    with graph_file_transaction() as file_transaction:
+        file_transaction.index_chunks(file_data, chunk_rows)
+    return file_transaction.result
 
 
 def search_graph(
