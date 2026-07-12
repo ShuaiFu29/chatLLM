@@ -7,6 +7,8 @@
     "check:ops": "node scripts/ops-check.mjs",
     "check:ports": "node scripts/check-ports.mjs",
     "rag:smoke": "node scripts/rag-smoke.mjs",
+    "rag:lock": "uv pip compile rag-service/requirements.in --generate-hashes --output-file rag-service/requirements.txt",
+    "rag:audit": "uvx pip-audit -r rag-service/requirements.txt && uv pip install --dry-run --require-hashes -r rag-service/requirements.txt",
     "rag:demo-suite": "node scripts/rag-demo-suite.mjs",
     "rag:cleanup-demo": "node scripts/rag-demo-cleanup.mjs",
     "predev": "npm run check:config && npm run check:ports && npm run dev:infra",

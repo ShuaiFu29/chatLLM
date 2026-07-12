@@ -105,6 +105,24 @@ cd D:\project\chatLLM
 pnpm run dev
 ```
 
+### Python RAG 依赖
+
+RAG 服务的直接依赖维护在 `rag-service/requirements.in`，完整版本和下载哈希锁定在自动生成的 `rag-service/requirements.txt`。安装和 CI 必须使用锁文件：
+
+```bash
+uv venv .venv
+uv pip install --require-hashes -r rag-service/requirements.txt
+```
+
+需要升级依赖时只编辑 `requirements.in`，不要手工修改 `requirements.txt`。在项目根目录重新生成并审计锁文件：
+
+```bash
+npm run rag:lock
+npm run rag:audit
+```
+
+`rag:lock` 使用 `uv pip compile --generate-hashes` 重新解析全部传递依赖；`rag:audit` 同时执行已知漏洞扫描和哈希锁可安装性检查。更新锁文件后还应运行完整测试。
+
 ### 环境变量
 
 复制 `server/.env.example` 到 `server/.env`，填写 GitHub OAuth 和模型密钥。

@@ -1,5 +1,3 @@
-import re
-
 from reranker import classify_source_role, extract_exact_markers, score_query_coverage
 
 
