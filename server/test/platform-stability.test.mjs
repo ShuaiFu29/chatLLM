@@ -125,7 +125,8 @@ test('server exposes live and ready health probes with request tracing and shutd
   assert.match(indexSource, /app\.get\('\/health\/ready', readyHealthHandler\)/);
   assert.match(indexSource, /installGracefulShutdown/);
   assert.match(healthSource, /checkDatabaseReady/);
-  assert.match(healthSource, /RAG_SERVICE_URL/);
+  assert.match(healthSource, /checkRagServiceReady/);
+  assert.doesNotMatch(healthSource, /axios\.(?:get|post)/);
   assert.match(requestContextSource, /x-request-id/i);
   assert.match(rateLimitSource, /Retry-After/);
   assert.match(shutdownSource, /closeDatabasePool/);
@@ -310,29 +311,30 @@ test('server protects internal RAG calls with a shared service token when config
   assert.match(envSource, /RAG_SERVICE_TOKEN/);
   assert.match(ragClientSource, /buildRagServiceHeaders/);
   assert.match(ragClientSource, /X-ChatLLM-RAG-Token/);
-  assert.match(ragClientSource, /headers:\s*buildRagServiceHeaders\(\)/);
+  assert.match(ragClientSource, /headers:\s*buildHeaders\(serviceToken\)/);
   assert.match(fileQueueSource, /buildRagServiceHeaders/);
 });
 
-test('RAG evaluation uses the shared circuit breaker and metrics', () => {
+test('RAG evaluation uses an operation-isolated circuit breaker and metrics', () => {
   const ragEvalControllerSource = readSource('src/controllers/ragEval.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
+  const circuitBreakerSource = readOptionalSource('src/lib/circuitBreaker.ts');
   const ragEvalQueueSource = readOptionalSource('src/services/ragEvalQueue.ts');
 
   assert.doesNotMatch(ragEvalControllerSource, /axios\.post/);
   assert.doesNotMatch(ragEvalQueueSource, /axios\.post/);
   assert.match(ragEvalQueueSource, /runRagEvaluation/);
+  assert.match(ragClientSource, /new OperationCircuitBreaker<RagOperation>/);
+  assert.match(ragClientSource, /breaker\.acquire\(operation\)/);
+  assert.match(ragClientSource, /breaker\.recordSuccess\(operation\)/);
+  assert.match(ragClientSource, /breaker\.recordFailure\(operation, permit, error\)/);
+  assert.match(ragClientSource, /recordRagCircuitOpen\(\)/);
+  assert.match(ragClientSource, /recordRagRetrieve\('ok'/);
+  assert.match(ragClientSource, /recordRagRetrieve\('error'/);
+  assert.match(circuitBreakerSource, /new Map<Operation, CircuitState>/);
   assert.match(
     ragClientSource,
-    /const postRagService = async <T>[\s\S]*?if \(isCircuitOpen\(\)\) \{[\s\S]*?metrics\.recordRagCircuitOpen\(\);[\s\S]*?throw new Error\('RAG circuit is open'\);[\s\S]*?axios\.post/
-  );
-  assert.match(
-    ragClientSource,
-    /const postRagService = async <T>[\s\S]*?metrics\.recordRagRetrieve\('ok', Date\.now\(\) - startedAt\);[\s\S]*?catch \(error\) \{[\s\S]*?consecutiveFailures \+= 1;[\s\S]*?metrics\.recordRagRetrieve\('error', Date\.now\(\) - startedAt\);[\s\S]*?RAG_CIRCUIT_FAILURE_THRESHOLD/
-  );
-  assert.match(
-    ragClientSource,
-    /export const runRagEvaluation[\s\S]*?postRagService<RagEvalRunResponse>\(\s*'\/eval\/run'/
+    /const runRagEvaluation[\s\S]*?postRagService<RagEvalRunResponse>\(\s*'eval',\s*'\/eval\/run'/
   );
 });
 

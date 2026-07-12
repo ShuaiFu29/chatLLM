@@ -1,0 +1,309 @@
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const serverRoot = path.resolve(__dirname, '..');
+const axiosModule = require(path.join(serverRoot, 'node_modules', 'axios'));
+const axios = axiosModule.default || axiosModule;
+const ragClientModule = require(path.join(serverRoot, 'dist', 'lib', 'ragClient.js'));
+
+const retrieveInput = {
+  query: 'what is indexed?',
+  user_id: 'user-1',
+  limit: 5,
+  threshold: 0.1,
+};
+
+const ok = (data = {}) => ({ status: 200, data });
+
+const axiosStatusError = (status) => new axios.AxiosError(
+  `request failed with status ${status}`,
+  'ERR_BAD_RESPONSE',
+  {},
+  null,
+  {
+    status,
+    statusText: 'Error',
+    headers: {},
+    config: {},
+    data: {},
+  },
+);
+
+const axiosTimeoutError = () => new axios.AxiosError(
+  'request timed out',
+  'ECONNABORTED',
+  {},
+);
+
+const createTransport = (handler) => {
+  const calls = [];
+
+  return {
+    calls,
+    async get(url, config) {
+      const call = { method: 'get', url, config };
+      calls.push(call);
+      return handler(call);
+    },
+    async post(url, data, config) {
+      const call = { method: 'post', url, data, config };
+      calls.push(call);
+      return handler(call);
+    },
+  };
+};
+
+const createMetrics = () => {
+  const events = [];
+  return {
+    events,
+    recordRagRetrieve(status, durationMs) {
+      events.push({ type: 'request', status, durationMs });
+    },
+    recordRagCircuitOpen() {
+      events.push({ type: 'circuit-open' });
+    },
+  };
+};
+
+const createClient = ({
+  transport,
+  metrics = createMetrics(),
+  now = () => 0,
+  failureThreshold = 2,
+  resetMs = 1000,
+} = {}) => {
+  assert.equal(
+    typeof ragClientModule.createRagClient,
+    'function',
+    'ragClient must expose an injectable createRagClient factory',
+  );
+
+  return ragClientModule.createRagClient({
+    transport,
+    metrics,
+    now,
+    serviceUrl: 'http://rag.test',
+    serviceToken: 'internal-rag-token',
+    retrieveTimeoutMs: 100,
+    cleanupTimeoutMs: 200,
+    healthTimeoutMs: 50,
+    failureThreshold,
+    resetMs,
+  });
+};
+
+test('caller-caused 400 responses never open the retrieve circuit', async () => {
+  const outcomes = [axiosStatusError(400), axiosStatusError(400), ok({ results: [] })];
+  const transport = createTransport(() => {
+    const outcome = outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  });
+  const metrics = createMetrics();
+  const client = createClient({ transport, metrics, failureThreshold: 2 });
+
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput), (error) => error.response?.status === 400);
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput), (error) => error.response?.status === 400);
+  assert.deepEqual(await client.retrieveRagDocuments(retrieveInput), []);
+
+  assert.equal(transport.calls.length, 3);
+  assert.equal(metrics.events.filter((event) => event.type === 'circuit-open').length, 0);
+});
+
+test('a caller-caused 4xx does not erase an earlier service failure', async () => {
+  const outcomes = [axiosStatusError(500), axiosStatusError(400), axiosStatusError(500)];
+  const transport = createTransport(() => {
+    const outcome = outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  });
+  const client = createClient({ transport, failureThreshold: 2 });
+
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput), (error) => error.response?.status === 500);
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput), (error) => error.response?.status === 400);
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput), (error) => error.response?.status === 500);
+  await assert.rejects(
+    client.retrieveRagDocuments(retrieveInput),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+
+  assert.equal(transport.calls.length, 3);
+});
+
+for (const [name, makeFailure] of [
+  ['HTTP 429', () => axiosStatusError(429)],
+  ['HTTP 500', () => axiosStatusError(500)],
+  ['transport timeout', () => axiosTimeoutError()],
+  ['non-Axios transport failure', () => new Error('socket failed')],
+]) {
+  test(`${name} counts as a downstream service failure`, async () => {
+    const transport = createTransport(() => { throw makeFailure(); });
+    const client = createClient({ transport, failureThreshold: 1 });
+
+    await assert.rejects(client.retrieveRagDocuments(retrieveInput));
+    await assert.rejects(
+      client.retrieveRagDocuments(retrieveInput),
+      (error) => error.code === 'RAG_CIRCUIT_OPEN',
+    );
+
+    assert.equal(transport.calls.length, 1);
+  });
+}
+
+test('an open retrieve circuit leaves agentic, graph, eval, and cleanup operations available', async () => {
+  let retrieveFailures = 0;
+  const transport = createTransport((call) => {
+    if (call.url.endsWith('/retrieve')) {
+      retrieveFailures += 1;
+      throw axiosStatusError(500);
+    }
+    if (call.url.endsWith('/graph/search')) return ok({ results: [] });
+    if (call.url.endsWith('/agentic-retrieve')) return ok({ results: [] });
+    return ok({});
+  });
+  const client = createClient({ transport, failureThreshold: 1 });
+
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput));
+  assert.deepEqual((await client.retrieveAgenticRagDocuments(retrieveInput)).results, []);
+  assert.deepEqual(await client.searchRagGraphDocuments(retrieveInput), []);
+  await client.runRagEvaluation({ user_id: 'user-1', cases: [] });
+  await client.cleanupRagFileVectors('file-1');
+  await assert.rejects(
+    client.retrieveRagDocuments(retrieveInput),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+
+  assert.equal(retrieveFailures, 1);
+  assert.deepEqual(
+    transport.calls.map((call) => new URL(call.url).pathname),
+    ['/retrieve', '/agentic-retrieve', '/graph/search', '/eval/run', '/cleanup-file'],
+  );
+});
+
+test('success resets only the circuit for its own operation', async () => {
+  let retrieveCalls = 0;
+  const transport = createTransport((call) => {
+    if (call.url.endsWith('/retrieve')) {
+      retrieveCalls += 1;
+      throw axiosStatusError(500);
+    }
+    return ok({ results: [] });
+  });
+  const client = createClient({ transport, failureThreshold: 1 });
+
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput));
+  assert.deepEqual(await client.searchRagGraphDocuments(retrieveInput), []);
+  await assert.rejects(
+    client.retrieveRagDocuments(retrieveInput),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+
+  assert.equal(retrieveCalls, 1);
+});
+
+test('only one reset-time probe is allowed for the affected operation', async () => {
+  let currentTime = 0;
+  let retrieveCalls = 0;
+  let releaseProbe;
+  const transport = createTransport((call) => {
+    if (!call.url.endsWith('/retrieve')) return ok({});
+    retrieveCalls += 1;
+    if (retrieveCalls === 1) throw axiosStatusError(500);
+    if (retrieveCalls === 2) {
+      return new Promise((resolve) => {
+        releaseProbe = () => resolve(ok({ results: [] }));
+      });
+    }
+    return ok({ results: [] });
+  });
+  const client = createClient({
+    transport,
+    failureThreshold: 1,
+    resetMs: 1000,
+    now: () => currentTime,
+  });
+
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput));
+  currentTime = 999;
+  await assert.rejects(
+    client.retrieveRagDocuments(retrieveInput),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+
+  currentTime = 1000;
+  const probe = client.retrieveRagDocuments(retrieveInput);
+  assert.equal(typeof releaseProbe, 'function');
+  await assert.rejects(
+    client.retrieveRagDocuments(retrieveInput),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+  releaseProbe();
+  assert.deepEqual(await probe, []);
+  assert.deepEqual(await client.retrieveRagDocuments(retrieveInput), []);
+
+  assert.equal(retrieveCalls, 3);
+});
+
+test('cleanup requests use their own cleanup circuit', async () => {
+  let cleanupCalls = 0;
+  const transport = createTransport((call) => {
+    if (call.url.endsWith('/cleanup-file')) {
+      cleanupCalls += 1;
+      throw axiosStatusError(500);
+    }
+    return ok({ results: [] });
+  });
+  const client = createClient({ transport, failureThreshold: 1 });
+
+  await assert.rejects(client.cleanupRagFileVectors('file-1'));
+  await assert.rejects(
+    client.cleanupRagFileVectors('file-2'),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+  assert.deepEqual(await client.retrieveRagDocuments(retrieveInput), []);
+
+  assert.equal(cleanupCalls, 1);
+});
+
+test('readiness uses the authenticated RAG ready endpoint and health timeout', async () => {
+  const transport = createTransport(() => ok({ status: 'ready' }));
+  const client = createClient({ transport });
+
+  await client.checkRagServiceReady();
+
+  assert.deepEqual(transport.calls, [{
+    method: 'get',
+    url: 'http://rag.test/health/ready',
+    config: {
+      timeout: 50,
+      headers: { 'X-ChatLLM-RAG-Token': 'internal-rag-token' },
+    },
+  }]);
+});
+
+test('health failures open only the health circuit', async () => {
+  let healthCalls = 0;
+  const transport = createTransport((call) => {
+    if (call.url.endsWith('/health/ready')) {
+      healthCalls += 1;
+      throw axiosStatusError(503);
+    }
+    return ok({ results: [] });
+  });
+  const client = createClient({ transport, failureThreshold: 1 });
+
+  await assert.rejects(client.checkRagServiceReady());
+  assert.deepEqual(await client.retrieveRagDocuments(retrieveInput), []);
+  await assert.rejects(
+    client.checkRagServiceReady(),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+
+  assert.equal(healthCalls, 1);
+});

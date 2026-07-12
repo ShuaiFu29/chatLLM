@@ -1,7 +1,6 @@
 import { Request, Response } from 'express';
-import axios from 'axios';
 import { checkDatabaseReady } from './db';
-import { serverEnv } from './env';
+import { checkRagServiceReady } from './ragClient';
 import { toSafeError } from './safeError';
 
 export const liveHealthHandler = (_req: Request, res: Response) => {
@@ -22,11 +21,8 @@ export const readyHealthHandler = async (_req: Request, res: Response) => {
   }
 
   try {
-    const response = await axios.get(`${serverEnv.RAG_SERVICE_URL}/health`, {
-      timeout: serverEnv.RAG_HEALTH_TIMEOUT_MS,
-      validateStatus: () => true,
-    });
-    checks.rag = response.status >= 200 && response.status < 300 ? 'ok' : 'error';
+    await checkRagServiceReady();
+    checks.rag = 'ok';
   } catch (error) {
     console.warn('[Health] RAG readiness check failed:', toSafeError(error, res.locals.requestId));
   }
