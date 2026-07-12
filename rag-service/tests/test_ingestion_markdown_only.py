@@ -4,6 +4,10 @@ from unittest.mock import DEFAULT, patch
 from ingestion import extract_text, format_ingestion_error, process_file
 
 
+ATTEMPT_ID = "11111111-1111-4111-8111-111111111111"
+LEASE_TOKEN = "22222222-2222-4222-8222-222222222222"
+
+
 class MarkdownOnlyIngestionTests(unittest.TestCase):
     def setUp(self):
         self.job_tracking_patch = patch.multiple(
@@ -12,6 +16,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             update_ingestion_job_checkpoint=DEFAULT,
             complete_ingestion_job=DEFAULT,
             fail_ingestion_job=DEFAULT,
+            assert_ingestion_lease=DEFAULT,
         )
         self.job_tracking_patch.start()
 
@@ -71,25 +76,13 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         ), patch("ingestion.delete_file_graph"
         ), patch("ingestion.replace_file_chunks", return_value=chunk_rows), patch(
             "ingestion.get_embeddings", side_effect=fake_get_embeddings
-        ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"), patch(
-            "ingestion.update_file_status"
-        ), patch("ingestion.update_file_progress"):
-            result = process_file("file-1")
+        ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"):
+            result = process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
         self.assertEqual(result, {"status": "success", "chunks": 12})
         self.assertEqual([len(batch) for batch in embedding_calls], [10, 2])
 
     def test_process_file_stores_friendly_message_for_bailian_quota_errors(self):
-        status_updates = []
-
-        def capture_status(file_id, status, progress=None, error_message=None):
-            status_updates.append({
-                "file_id": file_id,
-                "status": status,
-                "progress": progress,
-                "error_message": error_message,
-            })
-
         with patch("ingestion.get_file", return_value={
             "id": "file-1",
             "user_id": "user-1",
@@ -112,15 +105,14 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         }]), patch("ingestion.get_embeddings", side_effect=RuntimeError(
             "Error code: 429 - {'error': {'code': '1113', 'message': '余额不足或无可用资源包,请充值。'}}"
         )), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch("ingestion.index_graph_chunks"), patch(
-            "ingestion.update_file_status", side_effect=capture_status
-        ), patch("ingestion.update_file_progress"):
+            "ingestion.fail_ingestion_job"
+        ) as fail_job:
             with self.assertRaises(RuntimeError):
-                process_file("file-1")
+                process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
-        failed_update = status_updates[-1]
-        self.assertEqual(failed_update["status"], "failed")
-        self.assertIn("百炼 embedding 额度不足", failed_update["error_message"])
-        self.assertNotIn("{'error'", failed_update["error_message"])
+        failed_error = fail_job.call_args.args[3]
+        self.assertIn("百炼 embedding 额度不足", failed_error)
+        self.assertNotIn("{'error'", failed_error)
 
     def test_process_file_indexes_chunks_for_bm25_search_before_vector_insert(self):
         chunk_rows = [{
@@ -149,10 +141,8 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
         ), patch("ingestion.insert_vectors"), patch("ingestion.index_graph_chunks"), patch(
             "ingestion.index_chunks"
-        ) as index_chunks_mock, patch("ingestion.bump_project_knowledge_version"), patch("ingestion.update_file_status"), patch(
-            "ingestion.update_file_progress"
-        ):
-            process_file("file-1")
+        ) as index_chunks_mock, patch("ingestion.bump_project_knowledge_version"):
+            process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
         indexed_rows = index_chunks_mock.call_args.args[0]
         self.assertEqual(indexed_rows[0]["id"], "chunk-1")
@@ -160,16 +150,6 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         self.assertEqual(indexed_rows[0]["metadata"]["project_space_id"], "space-1")
 
     def test_process_file_rejects_object_when_uploaded_hash_does_not_match_metadata(self):
-        status_updates = []
-
-        def capture_status(file_id, status, progress=None, error_message=None):
-            status_updates.append({
-                "file_id": file_id,
-                "status": status,
-                "progress": progress,
-                "error_message": error_message,
-            })
-
         with patch("ingestion.get_file", return_value={
             "id": "file-1",
             "user_id": "user-1",
@@ -181,14 +161,14 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "project_space_id": "space-1",
         }), patch("ingestion.download_object", return_value=b"# Notes"), patch(
             "ingestion.extract_text"
-        ) as extract_text_mock, patch("ingestion.update_file_status", side_effect=capture_status):
+        ) as extract_text_mock, patch("ingestion.fail_ingestion_job") as fail_job:
             with self.assertRaisesRegex(ValueError, "Uploaded object hash mismatch"):
-                process_file("file-1")
+                process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
         extract_text_mock.assert_not_called()
-        self.assertEqual(status_updates[-1]["status"], "failed")
-        self.assertEqual(status_updates[-1]["error_message"], "Uploaded object integrity check failed")
-        self.assertNotIn("0" * 64, status_updates[-1]["error_message"])
+        failed_error = fail_job.call_args.args[3]
+        self.assertEqual(failed_error, "Uploaded object integrity check failed")
+        self.assertNotIn("0" * 64, failed_error)
 
     def test_process_file_indexes_chunks_into_knowledge_graph(self):
         chunk_rows = [{
@@ -217,16 +197,13 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "ingestion.get_embeddings", return_value=[[0.1, 0.2]]
         ), patch("ingestion.insert_vectors"), patch("ingestion.index_chunks"), patch(
             "ingestion.index_graph_chunks"
-        ) as index_graph_mock, patch("ingestion.bump_project_knowledge_version"), patch("ingestion.update_file_status"), patch(
-            "ingestion.update_file_progress"
-        ):
-            process_file("file-1")
+        ) as index_graph_mock, patch("ingestion.bump_project_knowledge_version"):
+            process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
         self.assertEqual(index_graph_mock.call_args.args[0], get_file_mock.return_value)
         self.assertEqual(index_graph_mock.call_args.args[1][0]["metadata"]["project_space_id"], "space-1")
 
     def test_process_file_keeps_core_ingestion_when_graph_index_times_out(self):
-        status_updates = []
         chunk_rows = [{
             "id": "chunk-1",
             "file_id": "file-1",
@@ -235,14 +212,6 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             "content": "T+5 is the default response confirmation window.",
             "metadata": {"filename": "notes.md"},
         }]
-
-        def capture_status(file_id, status, progress=None, error_message=None):
-            status_updates.append({
-                "file_id": file_id,
-                "status": status,
-                "progress": progress,
-                "error_message": error_message,
-            })
 
         with patch("ingestion.get_file", return_value={
             "id": "file-1",
@@ -264,12 +233,12 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         ), patch("ingestion.index_graph_chunks", side_effect=TimeoutError("timed out")), patch(
             "ingestion.logger.warning"
         ) as warning_mock, patch("ingestion.bump_project_knowledge_version"), patch(
-            "ingestion.update_file_status", side_effect=capture_status
-        ), patch("ingestion.update_file_progress"):
-            result = process_file("file-1")
+            "ingestion.complete_ingestion_job"
+        ) as complete_job:
+            result = process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
         self.assertEqual(result, {"status": "success", "chunks": 1})
-        self.assertEqual(status_updates[-1]["status"], "completed")
+        complete_job.assert_called_once()
         insert_vectors_mock.assert_called_once()
         warning_mock.assert_called_once()
 

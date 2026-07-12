@@ -180,6 +180,7 @@ test('file queue has retry metadata, backoff-aware claims, and configurable conc
   const migrationSource = readOptionalSource('migrations/0005_platform_stability.sql');
   const repositorySource = readSource('src/repositories/files.ts');
   const queueSource = readSource('src/services/fileQueue.ts');
+  const ragClientSource = readSource('src/lib/ragClient.ts');
 
   assert.match(migrationSource, /add column if not exists attempts integer not null default 0/i);
   assert.match(migrationSource, /add column if not exists max_attempts integer not null default 3/i);
@@ -191,23 +192,25 @@ test('file queue has retry metadata, backoff-aware claims, and configurable conc
   assert.match(repositorySource, /status = 'failed'/);
   assert.match(repositorySource, /for update skip locked/i);
   assert.match(queueSource, /FILE_QUEUE_CONCURRENCY/);
-  assert.match(queueSource, /FILE_QUEUE_INGEST_TIMEOUT_MS/);
+  assert.match(ragClientSource, /FILE_QUEUE_INGEST_TIMEOUT_MS/);
   assert.match(queueSource, /FILE_QUEUE_MAX_ATTEMPTS/);
   assert.match(queueSource, /FILE_QUEUE_RETRY_BASE_DELAY_MS/);
 });
 
-test('file queue refreshes processing leases during long ingestion jobs', () => {
+test('file queue renews attempt-scoped leases during long ingestion jobs', () => {
   const repositorySource = readSource('src/repositories/files.ts');
   const queueSource = readSource('src/services/fileQueue.ts');
 
-  assert.match(repositorySource, /export const touchFileProcessingHeartbeat/);
-  assert.match(repositorySource, /set last_attempt_at = now\(\)/i);
-  assert.match(repositorySource, /where id = \$1\s+and status = 'processing'/i);
-  assert.match(queueSource, /touchFileProcessingHeartbeat/);
-  assert.match(queueSource, /createProcessingHeartbeat/);
+  assert.match(repositorySource, /export const renewFileIngestionLease/);
+  assert.match(repositorySource, /attempt_id = \$2/i);
+  assert.match(repositorySource, /lease_token = \$3/i);
+  assert.match(repositorySource, /lease_expires_at > now\(\)/i);
+  assert.match(queueSource, /renewFileIngestionLease/);
+  assert.match(queueSource, /startFileIngestionHeartbeat/);
   assert.match(queueSource, /FILE_QUEUE_STALE_AFTER_MS/);
-  assert.match(queueSource, /setInterval/);
-  assert.match(queueSource, /clearInterval/);
+  assert.match(queueSource, /setTimeout/);
+  assert.match(queueSource, /clearTimeout/);
+  assert.match(queueSource, /controller\.abort\(\)/);
 });
 
 test('message search has large-data index support and remains bounded', () => {
@@ -312,7 +315,8 @@ test('server protects internal RAG calls with a shared service token when config
   assert.match(ragClientSource, /buildRagServiceHeaders/);
   assert.match(ragClientSource, /X-ChatLLM-RAG-Token/);
   assert.match(ragClientSource, /headers:\s*buildHeaders\(serviceToken\)/);
-  assert.match(fileQueueSource, /buildRagServiceHeaders/);
+  assert.match(fileQueueSource, /ingestRagFile/);
+  assert.doesNotMatch(fileQueueSource, /axios\.post/);
 });
 
 test('RAG evaluation uses an operation-isolated circuit breaker and metrics', () => {

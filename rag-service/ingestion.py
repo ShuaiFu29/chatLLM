@@ -6,6 +6,8 @@ from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharac
 
 from config import settings
 from db import (
+    IngestionLeaseLostError,
+    assert_ingestion_lease,
     bump_project_knowledge_version,
     complete_ingestion_job,
     delete_file_chunks,
@@ -15,8 +17,6 @@ from db import (
     replace_file_chunks,
     start_ingestion_job,
     update_ingestion_job_checkpoint,
-    update_file_progress,
-    update_file_status,
 )
 from embeddings import get_embeddings
 from graph_store import delete_file_graph, index_graph_chunks
@@ -260,19 +260,29 @@ def reset_file_indexes(file_id: str):
     delete_file_graph(file_id)
 
 
-def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_space_id: str):
+def process_streaming_file(
+    file_id: str,
+    attempt_id,
+    lease_token,
+    file_data: dict,
+    user_id: str,
+    project_space_id: str,
+):
     object_key = file_data["object_key"]
     update_ingestion_job_checkpoint(
         file_id,
+        attempt_id,
+        lease_token,
         stage="resetting_indexes",
         progress=8,
         checkpoint={"mode": "streaming", "object_key": object_key},
     )
     reset_file_indexes(file_id)
     delete_file_chunks(file_id)
-    update_file_progress(file_id, 10)
     update_ingestion_job_checkpoint(
         file_id,
+        attempt_id,
+        lease_token,
         stage="streaming_download",
         progress=10,
         checkpoint={"mode": "streaming", "object_key": object_key, "next_chunk_index": 0},
@@ -291,6 +301,7 @@ def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_
         if len(pending_chunks) < batch_size:
             continue
 
+        assert_ingestion_lease(file_id, attempt_id, lease_token)
         chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
         batch_stats = index_chunk_batch(file_data, chunk_rows, project_space_id)
         processed_count += len(chunk_rows)
@@ -300,9 +311,10 @@ def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_
         vector_batches += batch_stats["vector_batches"]
         pending_chunks = []
         progress = min(95, 10 + processed_count)
-        update_file_progress(file_id, progress)
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="indexing_vectors",
             progress=progress,
             indexed_chunks=processed_count,
@@ -318,6 +330,7 @@ def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_
         )
 
     if pending_chunks:
+        assert_ingestion_lease(file_id, attempt_id, lease_token)
         chunk_rows = insert_file_chunk_batch(file_id, user_id, next_chunk_index, pending_chunks, file_data)
         batch_stats = index_chunk_batch(file_data, chunk_rows, project_space_id)
         processed_count += len(chunk_rows)
@@ -327,6 +340,8 @@ def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_
         vector_batches += batch_stats["vector_batches"]
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="indexing_vectors",
             progress=95,
             indexed_chunks=processed_count,
@@ -344,15 +359,18 @@ def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_
     if processed_count == 0:
         raise ValueError("File produced no chunks")
 
-    update_file_progress(file_id, 100)
     checkpoint = {
         "mode": "streaming",
         "next_chunk_index": next_chunk_index,
         "indexed_chunks": processed_count,
         "complete": True,
     }
+    assert_ingestion_lease(file_id, attempt_id, lease_token)
+    bump_project_knowledge_version(user_id, project_space_id or None, "file_ingested")
     complete_ingestion_job(
         file_id,
+        attempt_id,
+        lease_token,
         stage="completed",
         total_chunks=processed_count,
         indexed_chunks=processed_count,
@@ -364,17 +382,18 @@ def process_streaming_file(file_id: str, file_data: dict, user_id: str, project_
     return {"status": "success", "chunks": processed_count}
 
 
-def process_file(file_id: str):
+def process_file(file_id: str, attempt_id, lease_token):
     indexes_reset = False
     last_checkpoint = {"file_id": file_id, "mode": "unknown"}
     try:
-        update_file_status(file_id, "processing", progress=0)
-
+        assert_ingestion_lease(file_id, attempt_id, lease_token)
         file_data = get_file(file_id)
         if not file_data:
             raise ValueError(f"File {file_id} not found")
         start_ingestion_job(
             file_data,
+            attempt_id,
+            lease_token,
             stage="validating_uploaded_object",
             checkpoint={"file_id": file_id, "mode": "unknown"},
         )
@@ -389,13 +408,19 @@ def process_file(file_id: str):
 
         if should_stream_ingestion(file_data):
             indexes_reset = True
-            result = process_streaming_file(file_id, file_data, user_id, project_space_id)
-            update_file_status(file_id, "completed", progress=100)
-            bump_project_knowledge_version(user_id, project_space_id or None, "file_ingested")
-            return result
+            return process_streaming_file(
+                file_id,
+                attempt_id,
+                lease_token,
+                file_data,
+                user_id,
+                project_space_id,
+            )
 
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="downloading_object",
             progress=5,
             checkpoint={"mode": "standard", "object_key": object_key},
@@ -403,6 +428,8 @@ def process_file(file_id: str):
         file_bytes = download_object(object_key)
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="validating_uploaded_object",
             progress=10,
             checkpoint={"mode": "standard", "object_key": object_key, "bytes": len(file_bytes)},
@@ -411,6 +438,8 @@ def process_file(file_id: str):
 
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="parsing_markdown",
             progress=15,
             checkpoint={"mode": "standard", "object_key": object_key, "bytes": len(file_bytes)},
@@ -422,6 +451,8 @@ def process_file(file_id: str):
 
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="chunking",
             progress=25,
             checkpoint={"mode": "standard", "content_length": len(text_content)},
@@ -432,6 +463,8 @@ def process_file(file_id: str):
             raise ValueError("File produced no chunks")
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="persisting_chunks",
             progress=35,
             total_chunks=total_chunks,
@@ -440,6 +473,8 @@ def process_file(file_id: str):
 
         update_ingestion_job_checkpoint(
             file_id,
+            attempt_id,
+            lease_token,
             stage="resetting_indexes",
             progress=40,
             total_chunks=total_chunks,
@@ -447,6 +482,7 @@ def process_file(file_id: str):
         )
         reset_file_indexes(file_id)
         indexes_reset = True
+        assert_ingestion_lease(file_id, attempt_id, lease_token)
         chunk_rows = replace_file_chunks(file_id, user_id, chunks, file_data)
         processed_count = 0
         keyword_batches = 0
@@ -454,6 +490,7 @@ def process_file(file_id: str):
         vector_batches = 0
         batch_size = settings.rag_ingest_chunk_batch_size
         for i in range(0, total_chunks, batch_size):
+            assert_ingestion_lease(file_id, attempt_id, lease_token)
             batch_rows = chunk_rows[i: i + batch_size]
             batch_stats = index_chunk_batch(file_data, batch_rows, project_space_id)
             processed_count += len(batch_rows)
@@ -461,7 +498,6 @@ def process_file(file_id: str):
             graph_batches += batch_stats["graph_batches"]
             vector_batches += batch_stats["vector_batches"]
             progress = int((processed_count / total_chunks) * 100)
-            update_file_progress(file_id, progress)
             last_checkpoint = {
                 "mode": "standard",
                 "next_chunk_index": processed_count,
@@ -471,6 +507,8 @@ def process_file(file_id: str):
             }
             update_ingestion_job_checkpoint(
                 file_id,
+                attempt_id,
+                lease_token,
                 stage="indexing_vectors",
                 progress=progress,
                 total_chunks=total_chunks,
@@ -481,9 +519,12 @@ def process_file(file_id: str):
                 checkpoint=last_checkpoint,
             )
 
-        update_file_status(file_id, "completed", progress=100)
+        assert_ingestion_lease(file_id, attempt_id, lease_token)
+        bump_project_knowledge_version(user_id, project_space_id or None, "file_ingested")
         complete_ingestion_job(
             file_id,
+            attempt_id,
+            lease_token,
             stage="completed",
             total_chunks=total_chunks,
             indexed_chunks=processed_count,
@@ -492,18 +533,26 @@ def process_file(file_id: str):
             vector_batches=vector_batches,
             checkpoint={**last_checkpoint, "complete": True},
         )
-        bump_project_knowledge_version(user_id, project_space_id or None, "file_ingested")
 
         return {"status": "success", "chunks": total_chunks}
 
+    except IngestionLeaseLostError:
+        raise
     except Exception as e:
+        assert_ingestion_lease(file_id, attempt_id, lease_token)
         if indexes_reset:
             try:
                 reset_file_indexes(file_id)
+                assert_ingestion_lease(file_id, attempt_id, lease_token)
                 delete_file_chunks(file_id)
             except Exception as cleanup_error:
                 logger.debug("Failed to cleanup partial ingestion: %s", safe_error_fields(cleanup_error))
         formatted_error = format_ingestion_error(e)
-        fail_ingestion_job(file_id, formatted_error, checkpoint=last_checkpoint)
-        update_file_status(file_id, "failed", error_message=formatted_error)
+        fail_ingestion_job(
+            file_id,
+            attempt_id,
+            lease_token,
+            formatted_error,
+            checkpoint=last_checkpoint,
+        )
         raise

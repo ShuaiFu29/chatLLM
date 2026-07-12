@@ -213,15 +213,30 @@ print("ok")
 from pydantic import ValidationError
 from main import CleanupFileRequest, IngestRequest
 
-for model in (IngestRequest, CleanupFileRequest):
-    for file_id in ("", "   ", "x" * 129):
-        try:
-            model(file_id=file_id)
-        except ValidationError:
-            continue
-        raise SystemExit(f"{model.__name__} accepted invalid file_id: {file_id!r}")
+for file_id in ("", "   ", "x" * 129):
+    try:
+        CleanupFileRequest(file_id=file_id)
+    except ValidationError:
+        continue
+    raise SystemExit(f"CleanupFileRequest accepted invalid file_id: {file_id!r}")
 
-valid = IngestRequest(file_id="  file-123  ")
+valid_ids = {
+    "attempt_id": "11111111-1111-4111-8111-111111111111",
+    "lease_token": "22222222-2222-4222-8222-222222222222",
+}
+invalid_ingest_payloads = [
+    {"file_id": "file-123"},
+    {"file_id": "file-123", **valid_ids, "attempt_id": "not-a-uuid"},
+    {"file_id": "file-123", **valid_ids, "lease_token": "not-a-uuid"},
+]
+for payload in invalid_ingest_payloads:
+    try:
+        IngestRequest(**payload)
+    except ValidationError:
+        continue
+    raise SystemExit(f"IngestRequest accepted invalid payload: {payload!r}")
+
+valid = IngestRequest(file_id="  file-123  ", **valid_ids)
 assert valid.file_id == "file-123"
 print("ok")
 """

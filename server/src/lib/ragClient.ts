@@ -96,7 +96,13 @@ export interface RagEvalRunResponse {
   }>;
 }
 
-export type RagOperation = 'retrieve' | 'agentic-retrieve' | 'graph' | 'eval' | 'cleanup' | 'health';
+export type RagOperation = 'retrieve' | 'agentic-retrieve' | 'graph' | 'eval' | 'ingest' | 'cleanup' | 'health';
+
+export interface IngestRagFileInput {
+  fileId: string;
+  attemptId: string;
+  leaseToken: string;
+}
 
 interface RagTransportResponse<T> {
   data: T;
@@ -120,6 +126,7 @@ export interface CreateRagClientOptions {
   serviceUrl?: string;
   serviceToken?: string;
   retrieveTimeoutMs?: number;
+  ingestTimeoutMs?: number;
   cleanupTimeoutMs?: number;
   healthTimeoutMs?: number;
   failureThreshold?: number;
@@ -132,6 +139,7 @@ const axiosTransport: RagTransport = {
 };
 
 export const isRagServiceFailure = (error: unknown) => {
+  if (axios.isCancel(error)) return false;
   if (!axios.isAxiosError(error)) return true;
   if (!error.response) return true;
   return error.response.status === 429 || error.response.status >= 500;
@@ -150,6 +158,7 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
   const serviceUrl = (options.serviceUrl || serverEnv.RAG_SERVICE_URL).replace(/\/+$/, '');
   const serviceToken = options.serviceToken ?? serverEnv.RAG_SERVICE_TOKEN;
   const retrieveTimeoutMs = options.retrieveTimeoutMs ?? serverEnv.RAG_RETRIEVE_TIMEOUT_MS;
+  const ingestTimeoutMs = options.ingestTimeoutMs ?? serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS;
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? serverEnv.RAG_CLEANUP_TIMEOUT_MS;
   const healthTimeoutMs = options.healthTimeoutMs ?? serverEnv.RAG_HEALTH_TIMEOUT_MS;
   const breaker = new OperationCircuitBreaker<RagOperation>({
@@ -189,10 +198,15 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     path: string,
     payload: unknown,
     timeout: number,
+    signal?: AbortSignal,
   ) => requestRagService<T>(operation, () => transport.post<T>(
     `${serviceUrl}${path}`,
     payload,
-    { timeout, headers: buildHeaders(serviceToken) },
+    {
+      timeout,
+      headers: buildHeaders(serviceToken),
+      ...(signal ? { signal } : {}),
+    },
   ));
 
   const retrieveRagDocuments = async (input: RetrieveRagDocumentsInput): Promise<RagDocument[]> => {
@@ -253,6 +267,21 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     Math.max(retrieveTimeoutMs, 30000),
   );
 
+  const ingestRagFile = (
+    input: IngestRagFileInput,
+    signal?: AbortSignal,
+  ): Promise<unknown> => postRagService<unknown>(
+    'ingest',
+    '/ingest-sync',
+    {
+      file_id: input.fileId,
+      attempt_id: input.attemptId,
+      lease_token: input.leaseToken,
+    },
+    ingestTimeoutMs,
+    signal,
+  );
+
   const cleanupRagFileVectors = async (fileId: string) => {
     await postRagService<unknown>(
       'cleanup',
@@ -275,6 +304,7 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     searchRagGraphDocuments,
     listRagGraphDocuments,
     runRagEvaluation,
+    ingestRagFile,
     cleanupRagFileVectors,
     checkRagServiceReady,
   };
@@ -287,5 +317,6 @@ export const retrieveAgenticRagDocuments = ragClient.retrieveAgenticRagDocuments
 export const searchRagGraphDocuments = ragClient.searchRagGraphDocuments;
 export const listRagGraphDocuments = ragClient.listRagGraphDocuments;
 export const runRagEvaluation = ragClient.runRagEvaluation;
+export const ingestRagFile = ragClient.ingestRagFile;
 export const cleanupRagFileVectors = ragClient.cleanupRagFileVectors;
 export const checkRagServiceReady = ragClient.checkRagServiceReady;

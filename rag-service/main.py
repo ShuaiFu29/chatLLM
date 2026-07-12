@@ -1,5 +1,6 @@
 import hmac
 import threading
+from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
@@ -66,7 +67,8 @@ class FileIdRequest(StrictRequestModel):
 
 
 class IngestRequest(FileIdRequest):
-    pass
+    attempt_id: UUID
+    lease_token: UUID
 
 class RetrieveRequest(StrictRequestModel):
     query: str = Field(..., min_length=1, max_length=4096)
@@ -196,9 +198,9 @@ def startup():
         except Exception as error:
             print(f"[startup] Deferred {label} initialization: {safe_error_fields(error)}")
 
-def process_file_with_guard(file_id: str):
+def process_file_with_guard(file_id: str, attempt_id: UUID, lease_token: UUID):
     try:
-        process_file(file_id)
+        process_file(file_id, attempt_id, lease_token)
     finally:
         ingest_semaphore.release()
 
@@ -210,7 +212,12 @@ async def ingest_endpoint(request: IngestRequest, background_tasks: BackgroundTa
     if not ingest_semaphore.acquire(blocking=False):
         raise HTTPException(status_code=429, detail="Too many ingestion jobs")
 
-    background_tasks.add_task(process_file_with_guard, request.file_id)
+    background_tasks.add_task(
+        process_file_with_guard,
+        request.file_id,
+        request.attempt_id,
+        request.lease_token,
+    )
     return {"status": "processing_started", "file_id": request.file_id}
 
 
@@ -225,7 +232,7 @@ def ingest_sync_endpoint(request: IngestRequest):
         raise HTTPException(status_code=429, detail="Too many ingestion jobs")
 
     try:
-        result = process_file(request.file_id)
+        result = process_file(request.file_id, request.attempt_id, request.lease_token)
         return {"status": "completed", "file_id": request.file_id, **result}
     finally:
         ingest_semaphore.release()

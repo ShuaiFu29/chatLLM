@@ -216,10 +216,12 @@ test('upload API responses do not derive public details from exception serializa
 
 test('background job state never persists downstream exception messages', () => {
   const fileQueueSource = fs.readFileSync(path.join(serverRoot, 'src', 'services', 'fileQueue.ts'), 'utf8');
+  const fileRepositorySource = fs.readFileSync(path.join(serverRoot, 'src', 'repositories', 'files.ts'), 'utf8');
   const evalQueueSource = fs.readFileSync(path.join(serverRoot, 'src', 'services', 'ragEvalQueue.ts'), 'utf8');
 
   assert.doesNotMatch(fileQueueSource, /err\.message/);
-  assert.match(fileQueueSource, /RAG service ingestion failed/);
+  assert.doesNotMatch(fileQueueSource, /markFileAttemptFailed/);
+  assert.match(fileRepositorySource, /RAG service ingestion lease expired/);
   assert.doesNotMatch(evalQueueSource, /error instanceof Error \? error\.message/);
   assert.match(evalQueueSource, /RAG evaluation failed/);
 });

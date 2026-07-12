@@ -1,22 +1,117 @@
-import axios from 'axios';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
-import { buildRagServiceHeaders } from '../lib/ragClient';
+import { ingestRagFile, IngestRagFileInput } from '../lib/ragClient';
 import { toSafeError } from '../lib/safeError';
 import {
   claimNextPendingFile,
-  FileRow,
-  markFileAttemptFailed,
-  touchFileProcessingHeartbeat,
+  FileIngestionClaim,
+  FileIngestionReconciliation,
+  reconcileFileIngestionAttempt,
+  reconcileFileIngestionJobs,
+  renewFileIngestionLease,
 } from '../repositories/files';
+
+type HeartbeatStopper = () => void | Promise<void>;
+
+interface ExecuteFileIngestionAttemptOptions {
+  ingestFile?: (input: IngestRagFileInput, signal?: AbortSignal) => Promise<unknown>;
+  startHeartbeat?: (
+    claim: FileIngestionClaim,
+    onLeaseLost: () => void,
+  ) => HeartbeatStopper;
+  reconcileAttempt?: (
+    claim: FileIngestionClaim,
+  ) => Promise<FileIngestionReconciliation>;
+  warn?: (message: string, error: unknown) => void;
+}
+
+const defaultWarn = (message: string, error: unknown) => {
+  console.warn(message, toSafeError(error));
+};
+
+const startFileIngestionHeartbeat = (
+  claim: FileIngestionClaim,
+  onLeaseLost: () => void,
+  warn: (message: string, error: unknown) => void,
+): HeartbeatStopper => {
+  const heartbeatMs = Math.max(1000, Math.floor(serverEnv.FILE_QUEUE_STALE_AFTER_MS / 3));
+  let stopped = false;
+  let timer: NodeJS.Timeout | null = null;
+  let inFlight: Promise<void> = Promise.resolve();
+
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(runHeartbeat, heartbeatMs);
+    timer.unref();
+  };
+
+  const runHeartbeat = () => {
+    timer = null;
+    inFlight = renewFileIngestionLease(claim, {
+      leaseDurationMs: serverEnv.FILE_QUEUE_STALE_AFTER_MS,
+    }).then((leaseExpiresAt) => {
+      if (leaseExpiresAt) return;
+      stopped = true;
+      onLeaseLost();
+    }).catch((error) => {
+      warn('[FileQueue] Failed to renew ingestion lease:', error);
+    }).finally(schedule);
+  };
+
+  schedule();
+  return async () => {
+    stopped = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    await inFlight;
+  };
+};
+
+export const executeFileIngestionAttempt = async (
+  claim: FileIngestionClaim,
+  options: ExecuteFileIngestionAttemptOptions = {},
+): Promise<FileIngestionReconciliation> => {
+  const ingestFile = options.ingestFile || ingestRagFile;
+  const reconcileAttempt = options.reconcileAttempt || reconcileFileIngestionAttempt;
+  const warn = options.warn || defaultWarn;
+  const controller = new AbortController();
+  const startHeartbeat = options.startHeartbeat || ((activeClaim, onLeaseLost) => (
+    startFileIngestionHeartbeat(activeClaim, onLeaseLost, warn)
+  ));
+  const stopHeartbeat = startHeartbeat(claim, () => controller.abort());
+
+  try {
+    await ingestFile({
+      fileId: claim.file.id,
+      attemptId: claim.attemptId,
+      leaseToken: claim.leaseToken,
+    }, controller.signal);
+  } catch (error) {
+    warn('[FileQueue] RAG ingestion request ended before reconciliation:', error);
+  } finally {
+    try {
+      await stopHeartbeat();
+    } catch (error) {
+      warn('[FileQueue] Failed to stop ingestion heartbeat cleanly:', error);
+    }
+  }
+
+  return reconcileAttempt(claim);
+};
+
+export const shouldContinueFileQueueBatch = (
+  claimedCount: number,
+  concurrency: number,
+  results: FileIngestionReconciliation[],
+) => claimedCount === concurrency && results.every((result) => result.state !== 'active');
 
 class FileQueueService {
   private isProcessing = false;
   private interval: NodeJS.Timeout | null = null;
-  private ragServiceUrl = serverEnv.RAG_SERVICE_URL;
   private intervalMs = serverEnv.FILE_QUEUE_INTERVAL_MS;
   private concurrency = serverEnv.FILE_QUEUE_CONCURRENCY;
-  private ingestTimeoutMs = serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS;
   private staleAfterMs = serverEnv.FILE_QUEUE_STALE_AFTER_MS;
 
   start() {
@@ -44,64 +139,53 @@ class FileQueueService {
       let shouldContinue = true;
 
       while (shouldContinue) {
-        const files: FileRow[] = [];
+        await reconcileFileIngestionJobs({
+          limit: Math.max(10, this.concurrency * 4),
+        });
 
+        const claims: FileIngestionClaim[] = [];
         for (let index = 0; index < this.concurrency; index += 1) {
-          const file = await claimNextPendingFile({
+          const claim = await claimNextPendingFile({
             maxAttempts: serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
             retryBaseDelayMs: serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS,
             staleAfterMs: this.staleAfterMs,
           });
-          if (!file) break;
-          files.push(file);
+          if (!claim) break;
+          claims.push(claim);
         }
 
-        if (files.length === 0) {
+        if (claims.length === 0) {
           shouldContinue = false;
           continue;
         }
 
-        metrics.recordFileQueueClaimed(files.length);
-        await Promise.all(files.map((file) => this.processFile(file)));
-        shouldContinue = files.length === this.concurrency;
+        metrics.recordFileQueueClaimed(claims.length);
+        const results = await Promise.all(claims.map((claim) => this.processFile(claim)));
+        shouldContinue = shouldContinueFileQueueBatch(
+          claims.length,
+          this.concurrency,
+          results,
+        );
       }
-    } catch (err) {
-      console.error('[FileQueue] Failed to process pending file:', toSafeError(err));
+    } catch (error) {
+      console.error('[FileQueue] Failed to process pending file:', toSafeError(error));
     } finally {
       this.isProcessing = false;
     }
   }
 
-  private async processFile(file: FileRow) {
+  private async processFile(claim: FileIngestionClaim) {
     metrics.recordFileQueueStarted();
-    let status: 'completed' | 'failed' = 'failed';
-    const heartbeat = this.createProcessingHeartbeat(file.id);
+    let status: FileIngestionReconciliation['state'] = 'failed';
     try {
-      await axios.post(`${this.ragServiceUrl}/ingest-sync`, {
-        file_id: file.id,
-      }, {
-        timeout: this.ingestTimeoutMs,
-        headers: buildRagServiceHeaders(),
-      });
-      status = 'completed';
-    } catch (err) {
-      console.warn('[FileQueue] RAG ingestion request failed:', toSafeError(err));
-      await markFileAttemptFailed(file, 'RAG service ingestion failed');
+      const result = await executeFileIngestionAttempt(claim);
+      status = result.state;
+    } catch (error) {
+      console.warn('[FileQueue] Failed to reconcile ingestion attempt:', toSafeError(error));
     } finally {
-      if (heartbeat) clearInterval(heartbeat);
       metrics.recordFileQueueFinished(status);
     }
-  }
-
-  private createProcessingHeartbeat(fileId: string) {
-    const heartbeatMs = Math.max(1000, Math.floor(this.staleAfterMs / 3));
-    const heartbeat = setInterval(() => {
-      touchFileProcessingHeartbeat(fileId).catch((error) => {
-        console.warn('[FileQueue] Failed to refresh processing heartbeat:', toSafeError(error));
-      });
-    }, heartbeatMs);
-    heartbeat.unref?.();
-    return heartbeat;
+    return { state: status };
   }
 }
 

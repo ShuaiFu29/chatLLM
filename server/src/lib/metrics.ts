@@ -3,7 +3,7 @@ import { RequestHandler } from 'express';
 type RagStatus = 'ok' | 'error';
 type DatabaseStatus = 'ok' | 'error';
 type ChatStreamStatus = 'completed' | 'failed' | 'rejected';
-type FileQueueStatus = 'completed' | 'failed';
+type FileQueueStatus = 'completed' | 'failed' | 'active' | 'superseded';
 type HttpStatusFamily = '1xx' | '2xx' | '3xx' | '4xx' | '5xx' | 'other';
 type RagEvalCompletionStatus = 'completed' | 'partial' | 'failed' | 'cancelled';
 

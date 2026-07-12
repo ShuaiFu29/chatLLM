@@ -13,6 +13,10 @@ from config import settings
 CHUNK_STRATEGY_VERSION = "markdown-v1:chunk1000-overlap100"
 
 
+class IngestionLeaseLostError(RuntimeError):
+    """Raised when an ingestion worker no longer owns the current attempt."""
+
+
 class _ConnectionPool:
     def __init__(self, max_size: int, timeout_ms: int):
         self.max_size = max_size
@@ -116,7 +120,28 @@ def check_database_ready() -> bool:
                   ) as has_knowledge_version,
                   to_regclass('public.rag_index_versions') is not null as has_rag_index_versions,
                   to_regclass('public.rag_retrieval_cache') is not null as has_rag_retrieval_cache,
-                  to_regclass('public.file_ingestion_jobs') is not null as has_file_ingestion_jobs
+                  to_regclass('public.file_ingestion_jobs') is not null as has_file_ingestion_jobs,
+                  exists (
+                    select 1
+                    from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'file_ingestion_jobs'
+                      and column_name = 'attempt_id'
+                  ) as has_ingestion_attempt_id,
+                  exists (
+                    select 1
+                    from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'file_ingestion_jobs'
+                      and column_name = 'lease_token'
+                  ) as has_ingestion_lease_token,
+                  exists (
+                    select 1
+                    from information_schema.columns
+                    where table_schema = 'public'
+                      and table_name = 'file_ingestion_jobs'
+                      and column_name = 'lease_expires_at'
+                  ) as has_ingestion_lease_expiry
                 """
             )
             schema = cur.fetchone() or {}
@@ -128,6 +153,9 @@ def check_database_ready() -> bool:
                     "rag_index_versions": schema.get("has_rag_index_versions"),
                     "rag_retrieval_cache": schema.get("has_rag_retrieval_cache"),
                     "file_ingestion_jobs": schema.get("has_file_ingestion_jobs"),
+                    "file_ingestion_jobs.attempt_id": schema.get("has_ingestion_attempt_id"),
+                    "file_ingestion_jobs.lease_token": schema.get("has_ingestion_lease_token"),
+                    "file_ingestion_jobs.lease_expires_at": schema.get("has_ingestion_lease_expiry"),
                 }.items()
                 if not ok
             ]
@@ -350,76 +378,76 @@ def get_file(file_id: str):
             return cur.fetchone()
 
 
-def update_file_status(file_id: str, status: str, progress: int | None = None, error_message: str | None = None):
+def _require_ingestion_update(cur, file_id: str, attempt_id, lease_token):
+    if cur.rowcount == 0:
+        raise IngestionLeaseLostError(
+            f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
+        )
+
+
+def assert_ingestion_lease(file_id: str, attempt_id, lease_token):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                update files
-                set status = %s,
-                    progress = coalesce(%s, progress),
-                    error_message = %s,
-                    updated_at = now()
-                where id = %s
+                select 1
+                from file_ingestion_jobs
+                where file_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
                 """,
-                (status, progress, error_message, file_id),
+                (file_id, attempt_id, lease_token),
             )
-        conn.commit()
-
-
-def update_file_progress(file_id: str, progress: int):
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "update files set progress = %s, updated_at = now() where id = %s",
-                (progress, file_id),
-            )
-        conn.commit()
-
-
-def start_ingestion_job(file_data: dict, stage: str = "validating_uploaded_object", checkpoint: dict | None = None):
-    file_id = str(file_data["id"])
-    user_id = str(file_data["user_id"])
-    project_space_id = str(file_data.get("project_space_id")) if file_data.get("project_space_id") else None
-
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                insert into file_ingestion_jobs (
-                  file_id,
-                  user_id,
-                  project_space_id,
-                  status,
-                  stage,
-                  progress,
-                  checkpoint,
-                  error_message,
-                  started_at,
-                  completed_at,
-                  heartbeat_at
+            if not cur.fetchone():
+                raise IngestionLeaseLostError(
+                    f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
                 )
-                values (%s, %s, %s, 'processing', %s, 0, %s::jsonb, null, now(), null, now())
-                on conflict (file_id) do update set
-                  user_id = excluded.user_id,
-                  project_space_id = excluded.project_space_id,
-                  status = 'processing',
-                  stage = excluded.stage,
-                  progress = 0,
-                  checkpoint = excluded.checkpoint,
-                  error_message = null,
-                  started_at = coalesce(file_ingestion_jobs.started_at, now()),
-                  completed_at = null,
-                  heartbeat_at = now(),
-                  updated_at = now()
+
+
+def start_ingestion_job(
+    file_data: dict,
+    attempt_id,
+    lease_token,
+    stage: str = "validating_uploaded_object",
+    checkpoint: dict | None = None,
+):
+    file_id = str(file_data["id"])
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update file_ingestion_jobs
+                set stage = %s,
+                    progress = 0,
+                    checkpoint = %s::jsonb,
+                    error_message = null,
+                    heartbeat_at = now(),
+                    updated_at = now()
+                where file_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
                 """,
-                (file_id, user_id, project_space_id, stage, json.dumps(checkpoint or {})),
+                (
+                    stage,
+                    json.dumps(checkpoint or {}),
+                    file_id,
+                    attempt_id,
+                    lease_token,
+                ),
             )
+            _require_ingestion_update(cur, file_id, attempt_id, lease_token)
         conn.commit()
 
 
 def update_ingestion_job_checkpoint(
     file_id: str,
+    attempt_id,
+    lease_token,
     *,
     stage: str,
     progress: int | None = None,
@@ -449,6 +477,10 @@ def update_ingestion_job_checkpoint(
                     heartbeat_at = now(),
                     updated_at = now()
                 where file_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
                 """,
                 (
                     stage,
@@ -461,13 +493,18 @@ def update_ingestion_job_checkpoint(
                     json.dumps(checkpoint) if checkpoint is not None else None,
                     error_message,
                     file_id,
+                    attempt_id,
+                    lease_token,
                 ),
             )
+            _require_ingestion_update(cur, file_id, attempt_id, lease_token)
         conn.commit()
 
 
 def complete_ingestion_job(
     file_id: str,
+    attempt_id,
+    lease_token,
     *,
     stage: str = "completed",
     total_chunks: int,
@@ -494,8 +531,13 @@ def complete_ingestion_job(
                     error_message = null,
                     completed_at = now(),
                     heartbeat_at = now(),
+                    lease_expires_at = now(),
                     updated_at = now()
                 where file_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
                 """,
                 (
                     stage,
@@ -506,12 +548,21 @@ def complete_ingestion_job(
                     vector_batches,
                     json.dumps(checkpoint) if checkpoint is not None else None,
                     file_id,
+                    attempt_id,
+                    lease_token,
                 ),
             )
+            _require_ingestion_update(cur, file_id, attempt_id, lease_token)
         conn.commit()
 
 
-def fail_ingestion_job(file_id: str, error_message: str, checkpoint: dict | None = None):
+def fail_ingestion_job(
+    file_id: str,
+    attempt_id,
+    lease_token,
+    error_message: str,
+    checkpoint: dict | None = None,
+):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -524,11 +575,23 @@ def fail_ingestion_job(file_id: str, error_message: str, checkpoint: dict | None
                     error_message = %s,
                     completed_at = now(),
                     heartbeat_at = now(),
+                    lease_expires_at = now(),
                     updated_at = now()
                 where file_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
                 """,
-                (json.dumps(checkpoint) if checkpoint is not None else None, error_message, file_id),
+                (
+                    json.dumps(checkpoint) if checkpoint is not None else None,
+                    error_message,
+                    file_id,
+                    attempt_id,
+                    lease_token,
+                ),
             )
+            _require_ingestion_update(cur, file_id, attempt_id, lease_token)
         conn.commit()
 
 

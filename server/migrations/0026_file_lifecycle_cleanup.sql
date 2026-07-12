@@ -133,3 +133,36 @@ select user_id, scope_key, normalized_hash, id
 from ranked_files
 where canonical_rank = 1
 on conflict do nothing;
+
+alter table file_ingestion_jobs
+  add column if not exists attempt_id uuid;
+
+alter table file_ingestion_jobs
+  add column if not exists lease_token uuid;
+
+alter table file_ingestion_jobs
+  add column if not exists lease_expires_at timestamptz;
+
+update file_ingestion_jobs
+set attempt_id = gen_random_uuid()
+where attempt_id is null;
+
+update file_ingestion_jobs
+set lease_token = gen_random_uuid()
+where lease_token is null;
+
+update file_ingestion_jobs
+set lease_expires_at = now()
+where lease_expires_at is null;
+
+alter table file_ingestion_jobs
+  alter column attempt_id set not null,
+  alter column lease_token set not null,
+  alter column lease_expires_at set not null;
+
+create unique index if not exists file_ingestion_jobs_attempt_id_idx
+  on file_ingestion_jobs(attempt_id);
+
+create index if not exists file_ingestion_jobs_lease_expiry_idx
+  on file_ingestion_jobs(lease_expires_at)
+  where status in ('queued', 'processing');

@@ -4,6 +4,10 @@ from unittest.mock import DEFAULT, patch
 import ingestion
 
 
+ATTEMPT_ID = "11111111-1111-4111-8111-111111111111"
+LEASE_TOKEN = "22222222-2222-4222-8222-222222222222"
+
+
 class StreamingIngestionTests(unittest.TestCase):
     def setUp(self):
         self.job_tracking_patch = patch.multiple(
@@ -12,6 +16,7 @@ class StreamingIngestionTests(unittest.TestCase):
             update_ingestion_job_checkpoint=DEFAULT,
             complete_ingestion_job=DEFAULT,
             fail_ingestion_job=DEFAULT,
+            assert_ingestion_lease=DEFAULT,
         )
         self.job_tracking_patch.start()
 
@@ -49,7 +54,6 @@ class StreamingIngestionTests(unittest.TestCase):
         keyword_batches = []
         graph_batches = []
         vector_batches = []
-        progress_updates = []
 
         def fake_insert_batch(file_id, user_id, start_index, chunks, file_data):
             inserted_batches.append(list(chunks))
@@ -100,11 +104,11 @@ class StreamingIngestionTests(unittest.TestCase):
             "ingestion.index_graph_chunks", side_effect=lambda _file, rows: graph_batches.append(list(rows))
         ), patch("ingestion.get_embeddings", side_effect=fake_embeddings), patch(
             "ingestion.insert_vectors", side_effect=lambda rows: vector_batches.append(list(rows))
-        ), patch("ingestion.update_file_status"), patch(
-            "ingestion.update_file_progress", side_effect=lambda _file_id, progress: progress_updates.append(progress)
-        ), patch("ingestion.bump_project_knowledge_version"):
+        ), patch("ingestion.bump_project_knowledge_version"), patch(
+            "ingestion.complete_ingestion_job"
+        ) as complete_job:
             try:
-                result = ingestion.process_file("file-1")
+                result = ingestion.process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
             finally:
                 ingestion.settings.rag_ingest_streaming_threshold_bytes = original_threshold
                 ingestion.settings.rag_ingest_chunk_batch_size = original_chunk_batch_size
@@ -118,7 +122,7 @@ class StreamingIngestionTests(unittest.TestCase):
         self.assertEqual(len(graph_batches), len(inserted_batches))
         self.assertTrue(all(len(batch) <= 2 for batch in inserted_batches))
         self.assertTrue(all(len(batch) <= 2 for batch in vector_batches))
-        self.assertIn(100, progress_updates)
+        complete_job.assert_called_once()
 
     def test_streaming_ingestion_records_durable_stage_checkpoints(self):
         original_threshold = ingestion.settings.rag_ingest_streaming_threshold_bytes
@@ -163,15 +167,15 @@ class StreamingIngestionTests(unittest.TestCase):
             "ingestion.index_chunks"
         ), patch("ingestion.index_graph_chunks"), patch("ingestion.get_embeddings", return_value=[[0.1, 0.2]]), patch(
             "ingestion.insert_vectors"
-        ), patch("ingestion.update_file_status"), patch("ingestion.update_file_progress"), patch(
-            "ingestion.bump_project_knowledge_version"
-        ), patch("ingestion.start_ingestion_job") as start_job, patch(
+        ), patch("ingestion.bump_project_knowledge_version"), patch(
+            "ingestion.start_ingestion_job"
+        ) as start_job, patch(
             "ingestion.update_ingestion_job_checkpoint"
         ) as update_checkpoint, patch("ingestion.complete_ingestion_job") as complete_job, patch(
             "ingestion.fail_ingestion_job"
         ) as fail_job:
             try:
-                result = ingestion.process_file("file-1")
+                result = ingestion.process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
             finally:
                 ingestion.settings.rag_ingest_streaming_threshold_bytes = original_threshold
                 ingestion.settings.rag_ingest_chunk_batch_size = original_chunk_batch_size

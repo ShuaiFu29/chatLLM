@@ -91,6 +91,7 @@ const createClient = ({
     serviceUrl: 'http://rag.test',
     serviceToken: 'internal-rag-token',
     retrieveTimeoutMs: 100,
+    ingestTimeoutMs: 300,
     cleanupTimeoutMs: 200,
     healthTimeoutMs: 50,
     failureThreshold,
@@ -306,4 +307,77 @@ test('health failures open only the health circuit', async () => {
   );
 
   assert.equal(healthCalls, 1);
+});
+
+test('ingestion forwards the durable attempt lease and cancellation signal', async () => {
+  const transport = createTransport(() => ok({ status: 'completed' }));
+  const client = createClient({ transport });
+  const controller = new AbortController();
+
+  await client.ingestRagFile({
+    fileId: 'file-1',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    leaseToken: '22222222-2222-4222-8222-222222222222',
+  }, controller.signal);
+
+  assert.deepEqual(transport.calls, [{
+    method: 'post',
+    url: 'http://rag.test/ingest-sync',
+    data: {
+      file_id: 'file-1',
+      attempt_id: '11111111-1111-4111-8111-111111111111',
+      lease_token: '22222222-2222-4222-8222-222222222222',
+    },
+    config: {
+      timeout: 300,
+      headers: { 'X-ChatLLM-RAG-Token': 'internal-rag-token' },
+      signal: controller.signal,
+    },
+  }]);
+});
+
+test('an open ingestion circuit does not block retrieval', async () => {
+  let ingestCalls = 0;
+  const transport = createTransport((call) => {
+    if (call.url.endsWith('/ingest-sync')) {
+      ingestCalls += 1;
+      throw axiosStatusError(500);
+    }
+    return ok({ results: [] });
+  });
+  const client = createClient({ transport, failureThreshold: 1 });
+  const input = {
+    fileId: 'file-1',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    leaseToken: '22222222-2222-4222-8222-222222222222',
+  };
+
+  await assert.rejects(client.ingestRagFile(input));
+  assert.deepEqual(await client.retrieveRagDocuments(retrieveInput), []);
+  await assert.rejects(
+    client.ingestRagFile(input),
+    (error) => error.code === 'RAG_CIRCUIT_OPEN',
+  );
+
+  assert.equal(ingestCalls, 1);
+});
+
+test('local ingestion cancellation after lease loss does not open the ingest circuit', async () => {
+  const outcomes = [new axios.CanceledError('lease lost'), ok({ status: 'completed' })];
+  const transport = createTransport(() => {
+    const outcome = outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  });
+  const client = createClient({ transport, failureThreshold: 1 });
+  const input = {
+    fileId: 'file-1',
+    attemptId: '11111111-1111-4111-8111-111111111111',
+    leaseToken: '22222222-2222-4222-8222-222222222222',
+  };
+
+  await assert.rejects(client.ingestRagFile(input), (error) => axios.isCancel(error));
+  await client.ingestRagFile(input);
+
+  assert.equal(transport.calls.length, 2);
 });

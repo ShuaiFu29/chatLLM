@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 import { serverEnv } from '../lib/env';
@@ -458,94 +459,348 @@ export const deleteFileForUser = async (fileId: string, userId: string) => {
   });
 };
 
+export interface FileIngestionClaim {
+  file: Pick<FileRow, 'id'> & Partial<FileRow>;
+  attemptId: string;
+  leaseToken: string;
+  leaseExpiresAt: string;
+}
+
+export type FileIngestionReconciliation = {
+  state: 'active' | 'completed' | 'failed' | 'superseded';
+};
+
 interface ClaimNextPendingFileOptions {
   retryBaseDelayMs?: number;
   staleAfterMs?: number;
   maxAttempts?: number;
+  runInTransaction?: typeof withTransaction;
+  createId?: () => string;
 }
 
 export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions = {}) => {
   const retryBaseDelayMs = options.retryBaseDelayMs ?? serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS;
   const staleAfterMs = options.staleAfterMs ?? serverEnv.FILE_QUEUE_STALE_AFTER_MS;
   const maxAttempts = options.maxAttempts ?? serverEnv.FILE_QUEUE_MAX_ATTEMPTS;
+  const runInTransaction = options.runInTransaction || withTransaction;
+  const createId = options.createId || randomUUID;
 
-  return withTransaction(async (client: PoolClient) => {
+  return runInTransaction(async (client: PoolClient): Promise<FileIngestionClaim | null> => {
     const { rows } = await client.query<FileRow>(
-      `with next_file as (
-         select id
-         from files
-         where (
-           status = 'pending'
-           and (next_attempt_at is null or next_attempt_at <= now())
+      `select ${columns}
+       from files
+       where object_key is not null
+         and (
+           (
+             status = 'pending'
+             and (next_attempt_at is null or next_attempt_at <= now())
+           )
+           or (
+             status = 'failed'
+             and attempts < greatest(max_attempts, $2)
+             and coalesce(
+               next_attempt_at,
+               updated_at + (
+                 least(
+                   3600000::double precision,
+                   $1::double precision * power(2, greatest(attempts - 1, 0))
+                 ) * interval '1 millisecond'
+               )
+             ) <= now()
+           )
+           or (
+             status = 'processing'
+             and attempts < greatest(max_attempts, $2)
+             and (
+               not exists (
+                 select 1
+                 from file_ingestion_jobs job
+                 where job.file_id = files.id
+               )
+               or exists (
+                 select 1
+                 from file_ingestion_jobs job
+                 where job.file_id = files.id
+                   and job.status in ('queued', 'processing')
+                   and job.lease_expires_at <= now()
+               )
+             )
+           )
          )
-         or (
-           status = 'failed'
-           and attempts < greatest(max_attempts, $3)
-           and coalesce(
-             next_attempt_at,
-             updated_at + (least(3600000::double precision, $1::double precision * power(2, greatest(attempts - 1, 0))) * interval '1 millisecond')
-           ) <= now()
-         )
-         or (
-           status = 'processing'
-           and last_attempt_at is not null
-           and last_attempt_at <= now() - ($2::double precision * interval '1 millisecond')
-           and attempts < greatest(max_attempts, $3)
-         )
-         order by created_at asc
-         limit 1
-         for update skip locked
-       )
-       update files
+       order by created_at asc
+       limit 1
+       for update skip locked`,
+      [retryBaseDelayMs, maxAttempts]
+    );
+
+    const candidate = rows[0];
+    if (!candidate) return null;
+
+    const updated = await client.query<FileRow>(
+      `update files
        set status = 'processing',
            progress = 0,
-           attempts = least(greatest(max_attempts, $3), attempts + 1),
-           max_attempts = greatest(max_attempts, $3),
+           attempts = least(greatest(max_attempts, $2), attempts + 1),
+           max_attempts = greatest(max_attempts, $2),
            next_attempt_at = null,
            last_attempt_at = now(),
            error_message = null,
            updated_at = now()
-       where id in (select id from next_file)
+       where id = $1
        returning ${columns}`,
-      [retryBaseDelayMs, staleAfterMs, maxAttempts]
+      [candidate.id, maxAttempts]
     );
+    const file = updated.rows[0];
+    if (!file) return null;
 
-    return rows[0] || null;
-  });
-};
-
-export const touchFileProcessingHeartbeat = async (fileId: string) => {
-  const { rows } = await query<FileRow>(
-    `update files
-     set last_attempt_at = now(),
+    const attemptId = createId();
+    const leaseToken = createId();
+    const job = await client.query<{ lease_expires_at: string | Date }>(
+      `insert into file_ingestion_jobs (
+         file_id,
+         user_id,
+         project_space_id,
+         status,
+         stage,
+         progress,
+         total_chunks,
+         indexed_chunks,
+         keyword_batches,
+         graph_batches,
+         vector_batches,
+         checkpoint,
+         error_message,
+         started_at,
+         completed_at,
+         heartbeat_at,
+         attempt_id,
+         lease_token,
+         lease_expires_at
+       )
+       values (
+         $1, $2, $3, 'processing', 'claimed', 0, 0, 0, 0, 0, 0,
+         '{}'::jsonb, null, now(), null, now(), $4, $5,
+         now() + ($6::double precision * interval '1 millisecond')
+       )
+       on conflict (file_id) do update set
+         user_id = excluded.user_id,
+         project_space_id = excluded.project_space_id,
+         status = 'processing',
+         stage = 'claimed',
+         progress = 0,
+         total_chunks = 0,
+         indexed_chunks = 0,
+         keyword_batches = 0,
+         graph_batches = 0,
+         vector_batches = 0,
+         checkpoint = '{}'::jsonb,
+         error_message = null,
+         started_at = now(),
+         completed_at = null,
+         heartbeat_at = now(),
+         attempt_id = excluded.attempt_id,
+         lease_token = excluded.lease_token,
+         lease_expires_at = excluded.lease_expires_at,
          updated_at = now()
-     where id = $1
-       and status = 'processing'
-     returning ${columns}`,
-    [fileId]
-  );
+       returning lease_expires_at`,
+      [file.id, file.user_id, file.project_space_id || null, attemptId, leaseToken, staleAfterMs]
+    );
+    const leaseExpiresAt = job.rows[0]?.lease_expires_at;
+    if (!leaseExpiresAt) throw new Error('Ingestion lease creation did not return an expiry');
 
-  return rows[0] || null;
+    return {
+      file,
+      attemptId,
+      leaseToken,
+      leaseExpiresAt: leaseExpiresAt instanceof Date
+        ? leaseExpiresAt.toISOString()
+        : String(leaseExpiresAt),
+    };
+  });
 };
 
-export const markFileAttemptFailed = async (file: Pick<FileRow, 'id' | 'attempts' | 'max_attempts'>, errorMessage: string) => {
-  const maxAttempts = Math.max(file.max_attempts || 0, serverEnv.FILE_QUEUE_MAX_ATTEMPTS);
-  const attempts = file.attempts || 1;
-  const exhausted = attempts >= maxAttempts;
-  const retryDelayMs = Math.min(
-    60 * 60 * 1000,
-    serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS * 2 ** Math.max(attempts - 1, 0)
+interface RenewFileIngestionLeaseOptions {
+  leaseDurationMs?: number;
+  runQuery?: typeof query;
+}
+
+export const renewFileIngestionLease = async (
+  claim: Pick<FileIngestionClaim, 'file' | 'attemptId' | 'leaseToken'>,
+  options: RenewFileIngestionLeaseOptions = {}
+) => {
+  const leaseDurationMs = options.leaseDurationMs ?? serverEnv.FILE_QUEUE_STALE_AFTER_MS;
+  const runQuery = options.runQuery || query;
+  const { rows } = await runQuery<{ lease_expires_at: string | Date }>(
+    `update file_ingestion_jobs
+     set lease_expires_at = now() + ($4::double precision * interval '1 millisecond'),
+         heartbeat_at = now(),
+         updated_at = now()
+     where file_id = $1
+       and attempt_id = $2
+       and lease_token = $3
+       and status = 'processing'
+       and lease_expires_at > now()
+     returning lease_expires_at`,
+    [claim.file.id, claim.attemptId, claim.leaseToken, leaseDurationMs]
+  );
+  const leaseExpiresAt = rows[0]?.lease_expires_at;
+  if (!leaseExpiresAt) return null;
+  return leaseExpiresAt instanceof Date ? leaseExpiresAt.toISOString() : String(leaseExpiresAt);
+};
+
+interface FileIngestionJobRow {
+  file_id: string;
+  status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  attempt_id: string;
+  lease_token: string;
+  lease_expires_at?: string | Date;
+  lease_active: boolean;
+  error_message?: string | null;
+}
+
+interface ReconcileFileIngestionAttemptOptions {
+  runInTransaction?: typeof withTransaction;
+  retryBaseDelayMs?: number;
+  maxAttempts?: number;
+}
+
+const getIngestionFailureMessage = (job: FileIngestionJobRow) => {
+  if (job.status === 'cancelled') return 'RAG service ingestion was cancelled';
+  if (job.status === 'failed' && job.error_message) return job.error_message.slice(0, 500);
+  return 'RAG service ingestion lease expired';
+};
+
+export const reconcileFileIngestionAttempt = async (
+  claim: Pick<FileIngestionClaim, 'file' | 'attemptId' | 'leaseToken'>,
+  options: ReconcileFileIngestionAttemptOptions = {}
+): Promise<FileIngestionReconciliation> => {
+  const runInTransaction = options.runInTransaction || withTransaction;
+  const retryBaseDelayMs = options.retryBaseDelayMs ?? serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS;
+  const maxAttempts = options.maxAttempts ?? serverEnv.FILE_QUEUE_MAX_ATTEMPTS;
+
+  return runInTransaction(async (client) => {
+    const fileResult = await client.query<FileRow>(
+      `select ${columns}
+       from files
+       where id = $1
+       for update`,
+      [claim.file.id]
+    );
+    const file = fileResult.rows[0];
+    if (!file) return { state: 'superseded' };
+    if (file.status === 'completed') return { state: 'completed' };
+    if (file.status !== 'processing') return { state: 'superseded' };
+
+    const jobResult = await client.query<FileIngestionJobRow>(
+      `select
+         file_id,
+         status,
+         attempt_id,
+         lease_token,
+         lease_expires_at,
+         lease_expires_at > now() as lease_active,
+         error_message
+       from file_ingestion_jobs
+       where file_id = $1
+       for update`,
+      [claim.file.id]
+    );
+    const job = jobResult.rows[0];
+    if (!job) return { state: 'superseded' };
+    if (job.attempt_id !== claim.attemptId || job.lease_token !== claim.leaseToken) {
+      return { state: 'superseded' };
+    }
+
+    if (job.status === 'completed') {
+      await client.query(
+        `update files
+         set status = 'completed',
+             progress = 100,
+             error_message = null,
+             next_attempt_at = null,
+             updated_at = now()
+         where id = $1
+           and status = 'processing'`,
+        [file.id]
+      );
+      return { state: 'completed' };
+    }
+
+    if ((job.status === 'queued' || job.status === 'processing') && job.lease_active) {
+      return { state: 'active' };
+    }
+
+    const errorMessage = getIngestionFailureMessage(job);
+    await client.query(
+      `update files
+       set status = 'failed',
+           progress = 0,
+           error_message = case
+             when attempts >= greatest(max_attempts, $3)
+               then 'Max attempts reached after ' || attempts::text || ' attempts: ' || $2
+             else $2
+           end,
+           max_attempts = greatest(max_attempts, $3),
+           next_attempt_at = case
+             when attempts >= greatest(max_attempts, $3) then null
+             else now() + (
+               least(
+                 3600000::double precision,
+                 $4::double precision * power(2, greatest(attempts - 1, 0))
+               ) * interval '1 millisecond'
+             )
+           end,
+           updated_at = now()
+       where id = $1
+         and status = 'processing'`,
+      [file.id, errorMessage, maxAttempts, retryBaseDelayMs]
+    );
+    return { state: 'failed' };
+  });
+};
+
+interface ReconcileFileIngestionJobsOptions extends ReconcileFileIngestionAttemptOptions {
+  limit?: number;
+  runQuery?: typeof query;
+  reconcileAttempt?: typeof reconcileFileIngestionAttempt;
+}
+
+export const reconcileFileIngestionJobs = async (
+  options: ReconcileFileIngestionJobsOptions = {}
+) => {
+  const limit = Math.max(1, Math.min(options.limit ?? 50, 500));
+  const runQuery = options.runQuery || query;
+  const reconcileAttempt = options.reconcileAttempt || reconcileFileIngestionAttempt;
+  const { rows } = await runQuery<{
+    file_id: string;
+    attempt_id: string;
+    lease_token: string;
+  }>(
+    `select job.file_id, job.attempt_id, job.lease_token
+     from file_ingestion_jobs job
+     join files file on file.id = job.file_id
+     where file.status = 'processing'
+       and (
+         job.status in ('completed', 'failed', 'cancelled')
+         or (
+           job.status in ('queued', 'processing')
+           and job.lease_expires_at <= now()
+         )
+       )
+     order by job.updated_at asc
+     limit $1`,
+    [limit]
   );
 
-  return updateFile(file.id, {
-    status: 'failed',
-    progress: 0,
-    error_message: exhausted
-      ? `Max attempts reached after ${attempts} attempts: ${errorMessage}`
-      : errorMessage,
-    max_attempts: maxAttempts,
-    next_attempt_at: exhausted ? null : new Date(Date.now() + retryDelayMs).toISOString(),
-  });
+  const results: FileIngestionReconciliation[] = [];
+  for (const row of rows) {
+    results.push(await reconcileAttempt({
+      file: { id: row.file_id },
+      attemptId: row.attempt_id,
+      leaseToken: row.lease_token,
+    }, options));
+  }
+  return results;
 };
 
 export const listFilesForUserCleanup = async (userId: string) => {
