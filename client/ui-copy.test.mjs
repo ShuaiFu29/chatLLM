@@ -263,9 +263,9 @@ test('usage tracking page is routed, reachable from navigation, and localized', 
   assert.match(appSource, /const UsagePage = lazy\(\(\) => import\('\.\/pages\/Usage'\)\)/);
   assert.match(appSource, /<Route path="\/usage" element=\{<UsagePage \/>\} \/>/);
   assert.match(mainLayoutSource, /sidebar\.usage/);
-  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage'\)/);
-  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage\/provider-health'\)/);
-  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\(`\/usage\/conversations\/\$\{conversationId\}`\)/);
+  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage'/);
+  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage\/provider-health'/);
+  assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\(`\/usage\/conversations\/\$\{conversationId\}`/);
   assert.match(usagePageSource, /ragRuns/);
   assert.match(usagePageSource, /usage\.ragRuns/);
   assert.match(usagePageSource, /usage\.ragRunTrace/);
@@ -301,7 +301,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(appSource, /<Route path="\/rag-eval" element=\{<RagEvaluationPage \/>\} \/>/);
   assert.match(mainLayoutSource, /sidebar\.ragEvaluation/);
   assert.match(mainLayoutSource, /navigate\('\/rag-eval'\)/);
-  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/datasets'\)/);
+  assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/history'/);
   assert.match(ragEvaluationPageSource, /api\.post(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
   assert.match(ragEvaluationPageSource, /api\.patch(?:<[^>]+>)?\(`\/rag-eval\/datasets\/\$\{selectedDatasetId\}`/);
@@ -334,7 +334,8 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /disabled=\{isSaving \|\| isSelectedDatasetAtCaseLimit\}/);
   assert.match(ragEvaluationPageSource, /status: 'completed' \| 'failed' \| 'partial' \| 'running'/);
   assert.match(ragEvaluationPageSource, /hasRunningRuns/);
-  assert.match(ragEvaluationPageSource, /setInterval\(\(\) => \{/);
+  assert.match(ragEvaluationPageSource, /createCompletionPoller\(/);
+  assert.doesNotMatch(ragEvaluationPageSource, /setInterval\(/);
   assert.match(ragEvaluationPageSource, /ragEval\.runQueued/);
   assert.match(ragEvaluationPageSource, /ragEval\.runningStatus/);
   assert.match(ragEvaluationPageSource, /ragEval\.cancelRun/);

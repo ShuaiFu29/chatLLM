@@ -12,7 +12,7 @@ vi.mock('../i18n', () => ({
   default: { t: (key: string) => key },
 }));
 
-import { type Message, useChatStore } from './useChatStore';
+import { type Conversation, type Message, useChatStore } from './useChatStore';
 import { chatRequestState } from './chatRequestState';
 
 const deferred = <T,>() => {
@@ -56,6 +56,88 @@ beforeEach(() => {
 });
 
 describe('conversation request isolation', () => {
+  test('latest conversation-list fetch wins when an older response resolves last', async () => {
+    const older = deferred<{ data: Conversation[] }>();
+    const newer = deferred<{ data: Conversation[] }>();
+    apiMock.get
+      .mockImplementationOnce(() => older.promise)
+      .mockImplementationOnce(() => newer.promise);
+    const oldConversation = {
+      id: 'old-conversation',
+      title: 'Old',
+      created_at: '2026-07-13T00:00:00.000Z',
+      updated_at: '2026-07-13T00:00:00.000Z',
+    };
+    const newConversation = {
+      id: 'new-conversation',
+      title: 'New',
+      created_at: '2026-07-13T00:00:00.000Z',
+      updated_at: '2026-07-13T00:00:00.000Z',
+    };
+
+    const olderFetch = useChatStore.getState().fetchConversations();
+    const newerFetch = useChatStore.getState().fetchConversations();
+    newer.resolve({ data: [newConversation] });
+    await newerFetch;
+    older.resolve({ data: [oldConversation] });
+    await olderFetch;
+
+    expect(apiMock.get.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(useChatStore.getState().conversations).toEqual([newConversation]);
+    expect(useChatStore.getState().loadingConversations).toBe(false);
+  });
+
+  test('successful rename invalidates an older conversation-list response', async () => {
+    const listRequest = deferred<{ data: Conversation[] }>();
+    const conversation = {
+      id: 'conversation-a',
+      title: 'Old title',
+      created_at: '2026-07-13T00:00:00.000Z',
+      updated_at: '2026-07-13T00:00:00.000Z',
+    };
+    apiMock.get.mockImplementation(() => listRequest.promise);
+    apiMock.patch.mockResolvedValue({ data: { ...conversation, title: 'Renamed title' } });
+    useChatStore.setState({ conversations: [conversation] });
+
+    const listFetch = useChatStore.getState().fetchConversations();
+    await useChatStore.getState().renameConversation('conversation-a', 'Renamed title');
+    expect(useChatStore.getState().loadingConversations).toBe(false);
+
+    listRequest.resolve({ data: [conversation] });
+    await listFetch;
+    expect(useChatStore.getState().conversations[0].title).toBe('Renamed title');
+  });
+
+  test('successful delete removes a conversation restored by a list response during the mutation', async () => {
+    const deleteRequest = deferred<void>();
+    const listRequest = deferred<{ data: Conversation[] }>();
+    const conversationA = {
+      id: 'conversation-a',
+      title: 'A',
+      created_at: '2026-07-13T00:00:00.000Z',
+      updated_at: '2026-07-13T00:00:00.000Z',
+    };
+    const conversationB = {
+      id: 'conversation-b',
+      title: 'B',
+      created_at: '2026-07-13T00:00:00.000Z',
+      updated_at: '2026-07-13T00:00:00.000Z',
+    };
+    apiMock.delete.mockImplementation(() => deleteRequest.promise);
+    apiMock.get.mockImplementation(() => listRequest.promise);
+    useChatStore.setState({ conversations: [conversationA, conversationB] });
+
+    const deletion = useChatStore.getState().deleteConversation('conversation-a');
+    const listFetch = useChatStore.getState().fetchConversations();
+    listRequest.resolve({ data: [conversationA, conversationB] });
+    await listFetch;
+    expect(useChatStore.getState().conversations.some((item) => item.id === 'conversation-a')).toBe(true);
+
+    deleteRequest.resolve();
+    await deletion;
+    expect(useChatStore.getState().conversations.map((item) => item.id)).toEqual(['conversation-b']);
+  });
+
   test('out-of-order conversation fetches update only their captured cache and visible conversation', async () => {
     const first = deferred<{ data: Message[]; headers: Record<string, string> }>();
     const second = deferred<{ data: Message[]; headers: Record<string, string> }>();
@@ -457,9 +539,10 @@ describe('conversation regeneration', () => {
       message('assistant-message', 'old answer'),
     ];
     apiMock.delete.mockRejectedValue(new Error('truncate failed'));
-    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => (
-      { ok: true, body: null } as Response
-    ));
+    const fetchMock = vi.fn<(
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => Promise<Response>>().mockResolvedValue({ ok: true, body: null } as Response);
     vi.stubGlobal('fetch', fetchMock);
     useChatStore.setState({
       currentConversationId: 'conversation-a',
@@ -487,9 +570,10 @@ describe('conversation regeneration', () => {
     ];
     apiMock.delete.mockImplementation(() => truncateRequest.promise);
     apiMock.get.mockResolvedValue({ data: [messageB], headers: {} });
-    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => (
-      { ok: true, body: null } as Response
-    ));
+    const fetchMock = vi.fn<(
+      url: string | URL | Request,
+      init?: RequestInit,
+    ) => Promise<Response>>().mockResolvedValue({ ok: true, body: null } as Response);
     vi.stubGlobal('fetch', fetchMock);
     useChatStore.setState({
       currentConversationId: 'conversation-a',

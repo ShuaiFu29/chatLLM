@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import api from '../lib/api';
 import { toSafeError } from '../lib/safeError';
+import { isRequestAbortError, RequestGenerationGuard } from './requestGeneration';
 
 export interface ProjectSpace {
   id: string;
@@ -24,6 +25,7 @@ interface ProjectSpaceState {
 }
 
 const STORAGE_KEY = 'chatllm.currentProjectSpaceId';
+const projectSpaceRequestGuard = new RequestGenerationGuard();
 
 export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
   projectSpaces: [],
@@ -31,9 +33,13 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
   loadingProjectSpaces: false,
 
   fetchProjectSpaces: async () => {
+    const ticket = projectSpaceRequestGuard.begin('list');
     set({ loadingProjectSpaces: true });
     try {
-      const res = await api.get<ProjectSpace[]>('/project-spaces');
+      const res = await api.get<ProjectSpace[]>('/project-spaces', {
+        signal: ticket.controller.signal,
+      });
+      if (!projectSpaceRequestGuard.isCurrent(ticket)) return;
       const spaces = res.data;
       const currentId = get().currentProjectSpaceId;
       const hasCurrent = currentId && spaces.some((space) => space.id === currentId);
@@ -47,43 +53,57 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
 
       set({ projectSpaces: spaces, currentProjectSpaceId: nextCurrentId });
     } catch (err) {
-      console.error('Failed to fetch project spaces:', toSafeError(err));
+      if (projectSpaceRequestGuard.isCurrent(ticket) && !isRequestAbortError(err)) {
+        console.error('Failed to fetch project spaces:', toSafeError(err));
+      }
     } finally {
-      set({ loadingProjectSpaces: false });
+      if (projectSpaceRequestGuard.finish(ticket)) set({ loadingProjectSpaces: false });
     }
   },
 
   createProjectSpace: async (name: string) => {
     const res = await api.post<ProjectSpace>('/project-spaces', { name });
     const space = res.data;
+    projectSpaceRequestGuard.abort('list');
     set((state) => ({
       projectSpaces: [space, ...state.projectSpaces],
       currentProjectSpaceId: space.id,
+      loadingProjectSpaces: false,
     }));
     localStorage.setItem(STORAGE_KEY, space.id);
     return space.id;
   },
 
   renameProjectSpace: async (id: string, name: string) => {
-    const previousSpaces = get().projectSpaces;
+    projectSpaceRequestGuard.abort('list');
+    const ticket = projectSpaceRequestGuard.begin(`rename:${id}`);
     set((state) => ({
       projectSpaces: state.projectSpaces.map((space) =>
         space.id === id ? { ...space, name } : space
       ),
+      loadingProjectSpaces: false,
     }));
 
     try {
-      const res = await api.patch<ProjectSpace>(`/project-spaces/${id}`, { name });
+      const res = await api.patch<ProjectSpace>(`/project-spaces/${id}`, { name }, {
+        signal: ticket.controller.signal,
+      });
+      if (!projectSpaceRequestGuard.isCurrent(ticket)) return;
       const updatedSpace = res.data;
+      projectSpaceRequestGuard.abort('list');
       set((state) => ({
         projectSpaces: state.projectSpaces.map((space) =>
           space.id === id ? updatedSpace : space
         ),
+        loadingProjectSpaces: false,
       }));
     } catch (err) {
-      set({ projectSpaces: previousSpaces });
+      if (!projectSpaceRequestGuard.isCurrent(ticket) || isRequestAbortError(err)) return;
+      await get().fetchProjectSpaces();
       console.error('Failed to rename project space:', toSafeError(err));
       throw err;
+    } finally {
+      projectSpaceRequestGuard.finish(ticket);
     }
   },
 
@@ -95,9 +115,12 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
       ? remainingSpaces[0]?.id || null
       : previousCurrentId;
 
+    projectSpaceRequestGuard.abort('list');
+    const ticket = projectSpaceRequestGuard.begin(`delete:${id}`);
     set({
       projectSpaces: remainingSpaces,
       currentProjectSpaceId: nextCurrentId,
+      loadingProjectSpaces: false,
     });
 
     if (nextCurrentId) {
@@ -107,19 +130,29 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
     }
 
     try {
-      await api.delete(`/project-spaces/${id}`);
-    } catch (err) {
-      set({
-        projectSpaces: previousSpaces,
-        currentProjectSpaceId: previousCurrentId,
+      await api.delete(`/project-spaces/${id}`, { signal: ticket.controller.signal });
+      if (!projectSpaceRequestGuard.isCurrent(ticket)) return;
+      projectSpaceRequestGuard.abort('list');
+      set((state) => {
+        const projectSpaces = state.projectSpaces.filter((space) => space.id !== id);
+        const currentProjectSpaceId = state.currentProjectSpaceId === id
+          ? projectSpaces[0]?.id || null
+          : state.currentProjectSpaceId;
+        return { projectSpaces, currentProjectSpaceId, loadingProjectSpaces: false };
       });
-      if (previousCurrentId) {
-        localStorage.setItem(STORAGE_KEY, previousCurrentId);
+      const currentProjectSpaceId = get().currentProjectSpaceId;
+      if (currentProjectSpaceId) {
+        localStorage.setItem(STORAGE_KEY, currentProjectSpaceId);
       } else {
         localStorage.removeItem(STORAGE_KEY);
       }
+    } catch (err) {
+      if (!projectSpaceRequestGuard.isCurrent(ticket) || isRequestAbortError(err)) return;
+      await get().fetchProjectSpaces();
       console.error('Failed to delete project space:', toSafeError(err));
       throw err;
+    } finally {
+      projectSpaceRequestGuard.finish(ticket);
     }
   },
 

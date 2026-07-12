@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Ban,
@@ -24,6 +24,11 @@ import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import { downloadTextFile } from '../lib/exportConversation';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
+import {
+  createCompletionPoller,
+  isRequestAbortError,
+  RequestGenerationGuard,
+} from '../stores/requestGeneration';
 
 interface RagEvalCase {
   id: string;
@@ -378,6 +383,9 @@ export default function RagEvaluationPage() {
   const [isHistoryBrowserOpen, setIsHistoryBrowserOpen] = useState(false);
   const [isBenchmarkModalOpen, setIsBenchmarkModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestGuardRef = useRef<RequestGenerationGuard | null>(null);
+  if (!requestGuardRef.current) requestGuardRef.current = new RequestGenerationGuard();
+  const requestGuard = requestGuardRef.current;
 
   const selectedDataset = useMemo(
     () => datasets.find((dataset) => dataset.id === selectedDatasetId) || datasets[0] || null,
@@ -395,37 +403,47 @@ export default function RagEvaluationPage() {
   const latestRunRefreshKey = latestRun ? `${latestRun.id}:${latestRun.status}` : '';
 
   const fetchDatasets = useCallback(async (showLoading = true) => {
+    const ticket = requestGuard.begin('datasets');
     if (showLoading) setIsLoading(true);
     setError(null);
 
     try {
-      const { data } = await api.get<RagEvalDataset[]>('/rag-eval/datasets');
+      const { data } = await api.get<RagEvalDataset[]>('/rag-eval/datasets', {
+        signal: ticket.controller.signal,
+      });
+      if (!requestGuard.isCurrent(ticket)) return;
       setDatasets(data);
       setSelectedDatasetId((currentId) => currentId || data[0]?.id || null);
     } catch (fetchError) {
-      console.error('Failed to load RAG eval datasets:', toSafeError(fetchError));
-      setError(t('ragEval.loadFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(fetchError)) {
+        console.error('Failed to load RAG eval datasets:', toSafeError(fetchError));
+        setError(t('ragEval.loadFailed'));
+      }
     } finally {
-      if (showLoading) setIsLoading(false);
+      if (requestGuard.finish(ticket)) setIsLoading(false);
     }
-  }, [t]);
+  }, [requestGuard, t]);
 
   const fetchHistory = useCallback(async () => {
+    const ticket = requestGuard.begin('history');
     setIsHistoryLoading(true);
     setHistoryError(null);
 
     try {
       const { data } = await api.get<RagEvalHistoryResponse>('/rag-eval/history', {
         params: { limit: 50 },
+        signal: ticket.controller.signal,
       });
-      setHistoryItems(data.items || []);
+      if (requestGuard.isCurrent(ticket)) setHistoryItems(data.items || []);
     } catch (fetchError) {
-      console.error('Failed to load historical RAG runs:', toSafeError(fetchError));
-      setHistoryError(t('ragEval.historyLoadFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(fetchError)) {
+        console.error('Failed to load historical RAG runs:', toSafeError(fetchError));
+        setHistoryError(t('ragEval.historyLoadFailed'));
+      }
     } finally {
-      setIsHistoryLoading(false);
+      if (requestGuard.finish(ticket)) setIsHistoryLoading(false);
     }
-  }, [t]);
+  }, [requestGuard, t]);
 
   useEffect(() => {
     void fetchProjectSpaces();
@@ -436,41 +454,43 @@ export default function RagEvaluationPage() {
   useEffect(() => {
     if (!hasRunningRuns) return undefined;
 
-    const intervalId = window.setInterval(() => {
-      void fetchDatasets(false);
-    }, 3000);
+    const poller = createCompletionPoller(() => fetchDatasets(false), 3_000);
+    poller.start();
 
-    return () => window.clearInterval(intervalId);
+    return () => poller.stop();
   }, [fetchDatasets, hasRunningRuns]);
 
   useEffect(() => {
     if (!selectedQualityDatasetId) {
       setQualitySummary(null);
+      setIsQualityLoading(false);
       return undefined;
     }
 
-    let isCancelled = false;
+    const ticket = requestGuard.begin('quality');
     setIsQualityLoading(true);
 
-    api.get<RagEvalQualitySummary>(`/rag-eval/datasets/${selectedQualityDatasetId}/quality`)
+    api.get<RagEvalQualitySummary>(`/rag-eval/datasets/${selectedQualityDatasetId}/quality`, {
+      signal: ticket.controller.signal,
+    })
       .then(({ data }) => {
-        if (!isCancelled) setQualitySummary(data);
+        if (requestGuard.isCurrent(ticket)) setQualitySummary(data);
       })
       .catch((qualityError) => {
-        console.error('Failed to load RAG eval quality summary:', toSafeError(qualityError));
-        if (!isCancelled) {
+        if (requestGuard.isCurrent(ticket) && !isRequestAbortError(qualityError)) {
+          console.error('Failed to load RAG eval quality summary:', toSafeError(qualityError));
           setQualitySummary(null);
           setError(t('ragEval.qualityLoadFailed'));
         }
       })
       .finally(() => {
-        if (!isCancelled) setIsQualityLoading(false);
+        if (requestGuard.finish(ticket)) setIsQualityLoading(false);
       });
 
     return () => {
-      isCancelled = true;
+      requestGuard.abort('quality');
     };
-  }, [selectedQualityDatasetId, latestRunRefreshKey, t]);
+  }, [latestRunRefreshKey, requestGuard, selectedQualityDatasetId, t]);
 
   const getWorkspaceName = (projectSpaceId?: string | null) => {
     if (!projectSpaceId) return t('ragEval.allWorkspaces');
@@ -535,11 +555,23 @@ export default function RagEvaluationPage() {
 
   const getHistoryScore = (item: RagEvalHistoryItem) => item.quality?.overall_score ?? 0;
 
-  const mergeRunIntoDatasets = (runToMerge: RagEvalRun) => {
+  const mergeRunIntoDatasets = useCallback((runToMerge: RagEvalRun) => {
     setDatasets((current) => current.map((dataset) => ({
       ...dataset,
       runs: (dataset.runs || []).map((run) => (run.id === runToMerge.id ? runToMerge : run)),
     })));
+  }, []);
+
+  const invalidateDatasetRequests = useCallback(() => {
+    requestGuard.abort('datasets');
+    setIsLoading(false);
+  }, [requestGuard]);
+
+  const closeRunDetails = () => {
+    requestGuard.abort('selected-run');
+    setIsRunModalOpen(false);
+    setSelectedRun(null);
+    setIsLoadingRun(false);
   };
 
   const openCreateDataset = () => {
@@ -604,6 +636,7 @@ export default function RagEvaluationPage() {
 
       if (datasetModalMode === 'edit' && selectedDatasetId) {
         const { data } = await api.patch<RagEvalDataset>(`/rag-eval/datasets/${selectedDatasetId}`, payload);
+        invalidateDatasetRequests();
         setDatasets((current) => current.map((dataset) => (
           dataset.id === selectedDatasetId
             ? { ...dataset, ...data, cases: dataset.cases, runs: dataset.runs }
@@ -615,6 +648,7 @@ export default function RagEvaluationPage() {
       }
 
       const { data } = await api.post<RagEvalDataset>('/rag-eval/datasets', payload);
+      invalidateDatasetRequests();
       setDatasets((current) => [data, ...current]);
       setSelectedDatasetId(data.id);
       setDatasetDraft(emptyDatasetDraft);
@@ -651,6 +685,7 @@ export default function RagEvaluationPage() {
         expected_source_files: splitList(caseDraft.expected_source_files),
       });
 
+      invalidateDatasetRequests();
       setDatasets((current) => current.map((dataset) => (
         dataset.id === selectedDatasetId
           ? { ...dataset, cases: [...(dataset.cases || []), data] }
@@ -669,6 +704,7 @@ export default function RagEvaluationPage() {
   const handleDeleteCase = async (caseId: string) => {
     try {
       await api.delete(`/rag-eval/cases/${caseId}`);
+      invalidateDatasetRequests();
       setDatasets((current) => current.map((dataset) => ({
         ...dataset,
         cases: (dataset.cases || []).filter((testCase) => testCase.id !== caseId),
@@ -687,6 +723,7 @@ export default function RagEvaluationPage() {
 
     try {
       await api.delete(`/rag-eval/datasets/${datasetToDelete.id}`);
+      invalidateDatasetRequests();
       setDatasets((current) => current.filter((dataset) => dataset.id !== datasetToDelete.id));
       setSelectedDatasetId((currentId) => (currentId === datasetToDelete.id ? null : currentId));
       setDatasetToDelete(null);
@@ -704,6 +741,7 @@ export default function RagEvaluationPage() {
 
     try {
       const { data } = await api.post<RagEvalRun>(`/rag-eval/datasets/${datasetId}/runs`);
+      invalidateDatasetRequests();
       setDatasets((current) => current.map((dataset) => (
         dataset.id === datasetId
           ? { ...dataset, runs: [data, ...(dataset.runs || [])] }
@@ -721,22 +759,31 @@ export default function RagEvaluationPage() {
   const handleCancelRun = async (runId: string) => {
     setCancellingRunId(runId);
     setError(null);
+    requestGuard.abort('selected-run');
+    const ticket = requestGuard.begin('cancel-run');
 
     try {
-      const { data } = await api.post<RagEvalRun>(`/rag-eval/runs/${runId}/cancel`);
+      const { data } = await api.post<RagEvalRun>(`/rag-eval/runs/${runId}/cancel`, undefined, {
+        signal: ticket.controller.signal,
+      });
+      if (!requestGuard.isCurrent(ticket)) return;
+      invalidateDatasetRequests();
       mergeRunIntoDatasets(data);
       setSelectedRun((current) => (current?.id === data.id ? data : current));
       toast.success(t('ragEval.cancelSuccess'));
     } catch (cancelError) {
-      console.error('Failed to cancel RAG eval run:', toSafeError(cancelError));
-      setError(t('ragEval.cancelFailed'));
-      toast.error(t('ragEval.cancelFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(cancelError)) {
+        console.error('Failed to cancel RAG eval run:', toSafeError(cancelError));
+        setError(t('ragEval.cancelFailed'));
+        toast.error(t('ragEval.cancelFailed'));
+      }
     } finally {
-      setCancellingRunId(null);
+      if (requestGuard.finish(ticket)) setCancellingRunId(null);
     }
   };
 
   const handleViewRunDetails = async (runId: string) => {
+    requestGuard.abort('selected-run');
     const cachedRun = datasets
       .flatMap((dataset) => dataset.runs || [])
       .find((run) => run.id === runId);
@@ -751,35 +798,61 @@ export default function RagEvaluationPage() {
       return;
     }
 
+    const ticket = requestGuard.begin('selected-run');
     try {
-      const { data } = await api.get<RagEvalRun>(`/rag-eval/runs/${runId}`);
+      const { data } = await api.get<RagEvalRun>(`/rag-eval/runs/${runId}`, {
+        signal: ticket.controller.signal,
+      });
+      if (!requestGuard.isCurrent(ticket)) return;
       setSelectedRun(data);
       mergeRunIntoDatasets(data);
     } catch (loadError) {
-      console.error('Failed to load RAG eval run:', toSafeError(loadError));
-      setError(t('ragEval.loadRunFailed'));
-      setIsRunModalOpen(false);
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(loadError)) {
+        console.error('Failed to load RAG eval run:', toSafeError(loadError));
+        setError(t('ragEval.loadRunFailed'));
+        setIsRunModalOpen(false);
+      }
     } finally {
-      setIsLoadingRun(false);
+      if (requestGuard.finish(ticket)) setIsLoadingRun(false);
     }
   };
 
   useEffect(() => {
-    if (!isRunModalOpen || !selectedRun || selectedRun.status !== 'running') return undefined;
+    if (
+      !isRunModalOpen
+      || !selectedRun
+      || selectedRun.status !== 'running'
+      || cancellingRunId === selectedRun.id
+    ) return undefined;
 
-    const intervalId = window.setInterval(() => {
-      api.get<RagEvalRun>(`/rag-eval/runs/${selectedRun.id}`)
-        .then(({ data }) => {
+    const runId = selectedRun.id;
+    const poller = createCompletionPoller(async () => {
+      const ticket = requestGuard.begin('selected-run');
+      try {
+        const { data } = await api.get<RagEvalRun>(`/rag-eval/runs/${runId}`, {
+          signal: ticket.controller.signal,
+        });
+        if (requestGuard.isCurrent(ticket)) {
           setSelectedRun(data);
           mergeRunIntoDatasets(data);
-        })
-        .catch((loadError) => {
+        }
+      } catch (loadError) {
+        if (requestGuard.isCurrent(ticket) && !isRequestAbortError(loadError)) {
           console.error('Failed to refresh RAG eval run:', toSafeError(loadError));
-        });
-    }, 3000);
+        }
+      } finally {
+        requestGuard.finish(ticket);
+      }
+    }, 3_000);
+    poller.start();
 
-    return () => window.clearInterval(intervalId);
-  }, [isRunModalOpen, selectedRun]);
+    return () => {
+      poller.stop();
+      requestGuard.abort('selected-run');
+    };
+  }, [cancellingRunId, isRunModalOpen, mergeRunIntoDatasets, requestGuard, selectedRun]);
+
+  useEffect(() => () => requestGuard.abortAll(), [requestGuard]);
 
   const handleExportRunReport = () => {
     if (!selectedRun) return;
@@ -1781,10 +1854,7 @@ export default function RagEvaluationPage() {
 
       <Modal
         isOpen={isRunModalOpen}
-        onClose={() => {
-          setIsRunModalOpen(false);
-          setSelectedRun(null);
-        }}
+        onClose={closeRunDetails}
         title={t('ragEval.runDetails')}
         maxWidth="3xl"
         footer={
@@ -1810,10 +1880,7 @@ export default function RagEvaluationPage() {
               {t('ragEval.exportRunReport')}
             </button>
             <button
-              onClick={() => {
-                setIsRunModalOpen(false);
-                setSelectedRun(null);
-              }}
+              onClick={closeRunDetails}
               className="rounded-lg bg-primary px-4 py-2 text-sm text-white transition-colors hover:bg-primary-hover"
             >
               {t('common.close')}

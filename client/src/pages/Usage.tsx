@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, AlertCircle, BarChart3, Bot, CheckCircle2, Clock, Database, FileText, MessageSquare, RefreshCw, UserRound } from 'lucide-react';
 import api from '../lib/api';
@@ -6,6 +6,7 @@ import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import Skeleton from '../components/Skeleton';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
+import { isRequestAbortError, RequestGenerationGuard } from '../stores/requestGeneration';
 
 interface UsageSummary {
   totalWorkspaces: number;
@@ -191,6 +192,9 @@ export default function UsagePage() {
   const [queueError, setQueueError] = useState<string | null>(null);
   const [providerHealthError, setProviderHealthError] = useState<string | null>(null);
   const [traceError, setTraceError] = useState<string | null>(null);
+  const requestGuardRef = useRef<RequestGenerationGuard | null>(null);
+  if (!requestGuardRef.current) requestGuardRef.current = new RequestGenerationGuard();
+  const requestGuard = requestGuardRef.current;
 
   const dateFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.language, {
@@ -264,52 +268,68 @@ export default function UsagePage() {
   }, [t]);
 
   const fetchOverview = useCallback(async () => {
+    const ticket = requestGuard.begin('overview');
     setIsLoadingOverview(true);
     setError(null);
 
     try {
-      const { data } = await api.get<UsageOverviewResponse>('/usage');
-      setOverview(data);
+      const { data } = await api.get<UsageOverviewResponse>('/usage', {
+        signal: ticket.controller.signal,
+      });
+      if (requestGuard.isCurrent(ticket)) setOverview(data);
     } catch (fetchError) {
-      console.error('Failed to fetch usage overview:', toSafeError(fetchError));
-      setError(t('usage.loadFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(fetchError)) {
+        console.error('Failed to fetch usage overview:', toSafeError(fetchError));
+        setError(t('usage.loadFailed'));
+      }
     } finally {
-      setIsLoadingOverview(false);
+      if (requestGuard.finish(ticket)) setIsLoadingOverview(false);
     }
-  }, [t]);
+  }, [requestGuard, t]);
 
   const fetchFileQueue = useCallback(async () => {
+    const ticket = requestGuard.begin('file-queue');
     setIsLoadingFileQueue(true);
     setQueueError(null);
 
     try {
-      const { data } = await api.get<UsageFileQueueResponse>('/usage/file-queue');
-      setFileQueue(data);
+      const { data } = await api.get<UsageFileQueueResponse>('/usage/file-queue', {
+        signal: ticket.controller.signal,
+      });
+      if (requestGuard.isCurrent(ticket)) setFileQueue(data);
     } catch (fetchError) {
-      console.error('Failed to fetch usage file queue:', toSafeError(fetchError));
-      setQueueError(t('usage.queueLoadFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(fetchError)) {
+        console.error('Failed to fetch usage file queue:', toSafeError(fetchError));
+        setQueueError(t('usage.queueLoadFailed'));
+      }
     } finally {
-      setIsLoadingFileQueue(false);
+      if (requestGuard.finish(ticket)) setIsLoadingFileQueue(false);
     }
-  }, [t]);
+  }, [requestGuard, t]);
 
   const fetchProviderHealth = useCallback(async () => {
+    const ticket = requestGuard.begin('provider-health');
     setIsLoadingProviderHealth(true);
     setProviderHealthError(null);
 
     try {
-      const { data } = await api.get<ProviderHealthResponse>('/usage/provider-health');
-      setProviderHealth(data);
+      const { data } = await api.get<ProviderHealthResponse>('/usage/provider-health', {
+        signal: ticket.controller.signal,
+      });
+      if (requestGuard.isCurrent(ticket)) setProviderHealth(data);
     } catch (fetchError) {
-      console.error('Failed to fetch model provider health:', toSafeError(fetchError));
-      setProviderHealth(null);
-      setProviderHealthError(t('usage.loadFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(fetchError)) {
+        console.error('Failed to fetch model provider health:', toSafeError(fetchError));
+        setProviderHealth(null);
+        setProviderHealthError(t('usage.loadFailed'));
+      }
     } finally {
-      setIsLoadingProviderHealth(false);
+      if (requestGuard.finish(ticket)) setIsLoadingProviderHealth(false);
     }
-  }, [t]);
+  }, [requestGuard, t]);
 
   const fetchConversationTrace = useCallback(async (conversationId: string) => {
+    const ticket = requestGuard.begin('conversation-trace');
     setSelectedConversationId(conversationId);
     setConversationTrace(null);
     setIsTraceModalOpen(true);
@@ -317,21 +337,27 @@ export default function UsagePage() {
     setTraceError(null);
 
     try {
-      const { data } = await api.get<UsageConversationResponse>(`/usage/conversations/${conversationId}`);
-      setConversationTrace(data);
+      const { data } = await api.get<UsageConversationResponse>(`/usage/conversations/${conversationId}`, {
+        signal: ticket.controller.signal,
+      });
+      if (requestGuard.isCurrent(ticket)) setConversationTrace(data);
     } catch (fetchError) {
-      console.error('Failed to fetch usage conversation trace:', toSafeError(fetchError));
-      setTraceError(t('usage.traceLoadFailed'));
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(fetchError)) {
+        console.error('Failed to fetch usage conversation trace:', toSafeError(fetchError));
+        setTraceError(t('usage.traceLoadFailed'));
+      }
     } finally {
-      setIsLoadingTrace(false);
+      if (requestGuard.finish(ticket)) setIsLoadingTrace(false);
     }
-  }, [t]);
+  }, [requestGuard, t]);
 
   useEffect(() => {
     void fetchOverview();
     void fetchFileQueue();
     void fetchProviderHealth();
   }, [fetchFileQueue, fetchOverview, fetchProviderHealth]);
+
+  useEffect(() => () => requestGuard.abortAll(), [requestGuard]);
 
   const summary = overview?.summary || emptySummary;
   const conversations = overview?.conversations || [];

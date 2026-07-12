@@ -8,6 +8,11 @@ import Modal from '../components/Modal';
 import DocumentViewerModal, { type DocumentReference } from '../components/DocumentViewerModal';
 import Skeleton from '../components/Skeleton';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import {
+  createCompletionPoller,
+  isRequestAbortError,
+  RequestGenerationGuard,
+} from '../stores/requestGeneration';
 
 interface FileRecord {
   id: string;
@@ -36,9 +41,15 @@ export default function KnowledgeBase() {
   const [selectedDocument, setSelectedDocument] = useState<DocumentReference | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const pollInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const uploadClearTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fetchFilesRef = useRef<() => Promise<void>>(async () => undefined);
+  const requestGuardRef = useRef<RequestGenerationGuard | null>(null);
+  if (!requestGuardRef.current) requestGuardRef.current = new RequestGenerationGuard();
+  const requestGuard = requestGuardRef.current;
+  const pollerRef = useRef<ReturnType<typeof createCompletionPoller> | null>(null);
+  if (!pollerRef.current) {
+    pollerRef.current = createCompletionPoller(() => fetchFilesRef.current(), 3_000);
+  }
 
   const clearUploadClearTimeout = useCallback(() => {
     if (uploadClearTimeout.current) {
@@ -48,26 +59,26 @@ export default function KnowledgeBase() {
   }, []);
 
   const stopPolling = useCallback(() => {
-    if (pollInterval.current) {
-      clearInterval(pollInterval.current);
-      pollInterval.current = null;
-    }
+    pollerRef.current?.stop();
   }, []);
 
   const startPolling = useCallback(() => {
-    if (pollInterval.current) return;
-    pollInterval.current = setInterval(() => {
-      fetchFilesRef.current();
-    }, 3000);
+    pollerRef.current?.start();
+  }, []);
+
+  const refreshFiles = useCallback(() => {
+    pollerRef.current?.startNow();
   }, []);
 
   const fetchFiles = useCallback(async () => {
+    const ticket = requestGuard.begin('files');
     try {
       const res = await api.get('/upload/files', {
-        params: { projectSpaceId: currentProjectSpaceId || undefined }
+        params: { projectSpaceId: currentProjectSpaceId || undefined },
+        signal: ticket.controller.signal,
       });
+      if (!requestGuard.isCurrent(ticket)) return;
       setFiles(res.data);
-      setIsLoading(false);
 
       // Check if any file is still processing or pending
       const hasActive = res.data.some((f: FileRecord) => f.status === 'processing' || f.status === 'pending');
@@ -81,10 +92,13 @@ export default function KnowledgeBase() {
         startPolling();
       }
     } catch (error) {
-      console.error('Failed to fetch files:', toSafeError(error));
-      setIsLoading(false);
+      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(error)) {
+        console.error('Failed to fetch files:', toSafeError(error));
+      }
+    } finally {
+      if (requestGuard.finish(ticket)) setIsLoading(false);
     }
-  }, [currentProjectSpaceId, startPolling, stopPolling]);
+  }, [currentProjectSpaceId, requestGuard, startPolling, stopPolling]);
 
   const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
 
@@ -94,13 +108,13 @@ export default function KnowledgeBase() {
 
   useEffect(() => {
     fetchFilesRef.current = fetchFiles;
-    void Promise.resolve().then(() => fetchFilesRef.current());
-    startPolling();
+    refreshFiles();
     return () => {
       stopPolling();
+      requestGuard.abortAll();
       clearUploadClearTimeout();
     };
-  }, [clearUploadClearTimeout, fetchFiles, startPolling, stopPolling]);
+  }, [clearUploadClearTimeout, fetchFiles, refreshFiles, requestGuard, stopPolling]);
 
   const handleDeleteClick = (id: string, filename: string) => {
     setDeleteFileTarget({ id, filename });
@@ -116,6 +130,9 @@ export default function KnowledgeBase() {
 
     const { id } = deleteFileTarget;
 
+    requestGuard.abort('files');
+    setIsLoading(false);
+
     // Optimistic Update: Immediately remove from UI and close modal
     setFiles(prev => prev.filter(f => f.id !== id));
     setDeleteFileTarget(null);
@@ -123,12 +140,13 @@ export default function KnowledgeBase() {
 
     try {
       await api.delete(`/upload/files/${id}`);
-      // Success - no need to do anything as UI is already updated
+      requestGuard.abort('files');
+      setFiles(prev => prev.filter(f => f.id !== id));
       window.dispatchEvent(new Event('knowledge-updated'));
     } catch (error) {
       console.error('Delete failed:', toSafeError(error));
       // Revert UI on failure
-      fetchFiles();
+      refreshFiles();
       showNotification('error', t('knowledge.deleteFail'));
     }
   };
@@ -179,13 +197,13 @@ export default function KnowledgeBase() {
         });
 
         if (progress.status === 'processing' || progress.status === 'completed') {
-          fetchFiles();
+          refreshFiles();
           window.dispatchEvent(new Event('knowledge-updated'));
         }
       }, { projectSpaceId: currentProjectSpaceId });
 
       setUploadState(null);
-      fetchFiles();
+      refreshFiles();
       showNotification('success', t('knowledge.uploadComplete'));
       window.dispatchEvent(new Event('knowledge-updated'));
 
@@ -211,6 +229,8 @@ export default function KnowledgeBase() {
   const handleRetryFile = async (id: string) => {
     try {
       const { data } = await api.post(`/upload/files/${id}/retry`);
+      requestGuard.abort('files');
+      setIsLoading(false);
       setFiles(prev => prev.map(file => file.id === id ? data : file));
       showNotification('success', t('knowledge.retryQueued'));
       startPolling();

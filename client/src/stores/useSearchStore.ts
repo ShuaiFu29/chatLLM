@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import api from '../lib/api';
 import { toSafeError } from '../lib/safeError';
 import type { Message } from './useChatStore';
+import { isRequestAbortError, RequestGenerationGuard } from './requestGeneration';
 
 export interface SearchResult extends Message {
   conversation_id: string;
@@ -48,6 +49,8 @@ const defaultFilters: SearchFilters = {
   includeArchived: false,
 };
 
+const searchRequestGuard = new RequestGenerationGuard();
+
 export const useSearchStore = create<SearchState>((set, get) => ({
   isOpen: false,
   query: '',
@@ -57,18 +60,27 @@ export const useSearchStore = create<SearchState>((set, get) => ({
 
   setIsOpen: (open) => set({ isOpen: open }),
 
-  setQuery: (query) => set({ query }),
+  setQuery: (query) => {
+    searchRequestGuard.abort('search');
+    set({ query, isLoading: false });
+  },
 
-  setFilters: (filters) => set((state) => ({
-    filters: { ...state.filters, ...filters },
-  })),
+  setFilters: (filters) => {
+    searchRequestGuard.abort('search');
+    set((state) => ({
+      filters: { ...state.filters, ...filters },
+      isLoading: false,
+    }));
+  },
 
   searchMessages: async (query: string) => {
     if (!query.trim()) {
+      searchRequestGuard.abort('search');
       set({ results: [], isLoading: false });
       return;
     }
 
+    const ticket = searchRequestGuard.begin('search');
     set({ isLoading: true });
     try {
       const filters = get().filters;
@@ -81,16 +93,22 @@ export const useSearchStore = create<SearchState>((set, get) => ({
           favoriteOnly: filters.favoriteOnly || undefined,
           tag: filters.tag || undefined,
           includeArchived: filters.includeArchived || undefined,
-        }
+        },
+        signal: ticket.controller.signal,
       });
-      set({ results: res.data });
+      if (searchRequestGuard.isCurrent(ticket)) set({ results: res.data });
     } catch (err) {
-      console.error('Search failed:', toSafeError(err));
-      set({ results: [] });
+      if (searchRequestGuard.isCurrent(ticket) && !isRequestAbortError(err)) {
+        console.error('Search failed:', toSafeError(err));
+        set({ results: [] });
+      }
     } finally {
-      set({ isLoading: false });
+      if (searchRequestGuard.finish(ticket)) set({ isLoading: false });
     }
   },
 
-  clearResults: () => set({ results: [], query: '' })
+  clearResults: () => {
+    searchRequestGuard.abort('search');
+    set({ results: [], query: '', isLoading: false });
+  }
 }));

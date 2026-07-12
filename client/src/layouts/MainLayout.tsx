@@ -11,6 +11,7 @@ import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
 import { useProjectSpaceStore, type ProjectSpace } from '../stores/useProjectSpaceStore';
 import { getAvatarUrl } from '../lib/avatar';
+import { isRequestAbortError, RequestGenerationGuard } from '../stores/requestGeneration';
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -70,6 +71,11 @@ export default function MainLayout() {
   const [conversationFilter, setConversationFilter] = useState<'active' | 'archived'>('active');
   const [isWorkspaceBrowserOpen, setIsWorkspaceBrowserOpen] = useState(false);
   const [isConversationBrowserOpen, setIsConversationBrowserOpen] = useState(false);
+  const knowledgeRequestGuardRef = useRef<RequestGenerationGuard | null>(null);
+  if (!knowledgeRequestGuardRef.current) {
+    knowledgeRequestGuardRef.current = new RequestGenerationGuard();
+  }
+  const knowledgeRequestGuard = knowledgeRequestGuardRef.current;
 
   const baseProjectConversations = useMemo(
     () => conversations
@@ -104,15 +110,21 @@ export default function MainLayout() {
   const userAvatarUrl = getAvatarUrl(user?.avatar_url, userDisplayName, 64);
 
   const fetchKnowledgeFiles = useCallback(async () => {
+    const ticket = knowledgeRequestGuard.begin('knowledge-files');
     try {
       const res = await api.get('/upload/files', {
-        params: { projectSpaceId: currentProjectSpaceId || undefined }
+        params: { projectSpaceId: currentProjectSpaceId || undefined },
+        signal: ticket.controller.signal,
       });
-      setKnowledgeFiles(res.data);
+      if (knowledgeRequestGuard.isCurrent(ticket)) setKnowledgeFiles(res.data);
     } catch (err) {
-      console.error('Failed to fetch knowledge files:', toSafeError(err));
+      if (knowledgeRequestGuard.isCurrent(ticket) && !isRequestAbortError(err)) {
+        console.error('Failed to fetch knowledge files:', toSafeError(err));
+      }
+    } finally {
+      knowledgeRequestGuard.finish(ticket);
     }
-  }, [currentProjectSpaceId]);
+  }, [currentProjectSpaceId, knowledgeRequestGuard]);
 
   useEffect(() => {
     const initData = async () => {
@@ -132,8 +144,9 @@ export default function MainLayout() {
 
     return () => {
       window.removeEventListener('knowledge-updated', handleKnowledgeUpdate);
+      knowledgeRequestGuard.abort('knowledge-files');
     };
-  }, [currentProjectSpaceId, fetchKnowledgeFiles]);
+  }, [currentProjectSpaceId, fetchKnowledgeFiles, knowledgeRequestGuard]);
 
   useEffect(() => {
     if (editingId && editInputRef.current) {

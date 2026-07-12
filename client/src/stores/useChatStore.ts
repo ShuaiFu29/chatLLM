@@ -3,6 +3,7 @@ import api from '../lib/api';
 import { toSafeError } from '../lib/safeError';
 import i18n from '../i18n';
 import { chatRequestState } from './chatRequestState';
+import { RequestGenerationGuard } from './requestGeneration';
 
 export interface Conversation {
   id: string;
@@ -252,6 +253,12 @@ const fetchConversationMessages = async (
   }
 };
 
+const conversationListRequestGuard = new RequestGenerationGuard();
+const invalidateConversationList = (set: ChatSet) => {
+  conversationListRequestGuard.abort('conversations');
+  set({ loadingConversations: false });
+};
+
 export const useChatStore = create<ChatState>((set, get) => ({
   conversations: [],
   currentConversationId: null,
@@ -266,20 +273,25 @@ export const useChatStore = create<ChatState>((set, get) => ({
   abortController: null,
 
   fetchConversations: async (options = { includeArchived: true }) => {
+    const ticket = conversationListRequestGuard.begin('conversations');
     set({ loadingConversations: true });
     try {
       const res = await api.get('/chat/conversations', {
-        params: { includeArchived: options.includeArchived }
+        params: { includeArchived: options.includeArchived },
+        signal: ticket.controller.signal,
       });
-      set({ conversations: res.data });
+      if (conversationListRequestGuard.isCurrent(ticket)) set({ conversations: res.data });
     } catch (err) {
-      console.error('Failed to fetch conversations:', toSafeError(err));
+      if (conversationListRequestGuard.isCurrent(ticket) && !isAbortError(err)) {
+        console.error('Failed to fetch conversations:', toSafeError(err));
+      }
     } finally {
-      set({ loadingConversations: false });
+      if (conversationListRequestGuard.finish(ticket)) set({ loadingConversations: false });
     }
   },
 
   createConversation: async (title?: string, settings?: Partial<Conversation>) => {
+    invalidateConversationList(set);
     // Optimistic Update
     const tempId = 'temp-' + Date.now();
     const tempConv: Conversation = {
@@ -327,11 +339,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       const newConv = res.data;
 
+      invalidateConversationList(set);
       set((state) => {
         // Replace temp conversation with real one
-        const newConversations = state.conversations.map(c =>
-          c.id === tempId ? newConv : c
-        );
+        const hasTempConversation = state.conversations.some((conversation) => conversation.id === tempId);
+        const newConversations = hasTempConversation
+          ? state.conversations.map(c => c.id === tempId ? newConv : c)
+          : [newConv, ...state.conversations.filter((conversation) => conversation.id !== newConv.id)];
 
         // Migrate cache
         const newCache = { ...state.messagesCache };
@@ -371,6 +385,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   renameConversation: async (id: string, title: string) => {
+    invalidateConversationList(set);
     const previousConversations = get().conversations;
 
     // Optimistic Update
@@ -382,6 +397,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       await api.patch(`/chat/conversations/${id}`, { title });
+      invalidateConversationList(set);
+      set((state) => ({
+        conversations: state.conversations.map((conversation) => (
+          conversation.id === id ? { ...conversation, title } : conversation
+        )),
+      }));
     } catch (err) {
       console.error('Failed to rename conversation:', toSafeError(err));
       // Rollback
@@ -390,6 +411,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   updateConversation: async (id: string, updates: Partial<Conversation>) => {
+    invalidateConversationList(set);
     const previousConversations = get().conversations;
 
     // Optimistic Update
@@ -404,6 +426,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       await api.patch(`/chat/conversations/${id}`, updates);
+      invalidateConversationList(set);
+      set((state) => ({
+        conversations: state.conversations.map((conversation) => (
+          conversation.id === id ? { ...conversation, ...updates } : conversation
+        )),
+      }));
     } catch (err) {
       console.error('Failed to update conversation:', toSafeError(err));
       // Rollback
@@ -432,6 +460,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       const branch = res.data;
 
+      invalidateConversationList(set);
       set((state) => ({
         conversations: [branch, ...state.conversations.filter(c => c.id !== branch.id)],
         currentConversationId: branch.id,
@@ -459,6 +488,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   archiveConversation: async (id: string) => {
+    invalidateConversationList(set);
     const previousConversations = get().conversations;
     const previousCurrentId = get().currentConversationId;
     const previousMessages = get().messages;
@@ -474,6 +504,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       await api.patch(`/chat/conversations/${id}`, { archived: true, is_pinned: false });
+      invalidateConversationList(set);
+      set((state) => ({
+        conversations: state.conversations.map((conversation) => (
+          conversation.id === id
+            ? { ...conversation, archived_at: archivedAt, is_pinned: false }
+            : conversation
+        )),
+      }));
     } catch (err) {
       console.error('Failed to archive conversation:', toSafeError(err));
       set({
@@ -485,6 +523,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   unarchiveConversation: async (id: string) => {
+    invalidateConversationList(set);
     const previousConversations = get().conversations;
 
     set((state) => ({
@@ -495,6 +534,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       await api.patch(`/chat/conversations/${id}`, { archived: false });
+      invalidateConversationList(set);
+      set((state) => ({
+        conversations: state.conversations.map((conversation) => (
+          conversation.id === id ? { ...conversation, archived_at: null } : conversation
+        )),
+      }));
     } catch (err) {
       console.error('Failed to unarchive conversation:', toSafeError(err));
       set({ conversations: previousConversations });
@@ -502,6 +547,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   deleteConversation: async (id: string) => {
+    invalidateConversationList(set);
     const previousConversations = get().conversations;
     const previousCurrentId = get().currentConversationId;
     const deletedConversationIndex = previousConversations.findIndex((conversation) => (
@@ -526,6 +572,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     try {
       await api.delete(`/chat/conversations/${id}`);
+      invalidateConversationList(set);
       chatRequestState.clearConversation(id);
       // Remove from cache
       set((state) => {
@@ -533,7 +580,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const newPagination = { ...state.messagePagination };
         delete newCache[id];
         delete newPagination[id];
-        return { messagesCache: newCache, messagePagination: newPagination };
+        return {
+          conversations: state.conversations.filter((conversation) => conversation.id !== id),
+          messagesCache: newCache,
+          messagePagination: newPagination,
+        };
       });
     } catch (err) {
       console.error('Failed to delete conversation:', toSafeError(err));
