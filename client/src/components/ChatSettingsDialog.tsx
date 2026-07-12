@@ -4,6 +4,7 @@ import { AlertCircle, Save, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import SelectField from './SelectField';
 
 interface ChatSettingsDialogProps {
@@ -97,7 +98,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           if (isMounted) setPromptTemplates(response.data);
         })
         .catch((error) => {
-          console.error('Failed to load prompt templates:', error);
+          console.error('Failed to load prompt templates:', toSafeError(error));
           if (isMounted) setPromptTemplates([]);
         })
         .finally(() => {
@@ -111,7 +112,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           if (isMounted) setProviderHealth(response.data);
         })
         .catch((error) => {
-          console.error('Failed to load model provider health:', error);
+          console.error('Failed to load model provider health:', toSafeError(error));
           if (isMounted) {
             setProviderHealth(null);
             setProviderHealthError(t('settings.providerHealthLoadFailed'));

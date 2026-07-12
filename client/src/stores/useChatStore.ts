@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import i18n from '../i18n';
 
 export interface Conversation {
@@ -185,7 +186,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
       set({ conversations: res.data });
     } catch (err) {
-      console.error('Failed to fetch conversations:', err);
+      console.error('Failed to fetch conversations:', toSafeError(err));
     } finally {
       set({ loadingConversations: false });
     }
@@ -267,7 +268,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
       return newConv.id;
     } catch (err) {
-      console.error('Failed to create conversation:', err);
+      console.error('Failed to create conversation:', toSafeError(err));
       // Rollback
       set((state) => ({
         conversations: state.conversations.filter(c => c.id !== tempId),
@@ -290,7 +291,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.patch(`/chat/conversations/${id}`, { title });
     } catch (err) {
-      console.error('Failed to rename conversation:', err);
+      console.error('Failed to rename conversation:', toSafeError(err));
       // Rollback
       set({ conversations: previousConversations });
     }
@@ -312,7 +313,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.patch(`/chat/conversations/${id}`, updates);
     } catch (err) {
-      console.error('Failed to update conversation:', err);
+      console.error('Failed to update conversation:', toSafeError(err));
       // Rollback
       set({ conversations: previousConversations });
     }
@@ -348,7 +349,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       await get().selectConversation(branch.id);
       return branch.id;
     } catch (err) {
-      console.error('Failed to branch conversation:', err);
+      console.error('Failed to branch conversation:', toSafeError(err));
       return null;
     }
   },
@@ -360,7 +361,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       );
       return res.data;
     } catch (err) {
-      console.error('Failed to compare conversations:', err);
+      console.error('Failed to compare conversations:', toSafeError(err));
       return null;
     }
   },
@@ -382,7 +383,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.patch(`/chat/conversations/${id}`, { archived: true, is_pinned: false });
     } catch (err) {
-      console.error('Failed to archive conversation:', err);
+      console.error('Failed to archive conversation:', toSafeError(err));
       set({
         currentConversationId: previousCurrentId,
         conversations: previousConversations,
@@ -403,7 +404,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.patch(`/chat/conversations/${id}`, { archived: false });
     } catch (err) {
-      console.error('Failed to unarchive conversation:', err);
+      console.error('Failed to unarchive conversation:', toSafeError(err));
       set({ conversations: previousConversations });
     }
   },
@@ -429,7 +430,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         return { messagesCache: newCache, messagePagination: newPagination };
       });
     } catch (err) {
-      console.error('Failed to delete conversation:', err);
+      console.error('Failed to delete conversation:', toSafeError(err));
       // Rollback
       set({
         conversations: previousConversations,
@@ -453,7 +454,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.delete(`/chat/messages/${messageId}`);
     } catch (err) {
-      console.error('Failed to delete message:', err);
+      console.error('Failed to delete message:', toSafeError(err));
       // Rollback
       set((state) => ({
         messages: previousMessages,
@@ -502,7 +503,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Delete them from server asynchronously
     // We don't wait for this to finish to start generating, but we should fire and forget
     messagesToDelete.forEach(m => {
-      api.delete(`/chat/messages/${m.id}`).catch(e => console.error('Failed to delete stale message:', e));
+      api.delete(`/chat/messages/${m.id}`).catch(e => console.error('Failed to delete stale message:', toSafeError(e)));
     });
 
     // Also delete the user message from server to avoid duplicates when we re-send it
@@ -510,7 +511,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     try {
       await api.delete(`/chat/messages/${lastUserMessage.id}`);
     } catch (e) {
-      console.error('Failed to delete user message for regen:', e);
+      console.error('Failed to delete user message for regen:', toSafeError(e));
     }
 
     // Trigger sendMessage with the last user content
@@ -569,7 +570,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         loadingMessages: false
       }));
     } catch (err) {
-      console.error('Failed to fetch messages:', err);
+      console.error('Failed to fetch messages:', toSafeError(err));
       set({ loadingMessages: false });
     }
   },
@@ -609,7 +610,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
     } catch (err) {
-      console.error('Failed to load older messages:', err);
+      console.error('Failed to load older messages:', toSafeError(err));
     } finally {
       set({ loadingOlderMessages: false });
     }
@@ -833,7 +834,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 }
               }
             } catch (e) {
-              console.error('Error parsing SSE data', e);
+              console.error('Error parsing SSE data', toSafeError(e));
             }
           }
         }
@@ -845,7 +846,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       if ((err as Error).name === 'AbortError') {
         return;
       } else {
-        console.error('Failed to send message:', err);
+        console.error('Failed to send message:', toSafeError(err));
         // Rollback only if it was a new message
         if (!isContinue) {
           const currentMsgs = get().messages;

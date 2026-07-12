@@ -1,4 +1,5 @@
 import { serverEnv } from './env';
+import { toSafeError } from './safeError';
 
 type ChatProviderId = 'deepseek' | 'moonshot' | 'qwen';
 
@@ -360,7 +361,7 @@ export const getEmbedding = async (text: string) => {
     logEmbeddingDebug(`[Embedding] Received vector of length: ${vec.length}`);
     return vec;
   } catch (error) {
-    console.error(`Embedding Error (Model: ${EMBEDDING_MODEL}):`, error);
+    console.error('[Embeddings] Request failed:', toSafeError(error));
     throw error;
   }
 };

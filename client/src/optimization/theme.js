@@ -64,7 +64,7 @@
       root.style.setProperty('--color-border', adjustColorBrightness(baseColor, -15));
     }
 
-  } catch (e) {
-    console.error('Theme init failed', e);
+  } catch {
+    console.error('Theme init failed');
   }
 })();

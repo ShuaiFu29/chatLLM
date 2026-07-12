@@ -2,6 +2,7 @@ import axios from 'axios';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { buildRagServiceHeaders } from '../lib/ragClient';
+import { toSafeError } from '../lib/safeError';
 import {
   claimNextPendingFile,
   FileRow,
@@ -65,7 +66,7 @@ class FileQueueService {
         shouldContinue = files.length === this.concurrency;
       }
     } catch (err) {
-      console.error('[FileQueue] Failed to process pending file:', err);
+      console.error('[FileQueue] Failed to process pending file:', toSafeError(err));
     } finally {
       this.isProcessing = false;
     }
@@ -83,9 +84,9 @@ class FileQueueService {
         headers: buildRagServiceHeaders(),
       });
       status = 'completed';
-    } catch (err: any) {
-      const message = `RAG Service unavailable: ${err.message}`;
-      await markFileAttemptFailed(file, message);
+    } catch (err) {
+      console.warn('[FileQueue] RAG ingestion request failed:', toSafeError(err));
+      await markFileAttemptFailed(file, 'RAG service ingestion failed');
     } finally {
       if (heartbeat) clearInterval(heartbeat);
       metrics.recordFileQueueFinished(status);
@@ -96,7 +97,7 @@ class FileQueueService {
     const heartbeatMs = Math.max(1000, Math.floor(this.staleAfterMs / 3));
     const heartbeat = setInterval(() => {
       touchFileProcessingHeartbeat(fileId).catch((error) => {
-        console.warn(`[FileQueue] Failed to refresh processing heartbeat for ${fileId}:`, error);
+        console.warn('[FileQueue] Failed to refresh processing heartbeat:', toSafeError(error));
       });
     }, heartbeatMs);
     heartbeat.unref?.();

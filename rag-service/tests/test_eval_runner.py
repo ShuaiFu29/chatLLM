@@ -139,7 +139,7 @@ class EvalRunnerTests(unittest.TestCase):
 
     def test_run_eval_cases_records_case_failures_without_aborting_batch(self):
         def failing_agentic_retrieve(query, user_id, project_space_id, limit, threshold):
-            raise RuntimeError("vector store unavailable")
+            raise RuntimeError("vector store unavailable with injected-secret-value")
 
         output = run_eval_cases(
             cases=[{"id": "case-1", "question": "What failed?"}],
@@ -156,7 +156,8 @@ class EvalRunnerTests(unittest.TestCase):
         self.assertEqual(output["results"][0]["citation_accuracy_score"], 0)
         self.assertEqual(output["results"][0]["grounding_score"], 0)
         self.assertGreaterEqual(output["results"][0]["latency_ms"], 0)
-        self.assertEqual(output["results"][0]["error_message"], "vector store unavailable")
+        self.assertEqual(output["results"][0]["error_message"], "Evaluation case failed")
+        self.assertNotIn("injected-secret-value", str(output))
 
     def test_run_eval_cases_can_apply_llm_judge_to_answer_and_trace(self):
         def fake_agentic_retrieve(query, user_id, project_space_id, limit, threshold):

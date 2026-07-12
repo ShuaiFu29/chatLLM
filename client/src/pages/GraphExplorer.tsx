@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, GitFork, Loader2, Maximize2, Minus, Plus, RotateCcw, Search } from 'lucide-react';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import DocumentViewerModal, { type DocumentReference } from '../components/DocumentViewerModal';
 import Skeleton from '../components/Skeleton';
 import SelectField from '../components/SelectField';
@@ -477,7 +478,7 @@ export default function GraphExplorerPage() {
       setHasSearched(true);
     } catch (searchError) {
       if (requestId !== graphRequestSeq.current) return;
-      console.error('Failed to load RAG graph overview:', searchError);
+      console.error('Failed to load RAG graph overview:', toSafeError(searchError));
       setError(t('graphExplorer.loadFailed'));
     } finally {
       if (requestId === graphRequestSeq.current) {
@@ -510,7 +511,7 @@ export default function GraphExplorerPage() {
       setHasSearched(true);
     } catch (searchError) {
       if (requestId !== graphRequestSeq.current) return;
-      console.error('Failed to search RAG graph:', searchError);
+      console.error('Failed to search RAG graph:', toSafeError(searchError));
       setError(t('graphExplorer.loadFailed'));
     } finally {
       if (requestId === graphRequestSeq.current) {

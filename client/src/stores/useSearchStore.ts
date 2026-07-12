@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import type { Message } from './useChatStore';
 
 export interface SearchResult extends Message {
@@ -84,7 +85,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       });
       set({ results: res.data });
     } catch (err) {
-      console.error('Search failed:', err);
+      console.error('Search failed:', toSafeError(err));
       set({ results: [] });
     } finally {
       set({ isLoading: false });

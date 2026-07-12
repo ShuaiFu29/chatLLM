@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, AlertCircle, BarChart3, Bot, CheckCircle2, Clock, Database, FileText, MessageSquare, RefreshCw, UserRound } from 'lucide-react';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import Skeleton from '../components/Skeleton';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
@@ -270,7 +271,7 @@ export default function UsagePage() {
       const { data } = await api.get<UsageOverviewResponse>('/usage');
       setOverview(data);
     } catch (fetchError) {
-      console.error('Failed to fetch usage overview:', fetchError);
+      console.error('Failed to fetch usage overview:', toSafeError(fetchError));
       setError(t('usage.loadFailed'));
     } finally {
       setIsLoadingOverview(false);
@@ -285,7 +286,7 @@ export default function UsagePage() {
       const { data } = await api.get<UsageFileQueueResponse>('/usage/file-queue');
       setFileQueue(data);
     } catch (fetchError) {
-      console.error('Failed to fetch usage file queue:', fetchError);
+      console.error('Failed to fetch usage file queue:', toSafeError(fetchError));
       setQueueError(t('usage.queueLoadFailed'));
     } finally {
       setIsLoadingFileQueue(false);
@@ -300,7 +301,7 @@ export default function UsagePage() {
       const { data } = await api.get<ProviderHealthResponse>('/usage/provider-health');
       setProviderHealth(data);
     } catch (fetchError) {
-      console.error('Failed to fetch model provider health:', fetchError);
+      console.error('Failed to fetch model provider health:', toSafeError(fetchError));
       setProviderHealth(null);
       setProviderHealthError(t('usage.loadFailed'));
     } finally {
@@ -319,7 +320,7 @@ export default function UsagePage() {
       const { data } = await api.get<UsageConversationResponse>(`/usage/conversations/${conversationId}`);
       setConversationTrace(data);
     } catch (fetchError) {
-      console.error('Failed to fetch usage conversation trace:', fetchError);
+      console.error('Failed to fetch usage conversation trace:', toSafeError(fetchError));
       setTraceError(t('usage.traceLoadFailed'));
     } finally {
       setIsLoadingTrace(false);

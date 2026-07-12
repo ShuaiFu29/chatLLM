@@ -15,6 +15,7 @@ from ingestion import process_file
 from keyword_store import check_keyword_store_ready, delete_file_keywords, ensure_keyword_index
 from retrieval_cache import get_default_retrieval_cache
 from retrieval import retrieve_documents
+from safe_errors import safe_error_fields
 from vector_store import check_vector_store_ready, delete_file_vectors, ensure_collection
 
 app = FastAPI(title="RAG Service", description="Microservice for Retrieval-Augmented Generation")
@@ -193,7 +194,7 @@ def startup():
         try:
             task()
         except Exception as error:
-            print(f"[startup] Deferred {label} initialization: {error}")
+            print(f"[startup] Deferred {label} initialization: {safe_error_fields(error)}")
 
 def process_file_with_guard(file_id: str):
     try:

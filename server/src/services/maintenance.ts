@@ -10,6 +10,7 @@ import {
   markMultipartUploadSessionExpired,
 } from '../repositories/uploadMultipart';
 import { deleteAbandonedUploadingFiles, updateFile } from '../repositories/files';
+import { toSafeError } from '../lib/safeError';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
 const ABANDONED_UPLOAD_RECORD_MAX_AGE_MS = Math.min(
@@ -85,7 +86,7 @@ class MaintenanceService {
 
     results.forEach((result) => {
       if (result.status === 'rejected') {
-        console.warn('[Maintenance] Cleanup task failed:', result.reason);
+        console.warn('[Maintenance] Cleanup task failed:', toSafeError(result.reason));
       }
     });
   }

@@ -41,6 +41,38 @@ def run_script(script, extra_env=None):
 
 
 class HttpSafetyTests(unittest.TestCase):
+    def test_safe_error_fields_allowlist_exception_metadata(self):
+        safe_errors_path = ROOT / "safe_errors.py"
+        self.assertTrue(safe_errors_path.exists(), "safe_errors.py must centralize Python error redaction")
+
+        from safe_errors import safe_error_fields
+
+        error = RuntimeError("injected-secret-value")
+        error.code = "ERR_SAFE_CODE"
+        error.status = 503
+        error.config = {"token": "rag-token-secret-value"}
+
+        self.assertEqual(safe_error_fields(error), {
+            "name": "RuntimeError",
+            "code": "ERR_SAFE_CODE",
+            "status": 503,
+        })
+        self.assertNotIn("secret", str(safe_error_fields(error)))
+
+    def test_background_errors_use_safe_metadata_in_logs_and_public_state(self):
+        main_source = (ROOT / "main.py").read_text(encoding="utf-8")
+        ingestion_source = (ROOT / "ingestion.py").read_text(encoding="utf-8")
+        agentic_source = (ROOT / "agentic_retrieval.py").read_text(encoding="utf-8")
+
+        self.assertNotIn("{error}", main_source)
+        self.assertNotIn('"error_message": str(error)', (ROOT / "eval_runner.py").read_text(encoding="utf-8"))
+        self.assertNotIn("str(error)", agentic_source)
+        self.assertNotIn("str(cache_error)", agentic_source)
+        self.assertNotIn('file %s: %s", file_id, cleanup_error', ingestion_source)
+        self.assertIn("safe_error_fields(cleanup_error)", ingestion_source)
+        self.assertNotIn("graph_error,", ingestion_source)
+        self.assertIn("safe_error_fields(graph_error)", ingestion_source)
+
     def test_config_exposes_a_positive_request_body_limit(self):
         result = run_script(
             "import config; assert config.settings.rag_max_request_bytes == 1234; print('ok')",

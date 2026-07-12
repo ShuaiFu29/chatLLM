@@ -15,7 +15,7 @@
     "dev:server": "npm --prefix server run dev",
     "dev:rag": "node scripts/run-rag-service.mjs",
     "dev:client": "npm --prefix client run dev",
-    "test": "node --test scripts/check-env.test.mjs scripts/check-ports.test.mjs scripts/capacity-check.test.mjs scripts/load-smoke.test.mjs scripts/ops-check.test.mjs scripts/rag-demo-cleanup.test.mjs scripts/rag-demo-suite.test.mjs scripts/rag-smoke.test.mjs scripts/run-rag-service.test.mjs client/vite-proxy-target.test.mjs client/build-config.test.mjs client/ui-copy.test.mjs client/export-conversation.test.mjs client/chat-drafts.test.mjs && npm --prefix server run test && node scripts/run-rag-service.mjs --test",
+    "test": "node --test scripts/check-env.test.mjs scripts/check-ports.test.mjs scripts/capacity-check.test.mjs scripts/load-smoke.test.mjs scripts/ops-check.test.mjs scripts/rag-demo-cleanup.test.mjs scripts/rag-demo-suite.test.mjs scripts/rag-smoke.test.mjs scripts/run-rag-service.test.mjs scripts/safe-error.test.mjs client/vite-proxy-target.test.mjs client/build-config.test.mjs client/ui-copy.test.mjs client/export-conversation.test.mjs client/chat-drafts.test.mjs && npm --prefix server run test && node scripts/run-rag-service.mjs --test",
     "build": "npm --prefix server run build && npm --prefix client run build",
     "lint": "npm --prefix client run lint",
     "load:smoke": "node scripts/load-smoke.mjs",

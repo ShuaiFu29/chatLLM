@@ -376,6 +376,9 @@ test('multipart completion rejects completed part sets whose storage size does n
 
 test('multipart completion preserves completed object key when database queueing fails', async () => {
   const calls = [];
+  const logs = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => logs.push(args);
   let updateCount = 0;
   const { controller, restore } = withMockedUploadController({
     files: {
@@ -447,7 +450,10 @@ test('multipart completion preserves completed object key when database queueing
       progress: 0,
       error_message: response.body.details,
     }]);
+    assert.equal(logs.length, 1);
+    assert.doesNotMatch(JSON.stringify(logs), /database temporarily unavailable/);
   } finally {
+    console.error = originalConsoleError;
     restore();
   }
 });

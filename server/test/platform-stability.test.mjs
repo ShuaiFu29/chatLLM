@@ -158,7 +158,9 @@ test('server applies baseline security headers and structured error responses', 
   assert.match(errorHandlerSource, /res\.locals\.requestId/);
   assert.match(errorHandlerSource, /Not allowed by CORS/);
   assert.match(errorHandlerSource, /statusCode/);
-  assert.match(errorHandlerSource, /NODE_ENV !== 'production'/);
+  assert.match(errorHandlerSource, /if \(statusCode >= 500\) return 'Internal server error'/);
+  assert.match(errorHandlerSource, /toSafeError\(error, requestId\)/);
+  assert.doesNotMatch(errorHandlerSource, /message:\s*isError\(error\)|stack:/);
   assert.match(errorHandlerSource, /requestId/);
   assert.match(errorHandlerSource, /res\.status\(statusCode\)\.json/);
 });

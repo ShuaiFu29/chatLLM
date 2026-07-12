@@ -4,6 +4,7 @@ import { serverEnv } from './env';
 import { fileQueue } from '../services/fileQueue';
 import { ragEvalQueue } from '../services/ragEvalQueue';
 import { maintenanceService } from '../services/maintenance';
+import { toSafeError } from './safeError';
 
 const closeHttpServer = (server: Server) => new Promise<void>((resolve, reject) => {
   server.close((error) => {
@@ -38,7 +39,7 @@ export const installGracefulShutdown = (server: Server) => {
       process.exit(0);
     } catch (error) {
       clearTimeout(timeout);
-      console.error('[Server] Shutdown failed:', error);
+      console.error('[Server] Shutdown failed:', toSafeError(error));
       process.exit(1);
     }
   };

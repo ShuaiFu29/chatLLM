@@ -43,7 +43,8 @@ class AgenticRetrievalTests(unittest.TestCase):
             if step["step_type"] == "cache_write" and step["input"].get("cache_kind") == "query"
         ]
         self.assertEqual(cache_write_steps[-1]["status"], "partial")
-        self.assertIn("cache write timeout", cache_write_steps[-1]["output"]["error"])
+        self.assertEqual(cache_write_steps[-1]["output"]["error"], "Cache write failed")
+        self.assertNotIn("cache write timeout", str(result))
 
     def test_agentic_retrieve_reports_cache_hit_side_effect_failure_without_retrieving(self):
         class FailingHitCache(InMemoryRetrievalCache):
@@ -92,7 +93,8 @@ class AgenticRetrievalTests(unittest.TestCase):
             if step["step_type"] == "cache_side_effect"
         ]
         self.assertEqual(cache_side_effect_steps[-1]["status"], "partial")
-        self.assertIn("hit counter unavailable", cache_side_effect_steps[-1]["output"]["error"])
+        self.assertEqual(cache_side_effect_steps[-1]["output"]["error"], "Cache side effect failed")
+        self.assertNotIn("hit counter unavailable", str(result))
 
     def test_agentic_retrieve_reuses_exact_cached_evidence_without_retrieving(self):
         cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")

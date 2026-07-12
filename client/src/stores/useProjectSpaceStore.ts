@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 
 export interface ProjectSpace {
   id: string;
@@ -46,7 +47,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
 
       set({ projectSpaces: spaces, currentProjectSpaceId: nextCurrentId });
     } catch (err) {
-      console.error('Failed to fetch project spaces:', err);
+      console.error('Failed to fetch project spaces:', toSafeError(err));
     } finally {
       set({ loadingProjectSpaces: false });
     }
@@ -81,7 +82,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
       }));
     } catch (err) {
       set({ projectSpaces: previousSpaces });
-      console.error('Failed to rename project space:', err);
+      console.error('Failed to rename project space:', toSafeError(err));
       throw err;
     }
   },
@@ -117,7 +118,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
       } else {
         localStorage.removeItem(STORAGE_KEY);
       }
-      console.error('Failed to delete project space:', err);
+      console.error('Failed to delete project space:', toSafeError(err));
       throw err;
     }
   },

@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { normalizeChatMessageContent } from '../lib/chatInput';
 import { listRagGraphDocuments, retrieveAgenticRagDocuments, searchRagGraphDocuments } from '../lib/ragClient';
+import { toSafeError } from '../lib/safeError';
 import { findProjectSpaceForUser } from '../repositories/projectSpaces';
 
 const readProjectSpaceId = (value: unknown) => {
@@ -47,7 +48,7 @@ export const inspectRagRetrieval = async (req: Request, res: Response) => {
 
     res.json(result);
   } catch (error) {
-    console.error('Error inspecting RAG retrieval:', error);
+    console.error('Error inspecting RAG retrieval:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to inspect RAG retrieval' });
   }
 };
@@ -74,7 +75,7 @@ export const searchRagGraph = async (req: Request, res: Response) => {
 
     res.json({ results });
   } catch (error) {
-    console.error('Error searching RAG graph:', error);
+    console.error('Error searching RAG graph:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to search RAG graph' });
   }
 };
@@ -94,7 +95,7 @@ export const listRagGraph = async (req: Request, res: Response) => {
 
     res.json({ results });
   } catch (error) {
-    console.error('Error listing RAG graph:', error);
+    console.error('Error listing RAG graph:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to list RAG graph' });
   }
 };

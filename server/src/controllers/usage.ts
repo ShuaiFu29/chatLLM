@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { getModelProviderHealth } from '../lib/llmProviders';
+import { toSafeError } from '../lib/safeError';
 import {
   findUsageConversationForUser,
   getFileQueueSummaryForUser,
@@ -50,7 +51,7 @@ export const getUsageOverview = async (req: Request, res: Response) => {
 
     res.json({ summary, conversations });
   } catch (error) {
-    console.error('Error fetching usage overview:', error);
+    console.error('Error fetching usage overview:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to fetch usage overview' });
   }
 };
@@ -80,7 +81,7 @@ export const getUsageConversation = async (req: Request, res: Response) => {
 
     res.json({ conversation, messages, ragRuns });
   } catch (error) {
-    console.error('Error fetching usage conversation:', error);
+    console.error('Error fetching usage conversation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to fetch usage conversation' });
   }
 };
@@ -97,7 +98,7 @@ export const getUsageFileQueue = async (req: Request, res: Response) => {
     const fileQueue = await getFileQueueSummaryForUser(req.user.id, fileLimit);
     res.json(fileQueue);
   } catch (error) {
-    console.error('Error fetching usage file queue:', error);
+    console.error('Error fetching usage file queue:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to fetch file queue status' });
   }
 };

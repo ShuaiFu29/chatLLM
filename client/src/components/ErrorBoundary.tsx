@@ -1,6 +1,7 @@
-import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { Component, type ReactNode } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import i18n from '../i18n';
+import { toSafeError } from '../lib/safeError';
 
 interface Props {
   children?: ReactNode;
@@ -9,21 +10,19 @@ interface Props {
 
 interface State {
   hasError: boolean;
-  error: Error | null;
 }
 
 class ErrorBoundary extends Component<Props, State> {
   public state: State = {
-    hasError: false,
-    error: null
+    hasError: false
   };
 
-  public static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+  public static getDerivedStateFromError(): State {
+    return { hasError: true };
   }
 
-  public componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Uncaught error:', error, errorInfo);
+  public componentDidCatch(error: Error) {
+    console.error('Uncaught error:', toSafeError(error));
   }
 
   private handleReload = () => {
@@ -44,7 +43,7 @@ class ErrorBoundary extends Component<Props, State> {
 
               <div className="bg-bg-base p-3 rounded-lg w-full overflow-hidden">
                 <p className="text-sm text-text-muted font-mono wrap-break-word text-left">
-                  {this.state.error?.message || i18n.t('errorBoundary.unknown')}
+                  {i18n.t('errorBoundary.unknown')}
                 </p>
               </div>
 

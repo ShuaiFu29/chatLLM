@@ -5,6 +5,7 @@ import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore, type Conversation } from '../stores/useChatStore';
 import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
@@ -109,7 +110,7 @@ export default function MainLayout() {
       });
       setKnowledgeFiles(res.data);
     } catch (err) {
-      console.error('Failed to fetch knowledge files:', err);
+      console.error('Failed to fetch knowledge files:', toSafeError(err));
     }
   }, [currentProjectSpaceId]);
 
@@ -202,7 +203,7 @@ export default function MainLayout() {
       navigate('/knowledge');
       setIsMobileMenuOpen(false);
     } catch (error) {
-      console.error('Failed to create workspace:', error);
+      console.error('Failed to create workspace:', toSafeError(error));
       setCreateProjectSpaceError(t('workspace.createFailed'));
     } finally {
       setIsCreatingProjectSpace(false);
@@ -240,7 +241,7 @@ export default function MainLayout() {
       await renameProjectSpace(renamingProjectSpaceId, trimmedName);
       setRenamingProjectSpaceId(null);
     } catch (error) {
-      console.error('Failed to rename workspace:', error);
+      console.error('Failed to rename workspace:', toSafeError(error));
       setRenameProjectSpaceError(t('workspace.renameFailed'));
     } finally {
       setIsRenamingProjectSpace(false);
@@ -270,7 +271,7 @@ export default function MainLayout() {
         navigate('/knowledge');
       }
     } catch (error) {
-      console.error('Failed to delete workspace:', error);
+      console.error('Failed to delete workspace:', toSafeError(error));
       setDeleteProjectSpaceError(t('workspace.deleteFailed'));
     } finally {
       setIsDeletingProjectSpace(false);

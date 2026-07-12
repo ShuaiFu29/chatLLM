@@ -1,4 +1,5 @@
 import api from './api';
+import { toSafeError } from './safeError';
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
 const DIRECT_UPLOAD_CONCURRENCY = 4;
@@ -319,9 +320,8 @@ export const uploadFile = async (
     }
 
   } catch (err: unknown) {
-    console.error('Upload failed:', err);
-    const message = err instanceof Error ? err.message : 'Upload failed';
-    onProgress({ status: 'error', progress: 0, message });
+    console.error('Upload failed:', toSafeError(err));
+    onProgress({ status: 'error', progress: 0, message: 'Upload failed' });
     throw err;
   }
 };

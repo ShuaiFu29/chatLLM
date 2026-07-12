@@ -1,8 +1,8 @@
 import { Request, Response } from 'express';
-import axios from 'axios';
 import path from 'path';
 import fs from 'fs-extra';
 import { pipeline } from 'stream/promises';
+import { toSafeError } from '../lib/safeError';
 import {
   abortMultipartObjectUpload,
   buildAvatarKey,
@@ -62,22 +62,45 @@ import { serverEnv } from '../lib/env';
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/temp');
 fs.ensureDirSync(UPLOAD_DIR);
 
-const stringifyError = (error: unknown) => {
-  if (axios.isAxiosError(error)) {
-    return `${error.name}: ${error.message}${error.response?.data ? ` | ${JSON.stringify(error.response.data)}` : ''}`;
+const readErrorMessage = (error: unknown) => error instanceof Error ? error.message : '';
+
+const getUploadInputMessage = (error: unknown): string | null => {
+  const message = readErrorMessage(error);
+  if (message.includes(SUPPORTED_DOCUMENT_ERROR)) return SUPPORTED_DOCUMENT_ERROR;
+  if (message.includes(UPLOAD_HASH_ERROR)) return UPLOAD_HASH_ERROR;
+  if (message.includes(UPLOAD_SIZE_ERROR)) return UPLOAD_SIZE_ERROR;
+  return null;
+};
+
+const getMultipartCompletionMessage = (error: unknown): string | null => {
+  const message = readErrorMessage(error);
+  if (message.startsWith('Missing uploaded parts.')) return 'Missing uploaded parts';
+  if (/^Missing uploaded part \d+$/.test(message)) return 'Missing uploaded part';
+  if (message.startsWith('Uploaded multipart object size mismatch:')) {
+    return 'Uploaded multipart object size mismatch';
   }
-  if (error instanceof Error) return `${error.name}: ${error.message}`;
-  if (typeof error === 'string') return error;
-  if (error && typeof error === 'object') {
-    const maybeMessage = (error as any).message;
-    if (typeof maybeMessage === 'string') return maybeMessage;
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return '[Unserializable error object]';
-    }
+  if (message === 'Multipart upload session expired') return message;
+  return null;
+};
+
+const getMergeIntegrityMessage = (error: unknown): string | null => {
+  const message = readErrorMessage(error);
+  if (message.startsWith('Merged upload hash mismatch:')) return 'Merged upload hash mismatch';
+  if (message.startsWith('Merged upload size mismatch:')) return 'Merged upload size mismatch';
+  return null;
+};
+
+const sendUploadError = (
+  res: Response,
+  status: number,
+  publicMessage: string,
+  error: unknown,
+  operation: string
+) => {
+  if (status >= 500) {
+    console.error(`[Upload] ${operation} failed:`, toSafeError(error, res.locals?.requestId));
   }
-  return String(error);
+  return res.status(status).json({ error: publicMessage, details: publicMessage });
 };
 
 const ensureSupportedDocumentFilename = (filename?: string) => {
@@ -87,13 +110,6 @@ const ensureSupportedDocumentFilename = (filename?: string) => {
   }
   return contentType;
 };
-
-const isUnsupportedDocumentMessage = (message: string) => message.includes(SUPPORTED_DOCUMENT_ERROR);
-const isUploadInputMessage = (message: string) => (
-  isUnsupportedDocumentMessage(message)
-  || message.includes(UPLOAD_HASH_ERROR)
-  || message.includes(UPLOAD_SIZE_ERROR)
-);
 
 const requireUploadHash = (value: unknown) => {
   const hash = parseUploadFileHash(value);
@@ -215,9 +231,8 @@ export const checkFile = async (req: Request, res: Response) => {
       projectSpaceId,
     });
   } catch (err) {
-    const message = stringifyError(err);
-    const status = isUploadInputMessage(message) ? 400 : 500;
-    res.status(status).json({ error: status === 400 ? message : 'Check failed', details: message });
+    const inputMessage = getUploadInputMessage(err);
+    return sendUploadError(res, inputMessage ? 400 : 500, inputMessage || 'Check failed', err, 'Check');
   }
 };
 
@@ -244,9 +259,8 @@ export const initUpload = async (req: Request, res: Response) => {
 
     res.json({ uploadId: file.id, projectSpaceId });
   } catch (err) {
-    const message = stringifyError(err);
-    const status = isUploadInputMessage(message) ? 400 : 500;
-    res.status(status).json({ error: status === 400 ? message : 'Init failed', details: message });
+    const inputMessage = getUploadInputMessage(err);
+    return sendUploadError(res, inputMessage ? 400 : 500, inputMessage || 'Init failed', err, 'Init');
   }
 };
 
@@ -344,16 +358,16 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
       projectSpaceId,
     });
   } catch (err) {
-    const message = stringifyError(err);
+    const inputMessage = getUploadInputMessage(err);
+    const failureMessage = inputMessage || 'Multipart init failed';
     if (createdFileId) {
       await updateFile(createdFileId, {
         status: 'failed',
         progress: 0,
-        error_message: message,
+        error_message: failureMessage,
       }).catch(() => undefined);
     }
-    const status = isUploadInputMessage(message) ? 400 : 500;
-    res.status(status).json({ error: status === 400 ? message : 'Multipart init failed', details: message });
+    return sendUploadError(res, inputMessage ? 400 : 500, failureMessage, err, 'Multipart init');
   }
 };
 
@@ -393,7 +407,7 @@ export const presignMultipartParts = async (req: Request, res: Response) => {
       parts,
     });
   } catch (err) {
-    res.status(500).json({ error: 'Multipart presign failed', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Multipart presign failed', err, 'Multipart presign');
   }
 };
 
@@ -442,19 +456,19 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
 
     res.json({ success: true, message: 'File uploaded and queued for processing' });
   } catch (err) {
-    const message = stringifyError(err);
-    await markMultipartUploadSessionFailed(uploadId, message).catch(() => undefined);
+    const completionMessage = getMultipartCompletionMessage(err);
+    const failureMessage = completionMessage || 'Multipart complete failed';
+    await markMultipartUploadSessionFailed(uploadId, failureMessage).catch(() => undefined);
     const failedUpdate: Parameters<typeof updateFile>[1] = {
       status: 'failed',
       progress: 0,
-      error_message: message,
+      error_message: failureMessage,
     };
     if (completedObjectKey) {
       failedUpdate.object_key = completedObjectKey;
     }
     await updateFile(uploadId, failedUpdate).catch(() => undefined);
-    const status = /Missing uploaded parts|Missing uploaded part|size mismatch|expired/i.test(message) ? 400 : 500;
-    res.status(status).json({ error: status === 400 ? message : 'Multipart complete failed', details: message });
+    return sendUploadError(res, completionMessage ? 400 : 500, failureMessage, err, 'Multipart complete');
   }
 };
 
@@ -484,7 +498,7 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: 'Multipart abort failed', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Multipart abort failed', err, 'Multipart abort');
   }
 };
 
@@ -513,7 +527,7 @@ export const uploadChunk = async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (err) {
-    res.status(500).json({ error: 'Chunk upload failed', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Chunk upload failed', err, 'Chunk upload');
   }
 };
 
@@ -593,8 +607,10 @@ export const mergeChunks = async (req: Request, res: Response) => {
 
     res.json({ success: true, message: 'File merged and queued for processing' });
   } catch (err) {
-    const message = stringifyError(err);
-    const isIntegrityFailure = /hash mismatch|size mismatch|SHA-256 file hash/i.test(message);
+    const inputMessage = getUploadInputMessage(err);
+    const integrityMessage = getMergeIntegrityMessage(err);
+    const failureMessage = inputMessage || integrityMessage || 'Merge failed';
+    const isIntegrityFailure = Boolean(integrityMessage || inputMessage === UPLOAD_HASH_ERROR);
     if (isIntegrityFailure) {
       await Promise.all([
         chunkDirToCleanup ? fs.remove(chunkDirToCleanup).catch(() => undefined) : Promise.resolve(),
@@ -603,11 +619,11 @@ export const mergeChunks = async (req: Request, res: Response) => {
       await updateFile(uploadId, {
         status: 'failed',
         progress: 0,
-        error_message: message,
+        error_message: failureMessage,
       }).catch(() => undefined);
     }
-    const status = isUploadInputMessage(message) || isIntegrityFailure ? 400 : 500;
-    res.status(status).json({ error: status === 400 ? message : 'Merge failed', details: message });
+    const isPublicFailure = Boolean(inputMessage || integrityMessage);
+    return sendUploadError(res, isPublicFailure ? 400 : 500, failureMessage, err, 'Merge');
   }
 };
 
@@ -624,7 +640,7 @@ export const listFiles = async (req: Request, res: Response) => {
     const files = await listFilesForUser(req.user.id, requestedProjectSpaceId);
     res.json(files);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch files', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Failed to fetch files', err, 'File listing');
   }
 };
 
@@ -645,7 +661,7 @@ export const getFileContent = async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'private, max-age=60');
 
     stream.on('error', (error) => {
-      console.error('Failed to stream file content:', error);
+      console.error('Failed to stream file content:', toSafeError(error, res.locals.requestId));
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to read file content' });
       } else {
@@ -655,7 +671,8 @@ export const getFileContent = async (req: Request, res: Response) => {
 
     stream.pipe(res);
   } catch (err) {
-    res.status(404).json({ error: 'File content not found', details: stringifyError(err) });
+    console.warn('[Upload] File content lookup failed:', toSafeError(err, res.locals?.requestId));
+    return res.status(404).json({ error: 'File content not found', details: 'File content not found' });
   }
 };
 
@@ -670,7 +687,7 @@ export const retryFileProcessing = async (req: Request, res: Response) => {
     fileQueue.trigger();
     res.json(file);
   } catch (err) {
-    res.status(500).json({ error: 'Retry failed', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Retry failed', err, 'File processing retry');
   }
 };
 
@@ -685,10 +702,13 @@ export const deleteFile = async (req: Request, res: Response) => {
     try {
       await cleanupRagFileVectors(file.id);
     } catch (err) {
-      return res.status(502).json({
-        error: 'Vector cleanup failed; file was not deleted',
-        details: stringifyError(err),
-      });
+      return sendUploadError(
+        res,
+        502,
+        'Vector cleanup failed; file was not deleted',
+        err,
+        'Vector cleanup'
+      );
     }
 
     if (file.object_key) {
@@ -700,7 +720,7 @@ export const deleteFile = async (req: Request, res: Response) => {
 
     res.json({ message: 'File deleted successfully' });
   } catch (err) {
-    res.status(500).json({ error: 'Internal server error', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Internal server error', err, 'File deletion');
   }
 };
 
@@ -720,7 +740,7 @@ export const uploadAvatar = async (req: Request, res: Response) => {
 
     if (currentUser?.avatar_object_key) {
       await deleteObject(currentUser.avatar_object_key).catch((err) => {
-        console.warn('[Upload] Failed to delete old avatar object:', stringifyError(err));
+        console.warn('[Upload] Failed to delete old avatar object:', toSafeError(err, res.locals.requestId));
       });
     }
 
@@ -732,7 +752,7 @@ export const uploadAvatar = async (req: Request, res: Response) => {
 
     res.json({ url: avatarUrl, user });
   } catch (err) {
-    res.status(500).json({ error: 'Avatar upload failed', details: stringifyError(err) });
+    return sendUploadError(res, 500, 'Avatar upload failed', err, 'Avatar upload');
   }
 };
 
@@ -755,6 +775,7 @@ export const getAvatar = async (req: Request, res: Response) => {
     res.setHeader('Cache-Control', 'private, max-age=300');
     stream.pipe(res);
   } catch (err) {
-    res.status(404).json({ error: 'Avatar not found', details: stringifyError(err) });
+    console.warn('[Upload] Avatar lookup failed:', toSafeError(err, res.locals?.requestId));
+    return res.status(404).json({ error: 'Avatar not found', details: 'Avatar not found' });
   }
 };

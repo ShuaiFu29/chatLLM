@@ -5,6 +5,7 @@ import {
   listPromptTemplatesForUser,
   updatePromptTemplateForUser,
 } from '../repositories/promptTemplates';
+import { toSafeError } from '../lib/safeError';
 
 const cleanText = (value: unknown, maxLength: number) => {
   if (typeof value !== 'string') return '';
@@ -24,7 +25,7 @@ export const listPromptTemplates = async (req: Request, res: Response) => {
     const templates = await listPromptTemplatesForUser(req.user.id);
     res.json(templates);
   } catch (error) {
-    console.error('Error listing prompt templates:', error);
+    console.error('Error listing prompt templates:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to list prompt templates' });
   }
 };
@@ -52,7 +53,7 @@ export const createPromptTemplate = async (req: Request, res: Response) => {
     });
     res.status(201).json(template);
   } catch (error) {
-    console.error('Error creating prompt template:', error);
+    console.error('Error creating prompt template:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to create prompt template' });
   }
 };
@@ -89,7 +90,7 @@ export const updatePromptTemplate = async (req: Request, res: Response) => {
     if (!template) return res.status(404).json({ error: 'Prompt template not found' });
     res.json(template);
   } catch (error) {
-    console.error('Error updating prompt template:', error);
+    console.error('Error updating prompt template:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update prompt template' });
   }
 };
@@ -103,7 +104,7 @@ export const deletePromptTemplate = async (req: Request, res: Response) => {
     if (!deleted) return res.status(404).json({ error: 'Prompt template not found' });
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting prompt template:', error);
+    console.error('Error deleting prompt template:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete prompt template' });
   }
 };

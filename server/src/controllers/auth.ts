@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import axios from 'axios';
 import crypto from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { serverEnv } from '../lib/env';
@@ -9,48 +8,11 @@ import { deleteObject } from '../lib/storage';
 import { createSession, deleteSession, deleteSessionsByUser, rotateSession } from '../repositories/sessions';
 import { createUser, deleteUser, findUserByGithubId, findUserById, updateUser } from '../repositories/users';
 import { listFilesForUserCleanup } from '../repositories/files';
+import { toSafeError } from '../lib/safeError';
 
 const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000;
 const ACCESS_TOKEN_DURATION = 15 * 60 * 1000;
 const generateRefreshToken = () => crypto.randomBytes(32).toString('base64url');
-
-const stringifyError = (error: unknown) => {
-  if (axios.isAxiosError(error)) {
-    const status = error.response?.status;
-    const data = error.response?.data;
-    return `AxiosError${status ? `(${status})` : ''}: ${error.message}${data ? ` | ${JSON.stringify(data)}` : ''}`;
-  }
-
-  if (error instanceof Error) {
-    const cause: any = (error as any).cause;
-    if (cause instanceof Error) {
-      return `${error.name}: ${error.message} (cause: ${cause.name}: ${cause.message})`;
-    }
-    if (cause && typeof cause === 'object') {
-      const code = (cause as any).code;
-      const msg = (cause as any).message;
-      if (code || msg) {
-        return `${error.name}: ${error.message} (cause: ${code ? String(code) : 'unknown'}${msg ? `: ${String(msg)}` : ''})`;
-      }
-    }
-    return `${error.name}: ${error.message}`;
-  }
-
-  if (typeof error === 'string') return error;
-
-  if (error && typeof error === 'object') {
-    const maybeMessage = (error as any).message;
-    if (typeof maybeMessage === 'string') return maybeMessage;
-
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return '[Unserializable error object]';
-    }
-  }
-
-  return String(error);
-};
 
 let proxyAgent: ProxyAgent | undefined;
 const getDispatcher = () => {
@@ -188,9 +150,8 @@ export const githubCallback = async (req: Request, res: Response) => {
 
     res.redirect(`${serverEnv.FRONTEND_URL}?login=success`);
   } catch (error) {
-    const errorMessage = stringifyError(error);
-    console.error('[Auth] GitHub callback failed:', error);
-    res.status(500).json({ error: 'Authentication failed', details: errorMessage });
+    console.error('[Auth] GitHub callback failed:', toSafeError(error, res.locals.requestId));
+    res.status(500).json({ error: 'Authentication failed' });
   }
 };
 
@@ -216,7 +177,7 @@ export const refreshToken = async (req: Request, res: Response) => {
 
     res.json({ success: true });
   } catch (error) {
-    console.error('Refresh Token Error:', error);
+    console.error('Refresh Token Error:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to refresh token' });
   }
 };
@@ -269,7 +230,9 @@ export const cleanupUserExternalArtifacts = async (
       await deleteObject(avatarObjectKey);
     }
   } catch (error) {
-    throw new Error(`Failed to cleanup external artifacts: ${stringifyError(error)}`);
+    const cleanupError = new Error('Failed to cleanup external artifacts') as Error & { cause?: unknown };
+    cleanupError.cause = error;
+    throw cleanupError;
   }
 };
 
@@ -289,7 +252,7 @@ export const deleteAccount = async (req: Request, res: Response) => {
     clearAuthCookies(res);
     res.json({ success: true });
   } catch (error) {
-    console.error('Delete account error:', error);
+    console.error('Delete account error:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete account' });
   }
 };

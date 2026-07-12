@@ -2,6 +2,7 @@ import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { Upload, FileText, Trash2, Loader2, Database, CheckCircle, AlertCircle, RefreshCw, X, BookOpen } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import { isSupportedMarkdownDocument, uploadFile, type UploadProgress } from '../lib/uploadManager';
 import Modal from '../components/Modal';
 import DocumentViewerModal, { type DocumentReference } from '../components/DocumentViewerModal';
@@ -80,7 +81,7 @@ export default function KnowledgeBase() {
         startPolling();
       }
     } catch (error) {
-      console.error('Failed to fetch files:', error);
+      console.error('Failed to fetch files:', toSafeError(error));
       setIsLoading(false);
     }
   }, [currentProjectSpaceId, startPolling, stopPolling]);
@@ -125,7 +126,7 @@ export default function KnowledgeBase() {
       // Success - no need to do anything as UI is already updated
       window.dispatchEvent(new Event('knowledge-updated'));
     } catch (error) {
-      console.error('Delete failed:', error);
+      console.error('Delete failed:', toSafeError(error));
       // Revert UI on failure
       fetchFiles();
       showNotification('error', t('knowledge.deleteFail'));
@@ -189,7 +190,7 @@ export default function KnowledgeBase() {
       window.dispatchEvent(new Event('knowledge-updated'));
 
     } catch (error) {
-      console.error('Upload failed:', error);
+      console.error('Upload failed:', toSafeError(error));
       setUploadState(prev => prev ? { ...prev, status: 'error', message: t('knowledge.uploadFail') } : null);
       uploadClearTimeout.current = setTimeout(() => {
         setUploadState(prev => (
@@ -215,7 +216,7 @@ export default function KnowledgeBase() {
       startPolling();
       window.dispatchEvent(new Event('knowledge-updated'));
     } catch (error) {
-      console.error('Retry failed:', error);
+      console.error('Retry failed:', toSafeError(error));
       showNotification('error', t('knowledge.retryFailed'));
     }
   };

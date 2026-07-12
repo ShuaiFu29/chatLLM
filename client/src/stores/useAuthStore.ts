@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 
 interface UserSettings {
   temperature?: number;
@@ -66,7 +67,7 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       await api.post('/auth/logout');
     } catch (err) {
-      console.warn('Logout request failed; clearing local session anyway.', err);
+      console.warn('Logout request failed; clearing local session anyway.', toSafeError(err));
     } finally {
       set({ user: null });
       localStorage.removeItem('has_logged_in');

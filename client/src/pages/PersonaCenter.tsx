@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import Modal from '../components/Modal';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 
 interface PersonaEvidenceMessage {
   id: string;
@@ -165,7 +166,7 @@ export default function PersonaCenter() {
       setCenter(res.data);
       setEditedProfile(profileToEditState(res.data.profile));
     } catch (error) {
-      console.error('Failed to load persona center:', error);
+      console.error('Failed to load persona center:', toSafeError(error));
       toast.error(t('persona.loadFailed'));
     } finally {
       setIsLoading(false);
@@ -197,7 +198,7 @@ export default function PersonaCenter() {
       setEditedProfile(profileToEditState(res.data.profile));
       toast.success(t('persona.refreshSuccess'));
     } catch (error) {
-      console.error('Failed to analyze persona center:', error);
+      console.error('Failed to analyze persona center:', toSafeError(error));
       toast.error(t('persona.refreshFailed'));
     } finally {
       setIsAnalyzing(false);
@@ -220,7 +221,7 @@ export default function PersonaCenter() {
       setEditedProfile(profileToEditState(res.data));
       toast.success(t('persona.saveSuccess'));
     } catch (error) {
-      console.error('Failed to save persona profile:', error);
+      console.error('Failed to save persona profile:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
     } finally {
       setIsSaving(false);
@@ -233,7 +234,7 @@ export default function PersonaCenter() {
       await api.patch(`/persona/interests/${interestId}`, { status });
       toast.success(status === 'accepted' ? t('persona.accepted') : t('persona.hidden'));
     } catch (error) {
-      console.error('Failed to update persona interest:', error);
+      console.error('Failed to update persona interest:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
       void loadCenter();
     }
@@ -247,7 +248,7 @@ export default function PersonaCenter() {
       await api.patch(`/persona/suggestions/${suggestionId}`, { status });
       toast.success(status === 'hidden' ? t('persona.hidden') : t('persona.accepted'));
     } catch (error) {
-      console.error('Failed to update persona suggestion:', error);
+      console.error('Failed to update persona suggestion:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
       void loadCenter();
     }
@@ -261,7 +262,7 @@ export default function PersonaCenter() {
       await api.patch(`/persona/observations/${observationId}`, { status });
       toast.success(t('persona.hidden'));
     } catch (error) {
-      console.error('Failed to update persona observation:', error);
+      console.error('Failed to update persona observation:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
       void loadCenter();
     }
@@ -279,7 +280,7 @@ export default function PersonaCenter() {
       toast.success(t('persona.restored'));
       await loadCenter();
     } catch (error) {
-      console.error('Failed to restore hidden persona record:', error);
+      console.error('Failed to restore hidden persona record:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
     }
   };
@@ -296,7 +297,7 @@ export default function PersonaCenter() {
       toast.success(t('persona.deleted'));
       await loadCenter();
     } catch (error) {
-      console.error('Failed to delete hidden persona record:', error);
+      console.error('Failed to delete hidden persona record:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
     }
   };
@@ -312,7 +313,7 @@ export default function PersonaCenter() {
       setIsHiddenRecordsOpen(false);
       toast.success(t('persona.deleted'));
     } catch (error) {
-      console.error('Failed to delete persona profile:', error);
+      console.error('Failed to delete persona profile:', toSafeError(error));
       toast.error(t('persona.saveFailed'));
     } finally {
       setIsSaving(false);
@@ -327,7 +328,7 @@ export default function PersonaCenter() {
       setEditedProfile(profileToEditState(res.data.profile));
       toast.success(t('persona.resetSuccess'));
     } catch (error) {
-      console.error('Failed to reset persona center:', error);
+      console.error('Failed to reset persona center:', toSafeError(error));
       toast.error(t('persona.resetFailed'));
     } finally {
       setIsSaving(false);

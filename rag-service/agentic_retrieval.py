@@ -421,13 +421,13 @@ def _safe_cache_side_effect(
     started_at = _now_ms()
     try:
         fn()
-    except Exception as error:
+    except Exception:
         trace_steps.append(_trace_step(
             "cache_side_effect",
             "partial",
             started_at,
             {"action": action, **input_data},
-            {"ok": False, "error": str(error)},
+            {"ok": False, "error": "Cache side effect failed"},
         ))
         return False
 
@@ -450,13 +450,13 @@ def _safe_cache_write(
     started_at = _now_ms()
     try:
         fn()
-    except Exception as error:
+    except Exception:
         trace_steps.append(_trace_step(
             "cache_write",
             "partial",
             started_at,
             {"cache_kind": cache_kind, **input_data},
-            {"stored": False, "error": str(error)},
+            {"stored": False, "error": "Cache write failed"},
         ))
         return False
 
@@ -831,14 +831,14 @@ def agentic_retrieve(
                 ))
             else:
                 cache_info = _cache_summary("miss", scope_fingerprint=scope_fingerprint)
-        except Exception as cache_error:
-            cache_info = _cache_summary("disabled", error=str(cache_error))
+        except Exception:
+            cache_info = _cache_summary("disabled", error="Cache lookup failed")
             trace_steps.append(_trace_step(
                 "cache_lookup",
                 "partial",
                 started_at,
                 {"user_id": user_id, "project_space_id": project_space_id},
-                {"enabled": False, "error": str(cache_error)},
+                {"enabled": False, "error": "Cache lookup failed"},
             ))
 
     retrieve_limit = min(max(limit * 2, limit), 20)
@@ -940,13 +940,13 @@ def agentic_retrieve(
                             **subquery_quality,
                         },
                     ))
-            except Exception as cache_error:
+            except Exception:
                 trace_steps.append(_trace_step(
                     "subquery_cache_hit",
                     "partial",
                     started_at,
                     {"query": planned_query},
-                    {"error": str(cache_error)},
+                    {"error": "Subquery cache lookup failed"},
                 ))
 
         started_at = _now_ms()
@@ -987,13 +987,13 @@ def agentic_retrieve(
                             quality=subquery_quality,
                         ),
                     )
-            except Exception as cache_error:
+            except Exception:
                 trace_steps.append(_trace_step(
                     "cache_write",
                     "partial",
                     started_at,
                     {"cache_kind": "subquery", "query": planned_query},
-                    {"stored": False, "error": str(cache_error)},
+                    {"stored": False, "error": "Cache write failed"},
                 ))
 
         _merge_documents(merged_by_key, documents, planned_query)

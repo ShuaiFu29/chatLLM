@@ -40,6 +40,7 @@ import {
 import { insertRagRunForMessage } from '../repositories/ragRuns';
 import { buildPersonalizedSystemPrompt } from '../lib/personaInsights';
 import { getPersonaPromptContextForUser, refreshPersonaInsightsForUser } from '../repositories/persona';
+import { toSafeError } from '../lib/safeError';
 import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
@@ -82,7 +83,7 @@ export const getConversations = async (req: Request, res: Response) => {
     const conversations = await listConversations(req.user.id, { projectSpaceId, includeArchived });
     res.json(conversations);
   } catch (error) {
-    console.error('Error fetching conversations:', error);
+    console.error('Error fetching conversations:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to fetch conversations' });
   }
 };
@@ -100,7 +101,7 @@ export const searchMessages = async (req: Request, res: Response) => {
     const results = await searchMessagesForUser(req.user.id, normalizedQuery.query, readSearchFilters(req.query));
     res.json(results);
   } catch (error) {
-    console.error('Error searching messages:', error);
+    console.error('Error searching messages:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to search messages' });
   }
 };
@@ -117,7 +118,7 @@ export const createConversation = async (req: Request, res: Response) => {
     const conversation = await createConversationForUser(req.user.id, title || 'New Chat', projectSpaceId);
     res.json(conversation);
   } catch (error) {
-    console.error('Error creating conversation:', error);
+    console.error('Error creating conversation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to create conversation' });
   }
 };
@@ -181,7 +182,7 @@ export const updateConversation = async (req: Request, res: Response) => {
 
     res.json(conversation);
   } catch (error) {
-    console.error('Error updating conversation:', error);
+    console.error('Error updating conversation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update conversation' });
   }
 };
@@ -203,7 +204,7 @@ export const branchConversation = async (req: Request, res: Response) => {
     if (!conversation) return res.status(404).json({ error: 'Conversation or message not found' });
     res.json(conversation);
   } catch (error) {
-    console.error('Error branching conversation:', error);
+    console.error('Error branching conversation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to branch conversation' });
   }
 };
@@ -217,7 +218,7 @@ export const compareConversations = async (req: Request, res: Response) => {
     if (!comparison) return res.status(404).json({ error: 'Conversation not found' });
     res.json(comparison);
   } catch (error) {
-    console.error('Error comparing conversations:', error);
+    console.error('Error comparing conversations:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to compare conversations' });
   }
 };
@@ -231,7 +232,7 @@ export const deleteConversation = async (req: Request, res: Response) => {
     if (!deleted) return res.status(404).json({ error: 'Conversation not found' });
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting conversation:', error);
+    console.error('Error deleting conversation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete conversation' });
   }
 };
@@ -245,7 +246,7 @@ export const deleteMessage = async (req: Request, res: Response) => {
     if (!deleted) return res.status(404).json({ error: 'Message not found' });
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting message:', error);
+    console.error('Error deleting message:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete message' });
   }
 };
@@ -269,7 +270,7 @@ const generateConversationTitle = async (conversationId: string, firstMessage: s
     const title = response.choices[0]?.message?.content?.trim();
     if (title) await updateConversationTitle(conversationId, title);
   } catch (error) {
-    console.warn('[Chat] Failed to generate title:', error);
+    console.warn('[Chat] Failed to generate title:', toSafeError(error));
   }
 };
 
@@ -293,7 +294,7 @@ export const getMessages = async (req: Request, res: Response) => {
     res.setHeader('x-chatllm-page-limit', String(pageQuery.limit));
     res.json(page.messages);
   } catch (error) {
-    console.error('Error fetching messages:', error);
+    console.error('Error fetching messages:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to fetch messages' });
   }
 };
@@ -344,7 +345,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     const { client: chatClient, resolvedModel } = createChatClientForModel(model);
     const userMessage = await insertMessage(conversationId, 'user', content);
     refreshPersonaInsightsForUser(req.user.id).catch((error) => {
-      console.warn('[Chat] Failed to refresh persona insights:', error);
+      console.warn('[Chat] Failed to refresh persona insights:', toSafeError(error, res.locals.requestId));
     });
 
     if (conversation.title === 'New Chat') {
@@ -352,7 +353,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     }
 
     touchConversation(conversationId, req.user.id).catch((error) => {
-      console.warn('[Chat] Failed to update conversation timestamp:', error);
+      console.warn('[Chat] Failed to update conversation timestamp:', toSafeError(error, res.locals.requestId));
     });
 
     res.writeHead(200, {
@@ -420,7 +421,7 @@ export const sendMessage = async (req: Request, res: Response) => {
           answer_guidance: answerGuidance,
         })}\n\n`);
       } catch (error) {
-        console.warn('[Chat] RAG retrieval failed; continuing without context:', error);
+        console.warn('[Chat] RAG retrieval failed; continuing without context:', toSafeError(error, res.locals.requestId));
         res.write(`data: ${JSON.stringify({ rag_warning: 'Knowledge retrieval failed; answering without retrieved context.' })}\n\n`);
       }
     }
@@ -545,7 +546,7 @@ ${originalContent}`;
           retrievedSources: finalAssistantSources,
           status: finalQuality?.evidence_label === 'weak' || finalQuality?.answer_grounding_status === 'unsupported' ? 'partial' : 'success',
         }).catch((error) => {
-          console.warn('[Chat] Failed to persist RAG trace:', error);
+          console.warn('[Chat] Failed to persist RAG trace:', toSafeError(error, res.locals.requestId));
         });
       }
       res.write(`data: ${JSON.stringify({ assistantMessageId: assistantMessage.id })}\n\n`);
@@ -559,7 +560,7 @@ ${originalContent}`;
       if (!res.writableEnded) res.end();
       return;
     }
-    console.error('[Chat] Failed to generate response:', error);
+    console.error('[Chat] Failed to generate response:', toSafeError(error, res.locals.requestId));
     if (streamStarted) {
       res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
       res.end();

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import axios from 'axios';
 import { cleanupRagFileVectors } from '../lib/ragClient';
 import { deleteObject } from '../lib/storage';
+import { toSafeError } from '../lib/safeError';
 import { listFilesForUser } from '../repositories/files';
 import {
   createProjectSpaceForUser,
@@ -30,7 +31,7 @@ export const listProjectSpaces = async (req: Request, res: Response) => {
     const spaces = await listProjectSpacesForUser(req.user.id);
     res.json(spaces);
   } catch (error) {
-    console.error('[ProjectSpaces] Failed to list spaces:', error);
+    console.error('[ProjectSpaces] Failed to list spaces:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to list project spaces' });
   }
 };
@@ -47,7 +48,7 @@ export const createProjectSpace = async (req: Request, res: Response) => {
     const space = await createProjectSpaceForUser(req.user.id, { name, description });
     res.status(201).json(space);
   } catch (error) {
-    console.error('[ProjectSpaces] Failed to create space:', error);
+    console.error('[ProjectSpaces] Failed to create space:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to create project space' });
   }
 };
@@ -82,7 +83,7 @@ export const updateProjectSpace = async (req: Request, res: Response) => {
     const space = await updateProjectSpaceForUser(projectSpaceId, req.user.id, updates);
     res.json(space);
   } catch (error) {
-    console.error('[ProjectSpaces] Failed to update space:', error);
+    console.error('[ProjectSpaces] Failed to update space:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update project space' });
   }
 };
@@ -110,7 +111,7 @@ export const deleteProjectSpace = async (req: Request, res: Response) => {
     if (axios.isAxiosError(error)) {
       return res.status(502).json({ error: 'Workspace file cleanup failed; workspace was not deleted' });
     }
-    console.error('[ProjectSpaces] Failed to delete space:', error);
+    console.error('[ProjectSpaces] Failed to delete space:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete project space' });
   }
 };

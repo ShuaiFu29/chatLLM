@@ -3,6 +3,7 @@ import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { AlertCircle, FileSearch, Loader2, Network, RefreshCw, Route, Search } from 'lucide-react';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import Skeleton from '../components/Skeleton';
 import SelectField from '../components/SelectField';
@@ -198,7 +199,7 @@ export default function RetrievalLabPage() {
       });
       setResult(data);
     } catch (inspectError) {
-      console.error('Failed to inspect RAG retrieval:', inspectError);
+      console.error('Failed to inspect RAG retrieval:', toSafeError(inspectError));
       setError(t('ragWorkbench.loadFailed'));
     } finally {
       setIsInspecting(false);

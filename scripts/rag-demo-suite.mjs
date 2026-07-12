@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { formatSafeError, toSafeError } from './safe-error.mjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serverRequire = createRequire(path.join(rootDir, 'server', 'package.json'));
@@ -396,7 +397,7 @@ function isRetryableFetchError(error) {
 async function fetchJsonWithRetry(
   url,
   init = {},
-  { timeoutMs = 120000, maxAttempts = 4, retryDelayMs = 1000, label = url } = {}
+  { timeoutMs = 120000, maxAttempts = 4, retryDelayMs = 1000 } = {}
 ) {
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -408,7 +409,7 @@ async function fetchJsonWithRetry(
         throw error;
       }
       const delayMs = retryDelayMs * attempt;
-      console.error(`[rag-demo-suite] retry ${attempt}/${maxAttempts} ${label}: ${error.message}`);
+      console.error(`[rag-demo-suite] retry ${attempt}/${maxAttempts}:`, toSafeError(error));
       await sleep(delayMs);
     }
   }
@@ -490,13 +491,13 @@ async function cleanupSuite({ db, s3, ragUrl, bucket, userId, createdFiles, keep
         body: JSON.stringify({ file_id: file.fileId }),
       }, 30000);
     } catch (error) {
-      console.warn(`[rag-demo-suite] RAG cleanup failed for ${file.fileId}: ${error.message}`);
+      console.warn('[rag-demo-suite] RAG cleanup failed:', toSafeError(error));
     }
 
     try {
       await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.objectKey }));
     } catch (error) {
-      console.warn(`[rag-demo-suite] object cleanup failed for ${file.objectKey}: ${error.message}`);
+      console.warn('[rag-demo-suite] object cleanup failed:', toSafeError(error));
     }
   }
 
@@ -839,15 +840,15 @@ async function main() {
           guideTop3Count: 0,
           timing: summarizeCaseTimings([]),
           cases: [],
-          errorMessage: error.message,
+          errorMessage: formatSafeError(error),
         };
         summaries.push(failedSummary);
         appendJsonl(options.jsonlFile, {
           event: 'suite_failed',
           suiteName,
-          errorMessage: error.message,
+          errorMessage: formatSafeError(error),
         });
-        console.error(`[rag-demo-suite] ${suiteName} failed: ${error.message}`);
+        console.error('[rag-demo-suite] suite failed:', toSafeError(error));
       }
     }
 
@@ -892,7 +893,7 @@ async function main() {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch(async (error) => {
-    console.error(`[rag-demo-suite] ${error.message}`);
+    console.error('[rag-demo-suite] failed:', toSafeError(error));
     process.exitCode = 1;
   });
 }

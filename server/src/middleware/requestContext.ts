@@ -1,12 +1,16 @@
 import { randomUUID } from 'crypto';
 import { RequestHandler } from 'express';
 import { metrics } from '../lib/metrics';
+import { toSafeRequestId } from '../lib/safeError';
+
+const getRouteLabel = (req: Parameters<RequestHandler>[0]) =>
+  typeof req.route?.path === 'string' && req.route.path
+    ? req.route.path
+    : 'unmatched';
 
 export const requestContextMiddleware: RequestHandler = (req, res, next) => {
   const incomingRequestId = req.header('x-request-id');
-  const requestId = incomingRequestId && incomingRequestId.trim()
-    ? incomingRequestId.trim()
-    : randomUUID();
+  const requestId = toSafeRequestId(incomingRequestId) || randomUUID();
   const startedAt = Date.now();
   const metricsContext = metrics.recordHttpRequestStart();
   let recorded = false;
@@ -24,7 +28,7 @@ export const requestContextMiddleware: RequestHandler = (req, res, next) => {
       event: 'http_request',
       request_id: requestId,
       method: req.method,
-      path: req.originalUrl,
+      path: getRouteLabel(req),
       status_code: statusCode,
       duration_ms: Date.now() - startedAt,
     }));

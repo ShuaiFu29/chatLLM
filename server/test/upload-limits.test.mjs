@@ -226,6 +226,46 @@ test('upload init rejects blank hashes before creating upload rows', async () =>
   }
 });
 
+test('upload init never exposes downstream exception text in public error details', async () => {
+  const originalConsoleError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args);
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      createUploadFile: async () => {
+        throw new Error('exception-secret-value');
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.initUpload(
+      {
+        user: { id: 'user-1' },
+        body: {
+          filename: 'notes.md',
+          hash: 'a'.repeat(64),
+          size: 10,
+        },
+      },
+      response
+    );
+
+    assert.equal(response.statusCode, 500);
+    assert.deepEqual(response.body, {
+      error: 'Init failed',
+      details: 'Init failed',
+    });
+    assert.doesNotMatch(JSON.stringify(response.body), /exception-secret-value/);
+    assert.equal(logs.length, 1);
+    assert.doesNotMatch(JSON.stringify(logs), /exception-secret-value/);
+  } finally {
+    console.error = originalConsoleError;
+    restore();
+  }
+});
+
 test('merge integrity failures mark the upload row failed instead of leaving it uploading forever', async () => {
   const uploadId = 'integrity-failure-upload';
   const uploadDir = path.join(serverRoot, 'uploads', 'temp', uploadId);

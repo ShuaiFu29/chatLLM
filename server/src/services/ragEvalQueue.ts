@@ -2,6 +2,7 @@ import os from 'os';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { runRagEvaluation } from '../lib/ragClient';
+import { toSafeError } from '../lib/safeError';
 import {
   ClaimedRagEvalRunJob,
   completeRagEvalRunWithResults,
@@ -74,7 +75,7 @@ class RagEvalQueueService {
         shouldContinue = jobs.length === this.concurrency;
       }
     } catch (error) {
-      console.error('[RagEvalQueue] Failed to process queued eval run:', error);
+      console.error('[RagEvalQueue] Failed to process queued eval run:', toSafeError(error));
     } finally {
       this.isProcessing = false;
     }
@@ -114,9 +115,10 @@ class RagEvalQueueService {
         metrics.recordRagEvalRunCompleted(completedRun.status);
       }
     } catch (error) {
+      console.warn('[RagEvalQueue] Evaluation request failed:', toSafeError(error));
       const failedRun = await markRagEvalRunAttemptFailed({
         run: job,
-        errorMessage: error instanceof Error ? error.message : 'Unknown RAG eval failure',
+        errorMessage: 'RAG evaluation failed',
         durationMs: Date.now() - startedAt,
         workerId: job.worker_id || this.workerId,
       });

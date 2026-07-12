@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { metrics } from '../lib/metrics';
 import { ragEvalQueue } from '../services/ragEvalQueue';
+import { toSafeError } from '../lib/safeError';
 import {
   cancelRagEvalRunForUser,
   createRagEvalCaseForUser,
@@ -58,7 +59,7 @@ export const listRagEvalDatasets = async (req: Request, res: Response) => {
     const datasets = await listRagEvalDatasetsForUser(req.user.id);
     res.json(datasets);
   } catch (error) {
-    console.error('Error listing RAG eval datasets:', error);
+    console.error('Error listing RAG eval datasets:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to list RAG eval datasets' });
   }
 };
@@ -75,7 +76,7 @@ export const listRagEvalHistory = async (req: Request, res: Response) => {
     const history = await listHistoricalRagRunsForUser(req.user.id, historyLimit);
     res.json({ items: history });
   } catch (error) {
-    console.error('Error listing historical RAG runs:', error);
+    console.error('Error listing historical RAG runs:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to list historical RAG runs' });
   }
 };
@@ -96,7 +97,7 @@ export const createRagEvalDataset = async (req: Request, res: Response) => {
     });
     res.status(201).json(dataset);
   } catch (error) {
-    console.error('Error creating RAG eval dataset:', error);
+    console.error('Error creating RAG eval dataset:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to create RAG eval dataset' });
   }
 };
@@ -119,7 +120,7 @@ export const updateRagEvalDataset = async (req: Request, res: Response) => {
     if (!dataset) return res.status(404).json({ error: 'Dataset not found' });
     res.json(dataset);
   } catch (error) {
-    console.error('Error updating RAG eval dataset:', error);
+    console.error('Error updating RAG eval dataset:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update RAG eval dataset' });
   }
 };
@@ -132,7 +133,7 @@ export const deleteRagEvalDataset = async (req: Request, res: Response) => {
     if (!deleted) return res.status(404).json({ error: 'Dataset not found' });
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting RAG eval dataset:', error);
+    console.error('Error deleting RAG eval dataset:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete RAG eval dataset' });
   }
 };
@@ -164,7 +165,7 @@ export const createRagEvalCase = async (req: Request, res: Response) => {
     if (!testCase) return res.status(400).json({ error: 'Dataset has too many eval cases' });
     res.status(201).json(testCase);
   } catch (error) {
-    console.error('Error creating RAG eval case:', error);
+    console.error('Error creating RAG eval case:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to create RAG eval case' });
   }
 };
@@ -177,7 +178,7 @@ export const deleteRagEvalCase = async (req: Request, res: Response) => {
     if (!deleted) return res.status(404).json({ error: 'Eval case not found' });
     res.json({ success: true });
   } catch (error) {
-    console.error('Error deleting RAG eval case:', error);
+    console.error('Error deleting RAG eval case:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete RAG eval case' });
   }
 };
@@ -190,7 +191,7 @@ export const getRagEvalRun = async (req: Request, res: Response) => {
     if (!run) return res.status(404).json({ error: 'Eval run not found' });
     res.json(run);
   } catch (error) {
-    console.error('Error loading RAG eval run:', error);
+    console.error('Error loading RAG eval run:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to load RAG eval run' });
   }
 };
@@ -203,7 +204,7 @@ export const getRagEvalQualitySummary = async (req: Request, res: Response) => {
     if (!summary) return res.status(404).json({ error: 'Dataset not found' });
     res.json(summary);
   } catch (error) {
-    console.error('Error loading RAG eval quality summary:', error);
+    console.error('Error loading RAG eval quality summary:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to load RAG eval quality summary' });
   }
 };
@@ -236,7 +237,7 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
 
     res.status(202).json(run);
   } catch (error) {
-    console.error('Error running RAG eval dataset:', error);
+    console.error('Error running RAG eval dataset:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to run RAG eval dataset' });
   }
 };
@@ -251,7 +252,7 @@ export const cancelRagEvalRun = async (req: Request, res: Response) => {
     metrics.recordRagEvalRunCompleted('cancelled');
     res.json(run);
   } catch (error) {
-    console.error('Error cancelling RAG eval run:', error);
+    console.error('Error cancelling RAG eval run:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to cancel RAG eval run' });
   }
 };

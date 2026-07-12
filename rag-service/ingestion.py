@@ -21,6 +21,7 @@ from db import (
 from embeddings import get_embeddings
 from graph_store import delete_file_graph, index_graph_chunks
 from keyword_store import delete_file_keywords, index_chunks
+from safe_errors import safe_error_fields
 from storage import download_object, stream_object_bytes
 from vector_store import delete_file_vectors, insert_vectors
 
@@ -56,7 +57,11 @@ def format_ingestion_error(error: Exception) -> str:
         return "百炼 embedding 额度不足或无可用资源包，请充值或购买资源包后点击重试。"
     if "batch size is invalid" in message:
         return "Embedding 批量大小超过服务限制，请稍后重试。"
-    return message
+    if "Only Markdown files" in message:
+        return "Only Markdown files (.md, .markdown) are supported"
+    if "Uploaded object" in message and ("hash mismatch" in message or "size mismatch" in message):
+        return "Uploaded object integrity check failed"
+    return "Document ingestion failed"
 
 
 def extract_text(file_bytes: bytes, file_type: str | None, object_key: str) -> tuple[str, bool]:
@@ -217,9 +222,8 @@ def index_chunk_batch(file_data: dict, chunk_rows: list[dict], project_space_id:
         graph_batches = 1
     except Exception as graph_error:
         logger.warning(
-            "Optional graph indexing failed for file %s: %s",
-            file_data.get("id"),
-            graph_error,
+            "Optional graph indexing failed: %s",
+            safe_error_fields(graph_error),
         )
 
     batch_size = settings.rag_ingest_embedding_batch_size
@@ -498,7 +502,7 @@ def process_file(file_id: str):
                 reset_file_indexes(file_id)
                 delete_file_chunks(file_id)
             except Exception as cleanup_error:
-                logger.debug("Failed to cleanup partial ingestion for file %s: %s", file_id, cleanup_error)
+                logger.debug("Failed to cleanup partial ingestion: %s", safe_error_fields(cleanup_error))
         formatted_error = format_ingestion_error(e)
         fail_ingestion_job(file_id, formatted_error, checkpoint=last_checkpoint)
         update_file_status(file_id, "failed", error_message=formatted_error)

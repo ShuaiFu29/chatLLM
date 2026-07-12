@@ -66,16 +66,51 @@ test('live health responses include security headers and request ids', async () 
   }
 });
 
-test('unknown API routes return structured JSON 404 responses', async () => {
+test('request completion logs exclude query strings and reject unsafe request ids', async () => {
   const server = await listen();
-  const originalConsoleError = console.error;
-  const errorLogs = [];
-  console.error = (message) => {
-    errorLogs.push(message);
+  const originalConsoleInfo = console.info;
+  const infoLogs = [];
+  console.info = (message) => {
+    infoLogs.push(message);
   };
 
   try {
-    const response = await request(server, '/api/not-a-real-route', {
+    const response = await request(server, '/health/live?access_token=query-secret-value', {
+      headers: {
+        'x-request-id': 'unsafe request id with spaces and secret-value',
+      },
+    });
+    await response.text();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.status, 200);
+    assert.notEqual(response.headers.get('x-request-id'), 'unsafe request id with spaces and secret-value');
+    assert.equal(infoLogs.length, 1);
+
+    const logEntry = JSON.parse(infoLogs[0]);
+    assert.equal(logEntry.path, '/health/live');
+    assert.doesNotMatch(infoLogs[0], /query-secret-value|access_token|secret-value/);
+  } finally {
+    console.info = originalConsoleInfo;
+    await close(server);
+  }
+});
+
+test('unknown API routes return structured JSON 404 responses', async () => {
+  const server = await listen();
+  const originalConsoleError = console.error;
+  const originalConsoleInfo = console.info;
+  const errorLogs = [];
+  const infoLogs = [];
+  console.error = (message) => {
+    errorLogs.push(message);
+  };
+  console.info = (message) => {
+    infoLogs.push(message);
+  };
+
+  try {
+    const response = await request(server, '/api/not-a-real-route/secret-path-value?access_token=query-secret-value', {
       headers: {
         'x-request-id': 'test-request-404',
       },
@@ -92,8 +127,14 @@ test('unknown API routes return structured JSON 404 responses', async () => {
     const logEntry = JSON.parse(errorLogs[0]);
     assert.equal(logEntry.status_code, 404);
     assert.equal('stack' in logEntry, false);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(infoLogs.length, 1);
+    assert.equal(JSON.parse(infoLogs[0]).path, 'unmatched');
+    assert.doesNotMatch(infoLogs[0], /secret-path-value|query-secret-value|access_token/);
   } finally {
     console.error = originalConsoleError;
+    console.info = originalConsoleInfo;
     await close(server);
   }
 });

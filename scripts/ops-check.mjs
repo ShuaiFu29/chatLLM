@@ -1,6 +1,7 @@
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { formatSafeError, toSafeUrl } from './safe-error.mjs';
 
 const DEFAULT_TIMEOUT_MS = 3000;
 
@@ -111,7 +112,7 @@ const runOneCheck = async (target, options, fetchImpl) => {
     const ok = response.status >= 200 && response.status < 300;
     return {
       label: target.label,
-      url: target.url,
+      url: toSafeUrl(target.url),
       status: ok ? 'ok' : 'error',
       detail: `HTTP ${response.status}`,
       durationMs,
@@ -120,9 +121,9 @@ const runOneCheck = async (target, options, fetchImpl) => {
     const durationMs = performance.now() - startedAt;
     return {
       label: target.label,
-      url: target.url,
+      url: toSafeUrl(target.url),
       status: 'error',
-      detail: error instanceof Error ? error.message : String(error),
+      detail: formatSafeError(error),
       durationMs,
     };
   } finally {

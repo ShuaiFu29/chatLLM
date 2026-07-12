@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Lightbulb, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 
 interface PersonaSuggestion {
   id: string;
@@ -30,7 +31,7 @@ export default function PersonaSuggestionsPanel({ onPickSuggestion }: PersonaSug
       const res = await api.get<PersonaCenterResponse>('/persona');
       setSuggestions((res.data.suggestions || []).slice(0, 4));
     } catch (error) {
-      console.warn(t('persona.suggestionLoadFailed'), error);
+      console.warn(t('persona.suggestionLoadFailed'), toSafeError(error));
     } finally {
       setIsLoading(false);
     }
@@ -45,7 +46,7 @@ export default function PersonaSuggestionsPanel({ onPickSuggestion }: PersonaSug
     try {
       await api.patch(`/persona/suggestions/${suggestion.id}`, { status });
     } catch (error) {
-      console.warn(t('persona.suggestionLoadFailed'), error);
+      console.warn(t('persona.suggestionLoadFailed'), toSafeError(error));
     }
   };
 

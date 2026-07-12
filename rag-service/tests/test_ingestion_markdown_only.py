@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import DEFAULT, patch
 
-from ingestion import extract_text, process_file
+from ingestion import extract_text, format_ingestion_error, process_file
 
 
 class MarkdownOnlyIngestionTests(unittest.TestCase):
@@ -27,6 +27,16 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
     def test_extract_text_rejects_pdf_documents(self):
         with self.assertRaisesRegex(ValueError, "Only Markdown"):
             extract_text(b"%PDF-1.4", "application/pdf", "paper.pdf")
+
+    def test_ingestion_errors_allowlist_user_actions_without_exposing_unknown_details(self):
+        self.assertEqual(
+            format_ingestion_error(RuntimeError("provider injected-secret-value")),
+            "Document ingestion failed",
+        )
+        self.assertEqual(
+            format_ingestion_error(RuntimeError("batch size is invalid: 999")),
+            "Embedding 批量大小超过服务限制，请稍后重试。",
+        )
 
     def test_process_file_limits_embedding_batches_to_provider_safe_size(self):
         chunks = [f"chunk {index}" for index in range(12)]
@@ -177,7 +187,8 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
 
         extract_text_mock.assert_not_called()
         self.assertEqual(status_updates[-1]["status"], "failed")
-        self.assertIn("Uploaded object hash mismatch", status_updates[-1]["error_message"])
+        self.assertEqual(status_updates[-1]["error_message"], "Uploaded object integrity check failed")
+        self.assertNotIn("0" * 64, status_updates[-1]["error_message"])
 
     def test_process_file_indexes_chunks_into_knowledge_graph(self):
         chunk_rows = [{

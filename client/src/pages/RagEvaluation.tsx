@@ -18,6 +18,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
@@ -402,7 +403,7 @@ export default function RagEvaluationPage() {
       setDatasets(data);
       setSelectedDatasetId((currentId) => currentId || data[0]?.id || null);
     } catch (fetchError) {
-      console.error('Failed to load RAG eval datasets:', fetchError);
+      console.error('Failed to load RAG eval datasets:', toSafeError(fetchError));
       setError(t('ragEval.loadFailed'));
     } finally {
       if (showLoading) setIsLoading(false);
@@ -419,7 +420,7 @@ export default function RagEvaluationPage() {
       });
       setHistoryItems(data.items || []);
     } catch (fetchError) {
-      console.error('Failed to load historical RAG runs:', fetchError);
+      console.error('Failed to load historical RAG runs:', toSafeError(fetchError));
       setHistoryError(t('ragEval.historyLoadFailed'));
     } finally {
       setIsHistoryLoading(false);
@@ -456,7 +457,7 @@ export default function RagEvaluationPage() {
         if (!isCancelled) setQualitySummary(data);
       })
       .catch((qualityError) => {
-        console.error('Failed to load RAG eval quality summary:', qualityError);
+        console.error('Failed to load RAG eval quality summary:', toSafeError(qualityError));
         if (!isCancelled) {
           setQualitySummary(null);
           setError(t('ragEval.qualityLoadFailed'));
@@ -619,7 +620,7 @@ export default function RagEvaluationPage() {
       setDatasetDraft(emptyDatasetDraft);
       setDatasetModalMode(null);
     } catch (saveError) {
-      console.error('Failed to create RAG eval dataset:', saveError);
+      console.error('Failed to create RAG eval dataset:', toSafeError(saveError));
       setError(t('ragEval.saveFailed'));
     } finally {
       setIsSaving(false);
@@ -658,7 +659,7 @@ export default function RagEvaluationPage() {
       setCaseDraft(emptyCaseDraft);
       setIsCaseModalOpen(false);
     } catch (saveError) {
-      console.error('Failed to create RAG eval case:', saveError);
+      console.error('Failed to create RAG eval case:', toSafeError(saveError));
       setError(t('ragEval.saveFailed'));
     } finally {
       setIsSaving(false);
@@ -673,7 +674,7 @@ export default function RagEvaluationPage() {
         cases: (dataset.cases || []).filter((testCase) => testCase.id !== caseId),
       })));
     } catch (deleteError) {
-      console.error('Failed to delete RAG eval case:', deleteError);
+      console.error('Failed to delete RAG eval case:', toSafeError(deleteError));
       setError(t('ragEval.deleteCaseFailed'));
     }
   };
@@ -690,7 +691,7 @@ export default function RagEvaluationPage() {
       setSelectedDatasetId((currentId) => (currentId === datasetToDelete.id ? null : currentId));
       setDatasetToDelete(null);
     } catch (deleteError) {
-      console.error('Failed to delete RAG eval dataset:', deleteError);
+      console.error('Failed to delete RAG eval dataset:', toSafeError(deleteError));
       setError(t('ragEval.deleteDatasetFailed'));
     } finally {
       setIsSaving(false);
@@ -710,7 +711,7 @@ export default function RagEvaluationPage() {
       )));
       toast.success(t('ragEval.runQueued'));
     } catch (runError) {
-      console.error('Failed to run RAG eval:', runError);
+      console.error('Failed to run RAG eval:', toSafeError(runError));
       setError(t('ragEval.runFailed'));
     } finally {
       setRunningDatasetId(null);
@@ -727,7 +728,7 @@ export default function RagEvaluationPage() {
       setSelectedRun((current) => (current?.id === data.id ? data : current));
       toast.success(t('ragEval.cancelSuccess'));
     } catch (cancelError) {
-      console.error('Failed to cancel RAG eval run:', cancelError);
+      console.error('Failed to cancel RAG eval run:', toSafeError(cancelError));
       setError(t('ragEval.cancelFailed'));
       toast.error(t('ragEval.cancelFailed'));
     } finally {
@@ -755,7 +756,7 @@ export default function RagEvaluationPage() {
       setSelectedRun(data);
       mergeRunIntoDatasets(data);
     } catch (loadError) {
-      console.error('Failed to load RAG eval run:', loadError);
+      console.error('Failed to load RAG eval run:', toSafeError(loadError));
       setError(t('ragEval.loadRunFailed'));
       setIsRunModalOpen(false);
     } finally {
@@ -773,7 +774,7 @@ export default function RagEvaluationPage() {
           mergeRunIntoDatasets(data);
         })
         .catch((loadError) => {
-          console.error('Failed to refresh RAG eval run:', loadError);
+          console.error('Failed to refresh RAG eval run:', toSafeError(loadError));
         });
     }, 3000);
 
@@ -790,7 +791,7 @@ export default function RagEvaluationPage() {
       setError(null);
       toast.success(t('ragEval.exportSuccess'));
     } catch (exportError) {
-      console.error('Failed to export RAG eval run:', exportError);
+      console.error('Failed to export RAG eval run:', toSafeError(exportError));
       setError(t('ragEval.exportFailed'));
       toast.error(t('ragEval.exportFailed'));
     }

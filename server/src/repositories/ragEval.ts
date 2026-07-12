@@ -1020,10 +1020,7 @@ export const failRagEvalRunForUser = async (input: {
 
   if (!rows[0]) return null;
 
-  console.error('RAG eval run failed:', {
-    run_id: input.runId,
-    error: input.errorMessage,
-  });
+  console.error('RAG eval run failed');
 
   return { ...rows[0], results: [] };
 };

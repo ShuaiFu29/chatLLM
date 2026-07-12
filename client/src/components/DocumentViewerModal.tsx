@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, FileText, Loader2, MapPin } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import Modal from './Modal';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
@@ -161,7 +162,7 @@ export default function DocumentViewerModal({ document, onClose }: DocumentViewe
         setContent(typeof response.data === 'string' ? response.data : String(response.data || ''));
       } catch (loadError) {
         if (!isActive) return;
-        console.error('Failed to load document content:', loadError);
+        console.error('Failed to load document content:', toSafeError(loadError));
         setError(t('knowledge.loadDocumentFailed'));
       } finally {
         if (isActive) setIsLoading(false);

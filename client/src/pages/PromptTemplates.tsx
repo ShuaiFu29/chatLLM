@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { AlertCircle, BookOpenText, Loader2, Plus, Save, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
+import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
@@ -66,7 +67,7 @@ export default function PromptTemplatesPage() {
       const { data } = await api.get<PromptTemplate[]>('/prompt-templates');
       setTemplates(data);
     } catch (fetchError) {
-      console.error('Failed to load prompt templates:', fetchError);
+      console.error('Failed to load prompt templates:', toSafeError(fetchError));
       setError(t('prompts.loadFailed'));
     } finally {
       setIsLoading(false);
@@ -144,7 +145,7 @@ export default function PromptTemplatesPage() {
       }
       setTemplateModalMode('view');
     } catch (saveError) {
-      console.error('Failed to save prompt template:', saveError);
+      console.error('Failed to save prompt template:', toSafeError(saveError));
       setError(t('prompts.saveFailed'));
     } finally {
       setIsSaving(false);
@@ -164,7 +165,7 @@ export default function PromptTemplatesPage() {
       setDraft(emptyDraft);
       setTemplateModalMode(null);
     } catch (deleteError) {
-      console.error('Failed to delete prompt template:', deleteError);
+      console.error('Failed to delete prompt template:', toSafeError(deleteError));
       setError(t('prompts.deleteFailed'));
     } finally {
       setIsSaving(false);

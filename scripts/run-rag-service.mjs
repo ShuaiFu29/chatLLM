@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { toSafeError } from './safe-error.mjs';
 
 const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RAG_DEPENDENCY_CHECK = 'import uvicorn, fastapi, psycopg';
@@ -110,7 +111,7 @@ export function startRagService(config = buildRagServiceSpawnConfig()) {
   });
 
   child.on('error', (error) => {
-    console.error(`[RAG] Failed to start Python service with ${config.command}: ${error.message}`);
+    console.error('[RAG] Failed to start Python service:', toSafeError(error));
     process.exit(1);
   });
 

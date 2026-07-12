@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { toSafeError } from './safe-error.mjs';
 
 const rootDir = process.cwd();
 const serverRequire = createRequire(path.join(rootDir, 'server', 'package.json'));
@@ -52,14 +53,14 @@ async function cleanupFile(file) {
       body: JSON.stringify({ file_id: file.id }),
     });
   } catch (error) {
-    console.warn(`[cleanup] RAG cleanup failed for ${file.id}: ${error.message}`);
+    console.warn('[cleanup] RAG cleanup failed:', toSafeError(error));
   }
 
   if (file.object_key) {
     try {
       await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: file.object_key }));
     } catch (error) {
-      console.warn(`[cleanup] object cleanup failed for ${file.object_key}: ${error.message}`);
+      console.warn('[cleanup] object cleanup failed:', toSafeError(error));
     }
   }
 }
@@ -111,7 +112,7 @@ async function main() {
 }
 
 main().catch(async (error) => {
-  console.error(error);
+  console.error('[cleanup] failed:', toSafeError(error));
   await db.end().catch(() => {});
   process.exitCode = 1;
 });

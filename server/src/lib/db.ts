@@ -1,6 +1,7 @@
 import { Pool, PoolClient, QueryResultRow } from 'pg';
 import { serverEnv } from './env';
 import { metrics } from './metrics';
+import { toSafeError } from './safeError';
 
 export const pool = new Pool({
   connectionString: serverEnv.DATABASE_URL,
@@ -12,7 +13,7 @@ export const pool = new Pool({
 });
 
 pool.on('error', (error) => {
-  console.error('[Postgres] Unexpected idle client error:', error);
+  console.error('[Postgres] Unexpected idle client error:', toSafeError(error));
 });
 
 metrics.setDatabasePoolStatsProvider(() => ({

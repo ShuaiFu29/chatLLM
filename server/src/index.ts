@@ -26,6 +26,7 @@ import { metricsAuthMiddleware } from './middleware/metricsAuth';
 import { securityHeadersMiddleware } from './middleware/securityHeaders';
 import { errorHandlerMiddleware } from './middleware/errorHandler';
 import { notFoundMiddleware } from './middleware/notFound';
+import { toSafeError } from './lib/safeError';
 
 export const app = express();
 
@@ -128,7 +129,7 @@ export const startServer = async () => {
 
 if (require.main === module) {
   startServer().catch((error) => {
-    console.error('[Server] Failed to start:', error);
+    console.error('[Server] Failed to start:', toSafeError(error));
     process.exit(1);
   });
 }

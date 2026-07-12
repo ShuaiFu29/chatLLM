@@ -163,6 +163,25 @@ test('runOpsChecks passes target headers to probes', async () => {
   assert.equal(requests[0].init.headers.authorization, 'Bearer metrics-token');
 });
 
+test('runOpsChecks preserves request URLs while redacting report URLs and network errors', async () => {
+  const requests = [];
+  const targetUrl = 'https://example.test/health?token=query-secret-value#fragment-secret-value';
+  const checks = await runOpsChecks([
+    { label: 'custom health', url: targetUrl },
+  ], { timeoutMs: 1000 }, async (url) => {
+    requests.push(url);
+    throw Object.assign(new Error('exception-secret-value'), { code: 'ECONNREFUSED' });
+  });
+
+  assert.deepEqual(requests, [targetUrl]);
+  assert.equal(checks[0].url, 'https://example.test/health');
+  assert.deepEqual(JSON.parse(checks[0].detail), {
+    name: 'Error',
+    code: 'ECONNREFUSED',
+  });
+  assert.doesNotMatch(JSON.stringify(checks), /query-secret-value|fragment-secret-value|exception-secret-value/);
+});
+
 test('buildOpsReport renders a compact operator summary', () => {
   const report = buildOpsReport([
     { label: 'backend live', status: 'ok', detail: 'HTTP 200', durationMs: 5 },

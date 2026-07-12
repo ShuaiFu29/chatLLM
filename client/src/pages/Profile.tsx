@@ -7,6 +7,7 @@ import Modal from '../components/Modal';
 import api from '../lib/api';
 import { toast } from 'sonner';
 import { getAvatarUrl } from '../lib/avatar';
+import { toSafeError } from '../lib/safeError';
 
 const PRESET_COLORS = [
   '#2563eb', // Blue (Default)
@@ -98,7 +99,7 @@ export default function ProfilePage() {
     try {
       await promise;
     } catch (error) {
-      console.error('Avatar upload failed:', error);
+      console.error('Avatar upload failed:', toSafeError(error));
     } finally {
       setIsUploadingAvatar(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -120,7 +121,7 @@ export default function ProfilePage() {
     try {
       await promise;
     } catch (error) {
-      console.error('Failed to update profile:', error);
+      console.error('Failed to update profile:', toSafeError(error));
     } finally {
       setIsSaving(false);
     }
@@ -138,7 +139,7 @@ export default function ProfilePage() {
     try {
       await promise;
     } catch (error) {
-      console.error('Failed to delete account:', error);
+      console.error('Failed to delete account:', toSafeError(error));
     }
   };
 

@@ -13,6 +13,7 @@ import {
   updatePersonaProfileForUser,
   updatePersonaSuggestionStatusForUser,
 } from '../repositories/persona';
+import { toSafeError } from '../lib/safeError';
 
 const interestStatuses = new Set(['active', 'accepted', 'hidden', 'rejected']);
 const observationStatuses = new Set(['active', 'accepted', 'hidden', 'rejected']);
@@ -27,7 +28,7 @@ export const getPersonaCenter = async (req: Request, res: Response) => {
     const center = await getPersonaCenterForUser(req.user.id);
     res.json(center);
   } catch (error) {
-    console.error('Error fetching persona center:', error);
+    console.error('Error fetching persona center:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to fetch persona center' });
   }
 };
@@ -39,7 +40,7 @@ export const analyzePersonaCenter = async (req: Request, res: Response) => {
     const center = await refreshPersonaInsightsForUser(req.user.id);
     res.json(center);
   } catch (error) {
-    console.error('Error analyzing persona center:', error);
+    console.error('Error analyzing persona center:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to analyze persona center' });
   }
 };
@@ -56,7 +57,7 @@ export const updatePersonaProfile = async (req: Request, res: Response) => {
     const profile = await updatePersonaProfileForUser(req.user.id, update);
     res.json(profile);
   } catch (error) {
-    console.error('Error updating persona profile:', error);
+    console.error('Error updating persona profile:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update persona profile' });
   }
 };
@@ -74,7 +75,7 @@ export const updatePersonaInterest = async (req: Request, res: Response) => {
     if (!interest) return res.status(404).json({ error: 'Interest not found' });
     res.json(interest);
   } catch (error) {
-    console.error('Error updating persona interest:', error);
+    console.error('Error updating persona interest:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update persona interest' });
   }
 };
@@ -92,7 +93,7 @@ export const updatePersonaObservation = async (req: Request, res: Response) => {
     if (!observation) return res.status(404).json({ error: 'Observation not found' });
     res.json(observation);
   } catch (error) {
-    console.error('Error updating persona observation:', error);
+    console.error('Error updating persona observation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update persona observation' });
   }
 };
@@ -110,7 +111,7 @@ export const updatePersonaSuggestion = async (req: Request, res: Response) => {
     if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
     res.json(suggestion);
   } catch (error) {
-    console.error('Error updating persona suggestion:', error);
+    console.error('Error updating persona suggestion:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to update persona suggestion' });
   }
 };
@@ -122,7 +123,7 @@ export const deletePersonaProfile = async (req: Request, res: Response) => {
     const center = await deletePersonaProfileForUser(req.user.id);
     res.json(center);
   } catch (error) {
-    console.error('Error deleting persona profile:', error);
+    console.error('Error deleting persona profile:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete persona profile' });
   }
 };
@@ -135,7 +136,7 @@ export const deletePersonaInterest = async (req: Request, res: Response) => {
     if (!interest) return res.status(404).json({ error: 'Interest not found' });
     res.json(interest);
   } catch (error) {
-    console.error('Error deleting persona interest:', error);
+    console.error('Error deleting persona interest:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete persona interest' });
   }
 };
@@ -148,7 +149,7 @@ export const deletePersonaObservation = async (req: Request, res: Response) => {
     if (!observation) return res.status(404).json({ error: 'Observation not found' });
     res.json(observation);
   } catch (error) {
-    console.error('Error deleting persona observation:', error);
+    console.error('Error deleting persona observation:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete persona observation' });
   }
 };
@@ -161,7 +162,7 @@ export const deletePersonaSuggestion = async (req: Request, res: Response) => {
     if (!suggestion) return res.status(404).json({ error: 'Suggestion not found' });
     res.json(suggestion);
   } catch (error) {
-    console.error('Error deleting persona suggestion:', error);
+    console.error('Error deleting persona suggestion:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete persona suggestion' });
   }
 };
@@ -173,7 +174,7 @@ export const resetPersonaCenter = async (req: Request, res: Response) => {
     const center = await resetPersonaCenterForUser(req.user.id);
     res.json(center);
   } catch (error) {
-    console.error('Error resetting persona center:', error);
+    console.error('Error resetting persona center:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to reset persona center' });
   }
 };

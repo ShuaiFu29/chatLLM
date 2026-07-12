@@ -32,8 +32,7 @@ self.onmessage = async (event: MessageEvent<File>) => {
     }
 
     self.postMessage({ type: 'complete', hash });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Hashing failed';
-    self.postMessage({ type: 'error', error: message });
+  } catch {
+    self.postMessage({ type: 'error', error: 'Hashing failed' });
   }
 };

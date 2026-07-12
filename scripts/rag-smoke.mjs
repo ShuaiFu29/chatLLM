@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
+import { toSafeError } from './safe-error.mjs';
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const serverRequire = createRequire(path.join(rootDir, 'server', 'package.json'));
@@ -259,9 +260,13 @@ async function main() {
       firstResultPreview: retrieveBody.results[0].content.slice(0, 120),
     }, null, 2));
   } catch (error) {
-    console.error('[rag-smoke] failed:', error);
-    if (stdout.trim()) console.error('[rag-smoke] rag stdout:\n' + stdout.trim());
-    if (stderr.trim()) console.error('[rag-smoke] rag stderr:\n' + stderr.trim());
+    console.error('[rag-smoke] failed:', toSafeError(error));
+    if (stdout.trim() || stderr.trim()) {
+      console.error('[rag-smoke] RAG process emitted diagnostics:', {
+        stdout_bytes: Buffer.byteLength(stdout),
+        stderr_bytes: Buffer.byteLength(stderr),
+      });
+    }
     process.exitCode = 1;
   } finally {
     await cleanup();

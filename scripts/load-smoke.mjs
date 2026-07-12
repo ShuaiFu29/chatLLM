@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { formatSafeError, toSafeUrl } from './safe-error.mjs';
 
 const DEFAULT_TARGET_URL = 'http://localhost:3000';
 const DEFAULT_REQUESTS = 100;
@@ -182,7 +183,7 @@ const executeStep = async (options, step, fetchImpl) => {
     const status = Number(response.status);
     return {
       label: step.label,
-      url,
+      url: toSafeUrl(url),
       status,
       statusFamily: getStatusFamily(status),
       durationMs,
@@ -192,12 +193,12 @@ const executeStep = async (options, step, fetchImpl) => {
     const durationMs = performance.now() - startedAt;
     return {
       label: step.label,
-      url,
+      url: toSafeUrl(url),
       status: 'network_error',
       statusFamily: 'other',
       durationMs,
       failed: true,
-      error: error instanceof Error ? error.message : String(error),
+      error: formatSafeError(error),
     };
   } finally {
     clearTimeout(timer);

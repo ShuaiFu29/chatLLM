@@ -397,7 +397,7 @@ def run_eval_cases(
                 },
                 "error_message": "",
             })
-        except Exception as error:
+        except Exception:
             results.append({
                 "case_id": case_id,
                 "question": question,
@@ -422,7 +422,7 @@ def run_eval_cases(
                 "matched_sources": [],
                 "latency_ms": int((time.time() - case_started_at) * 1000),
                 "trace_summary": {},
-                "error_message": str(error),
+                "error_message": "Evaluation case failed",
             })
 
     successful_results = [result for result in results if result["status"] == "success"]

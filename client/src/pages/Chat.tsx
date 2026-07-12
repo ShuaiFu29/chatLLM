@@ -4,6 +4,7 @@ import { useChatStore } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { isSupportedMarkdownDocument, uploadFile, type UploadProgress } from '../lib/uploadManager';
+import { toSafeError } from '../lib/safeError';
 import ChatSettingsDialog from '../components/ChatSettingsDialog';
 import ChatHeader from '../components/ChatHeader';
 import MessageList from '../components/MessageList';
@@ -162,7 +163,7 @@ export default function ChatPage() {
 
       toast.success(`${file.name} ${t('chat.uploadSuccess')}`, { id: toastId });
     } catch (error) {
-      console.error('Upload failed:', error);
+      console.error('Upload failed:', toSafeError(error));
       toast.error(t('chat.uploadFail'), { id: toastId });
     } finally {
       setIsUploading(false);
@@ -194,7 +195,7 @@ export default function ChatPage() {
       downloadTextFile(filename, markdown);
       toast.success(t('chat.exportSuccess'));
     } catch (error) {
-      console.error('Failed to export conversation:', error);
+      console.error('Failed to export conversation:', toSafeError(error));
       toast.error(t('chat.exportFail'));
     }
   }, [currentConversation, currentProjectSpace?.name, messages, t]);
