@@ -59,6 +59,30 @@ alter table files
   add constraint files_status_check
   check (status in ('uploading', 'pending', 'processing', 'completed', 'failed', 'deleting'));
 
+alter table upload_multipart_sessions
+  drop constraint if exists upload_multipart_sessions_status_check;
+
+alter table upload_multipart_sessions
+  add constraint upload_multipart_sessions_status_check
+  check (
+    status in (
+      'initiated',
+      'uploading',
+      'completing',
+      'cancelling',
+      'completed',
+      'failed',
+      'cancelled',
+      'expired'
+    )
+  );
+
+drop index if exists upload_multipart_sessions_expires_at_idx;
+
+create index upload_multipart_sessions_expires_at_idx
+  on upload_multipart_sessions(expires_at)
+  where status in ('initiated', 'uploading', 'cancelling');
+
 create table if not exists file_content_claims (
   user_id uuid not null references users(id) on delete cascade,
   scope_key text not null,

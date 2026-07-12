@@ -11,12 +11,17 @@ import {
   createMultipartObjectUpload,
   deleteObject,
   getObjectStream,
+  headObjectMetadata,
+  isMultipartUploadMissingError,
+  isObjectNotFoundError,
+  isStorageClientError,
   listMultipartObjectParts,
   presignMultipartUploadParts,
   uploadBuffer,
   uploadFilePath,
 } from '../lib/storage';
 import {
+  type FileRow,
   deleteFileForUser,
   findClaimedFileByUserAndHash,
   findFileForUser,
@@ -31,14 +36,20 @@ import {
 } from '../repositories/projectSpaces';
 import { findUserById, updateUser } from '../repositories/users';
 import {
+  type MultipartUploadSessionRow,
+  claimMultipartUploadAbort,
+  claimMultipartUploadCompletion,
   createMultipartUploadSession,
+  finalizeMultipartUploadAbort,
+  finalizeMultipartUploadCompletion,
+  finalizeMultipartUploadFailure,
   findActiveMultipartUploadSession,
   findMultipartUploadSessionForUser,
-  markMultipartUploadSessionCancelled,
-  markMultipartUploadSessionCompleted,
-  markMultipartUploadSessionCompleting,
-  markMultipartUploadSessionFailed,
+  markMultipartUploadAbortRetryable,
+  markMultipartUploadCompletionRetryable,
   markMultipartUploadSessionUploading,
+  reclaimMultipartUploadCompletion,
+  releaseMultipartUploadCompletion,
 } from '../repositories/uploadMultipart';
 import { fileQueue } from '../services/fileQueue';
 import { cleanupRagFileVectors } from '../lib/ragClient';
@@ -99,7 +110,20 @@ const getMultipartCompletionMessage = (error: unknown): string | null => {
   if (message.startsWith('Uploaded multipart object size mismatch:')) {
     return 'Uploaded multipart object size mismatch';
   }
+  if (message.startsWith('Uploaded multipart part size mismatch:')) {
+    return 'Uploaded multipart part size mismatch';
+  }
   if (message === 'Multipart upload session expired') return message;
+  return null;
+};
+
+const getCompletedMultipartIntegrityMessage = (error: unknown): string | null => {
+  const message = readErrorMessage(error);
+  if (message.startsWith('Completed multipart object size mismatch:')
+    || message === 'Completed multipart object hash metadata mismatch'
+    || message === 'Completed multipart object size metadata mismatch') {
+    return 'Completed multipart object integrity mismatch';
+  }
   return null;
 };
 
@@ -172,10 +196,52 @@ const normalizeStorageParts = (parts: Array<{ partNumber: number; etag: string; 
     .filter((part) => part.partNumber >= 1 && part.partNumber <= MAX_MULTIPART_UPLOAD_PARTS && part.etag)
     .sort((a, b) => a.partNumber - b.partNumber);
 
+const sendExistingMultipartSession = async (
+  res: Response,
+  session: MultipartUploadSessionRow,
+  fileId: string,
+  projectSpaceId: string
+) => {
+  if (session.status === 'completed') {
+    return res.json({
+      exists: true,
+      uploadNeeded: false,
+      uploadId: fileId,
+      projectSpaceId,
+    });
+  }
+  if (session.status === 'completing') {
+    return res.status(409).json({ error: 'Multipart upload completion is in progress' });
+  }
+  if (session.status === 'cancelling') {
+    return res.status(409).json({ error: 'Multipart upload cancellation is pending' });
+  }
+  if (new Date(session.expires_at).getTime() <= Date.now()) {
+    return res.status(410).json({ error: 'Multipart upload cleanup is pending' });
+  }
+
+  const uploadedParts = await listMultipartObjectParts(
+    session.object_key,
+    session.storage_upload_id
+  ).catch(() => []);
+  return res.json({
+    exists: false,
+    uploadNeeded: true,
+    uploadStrategy: 'direct-multipart',
+    uploadId: fileId,
+    partSize: Number(session.part_size),
+    totalParts: Number(session.total_parts),
+    uploadedPartNumbers: normalizeStorageParts(uploadedParts).map((part) => part.partNumber),
+    expiresAt: session.expires_at,
+    projectSpaceId,
+  });
+};
+
 const assertCompletePartSet = (
   parts: Array<{ partNumber: number; etag: string; size?: number }>,
   expectedTotalParts: number,
-  expectedFileSize?: number | null
+  expectedFileSize?: number | null,
+  expectedPartSize?: number | null
 ) => {
   if (parts.length !== expectedTotalParts) {
     throw new Error(`Missing uploaded parts. Expected ${expectedTotalParts}, found ${parts.length}`);
@@ -194,12 +260,75 @@ const assertCompletePartSet = (
   }
   const uploadedSize = partSizes.reduce((sum, size) => sum + size, 0);
 
+  if (expectedFileSize !== undefined && expectedFileSize !== null
+    && expectedPartSize !== undefined && expectedPartSize !== null) {
+    const fileSize = Number(expectedFileSize);
+    const partSize = Number(expectedPartSize);
+    for (let index = 0; index < expectedTotalParts; index += 1) {
+      const expectedSize = Math.min(partSize, fileSize - (index * partSize));
+      if (!Number.isSafeInteger(expectedSize) || expectedSize <= 0 || partSizes[index] !== expectedSize) {
+        throw new Error(
+          `Uploaded multipart part size mismatch: part ${index + 1} expected ${expectedSize}, got ${partSizes[index]}`
+        );
+      }
+    }
+  }
+
   if (expectedFileSize !== undefined && expectedFileSize !== null && uploadedSize !== Number(expectedFileSize)) {
     throw new Error(`Uploaded multipart object size mismatch: expected ${expectedFileSize}, got ${uploadedSize}`);
   }
 
   return uploadedSize;
 };
+
+const assertCompletedMultipartObject = (
+  object: { size: number; metadata: Record<string, string | undefined> },
+  upload: Pick<FileRow, 'file_hash' | 'file_size'>
+) => {
+  const expectedSize = Number(upload.file_size);
+  const expectedHash = upload.file_hash.toLowerCase();
+  const metadataHash = object.metadata.sha256?.toLowerCase();
+  const metadataSize = Number(object.metadata.size);
+
+  if (!Number.isSafeInteger(expectedSize) || object.size !== expectedSize) {
+    throw new Error(`Completed multipart object size mismatch: expected ${expectedSize}, got ${object.size}`);
+  }
+  if (metadataHash !== expectedHash) {
+    throw new Error('Completed multipart object hash metadata mismatch');
+  }
+  if (!Number.isSafeInteger(metadataSize) || metadataSize !== expectedSize) {
+    throw new Error('Completed multipart object size metadata mismatch');
+  }
+
+  return object.size;
+};
+
+const inspectCompletedMultipartObject = async (
+  session: MultipartUploadSessionRow,
+  upload: Pick<FileRow, 'file_hash' | 'file_size'>
+) => {
+  try {
+    const object = await headObjectMetadata(session.object_key);
+    return {
+      exists: true as const,
+      storageBytes: assertCompletedMultipartObject(object, upload),
+    };
+  } catch (error) {
+    if (isObjectNotFoundError(error)) {
+      return { exists: false as const, storageBytes: null };
+    }
+    throw error;
+  }
+};
+
+const sendMultipartCompleteSuccess = (res: Response) => (
+  res.json({ success: true, message: 'File uploaded and queued for processing' })
+);
+
+const MULTIPART_COMPLETION_RETRYABLE = 'Multipart completion is pending reconciliation';
+const MULTIPART_ABORT_RETRYABLE = 'Multipart abort is pending reconciliation';
+const MULTIPART_UPLOAD_MISSING = 'Multipart upload no longer exists';
+const MULTIPART_COMPLETION_REJECTED = 'Multipart completion was rejected by storage';
 
 export const checkFile = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
@@ -231,6 +360,15 @@ export const checkFile = async (req: Request, res: Response) => {
     if (fileId) {
       const activeSession = await findActiveMultipartUploadSession(fileId, req.user.id);
       if (activeSession) {
+        if (activeSession.status === 'completing') {
+          return res.status(409).json({ error: 'Multipart upload completion is in progress' });
+        }
+        if (activeSession.status === 'cancelling') {
+          return res.status(409).json({ error: 'Multipart upload cancellation is pending' });
+        }
+        if (new Date(activeSession.expires_at).getTime() <= Date.now()) {
+          return res.status(410).json({ error: 'Multipart upload cleanup is pending' });
+        }
         const uploadedParts = await listMultipartObjectParts(activeSession.object_key, activeSession.storage_upload_id)
           .catch(() => []);
         multipartSession = {
@@ -313,7 +451,7 @@ export const initUpload = async (req: Request, res: Response) => {
 export const initMultipartUpload = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { filename, hash, size, type } = req.body;
-  let createdFileId: string | null = null;
+  let unclaimedStorageUpload: { objectKey: string; storageUploadId: string } | null = null;
 
   try {
     const normalizedHash = requireUploadHash(hash);
@@ -343,22 +481,8 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
 
     const activeSession = await findActiveMultipartUploadSession(file.id, req.user.id);
     if (activeSession) {
-      const uploadedParts = await listMultipartObjectParts(activeSession.object_key, activeSession.storage_upload_id)
-        .catch(() => []);
-      return res.json({
-        exists: false,
-        uploadNeeded: true,
-        uploadStrategy: 'direct-multipart',
-        uploadId: file.id,
-        partSize: Number(activeSession.part_size),
-        totalParts: Number(activeSession.total_parts),
-        uploadedPartNumbers: normalizeStorageParts(uploadedParts).map((part) => part.partNumber),
-        expiresAt: activeSession.expires_at,
-        projectSpaceId,
-      });
+      return sendExistingMultipartSession(res, activeSession, file.id, projectSpaceId);
     }
-    createdFileId = file.id;
-
     const partSize = chooseMultipartPartSize(normalizedSize, serverEnv.MULTIPART_UPLOAD_PART_SIZE_BYTES);
     const totalParts = Math.ceil(normalizedSize / partSize);
     if (totalParts > MAX_MULTIPART_UPLOAD_PARTS) {
@@ -370,8 +494,9 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
       sha256: normalizedHash,
       size: String(normalizedSize),
     });
+    unclaimedStorageUpload = { objectKey, storageUploadId };
     const expiresAt = new Date(Date.now() + serverEnv.MULTIPART_UPLOAD_SESSION_TTL_MS);
-    const session = await createMultipartUploadSession({
+    const creation = await createMultipartUploadSession({
       fileId: file.id,
       userId: req.user.id,
       projectSpaceId,
@@ -381,14 +506,27 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
       totalParts,
       expiresAt,
     });
+    const session = creation.session;
+
+    if (!creation.created) {
+      await abortMultipartObjectUpload(objectKey, storageUploadId);
+      unclaimedStorageUpload = null;
+      const currentSession = await findMultipartUploadSessionForUser(file.id, req.user.id);
+      if (!currentSession) {
+        return res.status(409).json({ error: 'Multipart upload state changed' });
+      }
+      return sendExistingMultipartSession(res, currentSession, file.id, projectSpaceId);
+    } else {
+      unclaimedStorageUpload = null;
+    }
 
     res.json({
       exists: false,
       uploadNeeded: true,
       uploadStrategy: 'direct-multipart',
       uploadId: file.id,
-      partSize,
-      totalParts,
+      partSize: Number(session.part_size),
+      totalParts: Number(session.total_parts),
       uploadedPartNumbers: [],
       expiresAt: session.expires_at,
       projectSpaceId,
@@ -397,12 +535,11 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     const inputMessage = getUploadInputMessage(err);
     const quotaMessage = getUploadReservationMessage(err);
     const failureMessage = quotaMessage || inputMessage || 'Multipart init failed';
-    if (createdFileId) {
-      await updateFile(createdFileId, {
-        status: 'failed',
-        progress: 0,
-        error_message: failureMessage,
-      }).catch(() => undefined);
+    if (unclaimedStorageUpload) {
+      await abortMultipartObjectUpload(
+        unclaimedStorageUpload.objectKey,
+        unclaimedStorageUpload.storageUploadId
+      ).catch(() => undefined);
     }
     return sendUploadError(
       res,
@@ -425,7 +562,7 @@ export const presignMultipartParts = async (req: Request, res: Response) => {
 
   try {
     const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
-    if (!session || !['initiated', 'uploading', 'completing'].includes(session.status)) {
+    if (!session || !['initiated', 'uploading'].includes(session.status)) {
       return res.status(404).json({ error: 'Multipart upload session not found' });
     }
 
@@ -437,19 +574,20 @@ export const presignMultipartParts = async (req: Request, res: Response) => {
 
     if (new Date(session.expires_at).getTime() <= Date.now()) {
       const message = 'Multipart upload session expired';
-      await markMultipartUploadSessionFailed(uploadId, message);
-      await updateFile(uploadId, { status: 'failed', progress: 0, error_message: message });
       return res.status(410).json({ error: message });
     }
 
-    await markMultipartUploadSessionUploading(uploadId);
+    const activeSession = await markMultipartUploadSessionUploading(uploadId, req.user.id);
+    if (!activeSession) {
+      return res.status(409).json({ error: 'Multipart upload state changed' });
+    }
     const parts = await presignMultipartUploadParts(
-      session.object_key,
-      session.storage_upload_id,
+      activeSession.object_key,
+      activeSession.storage_upload_id,
       partNumbers,
       serverEnv.MULTIPART_UPLOAD_URL_EXPIRES_SECONDS,
       {
-        partSize: Number(session.part_size),
+        partSize: Number(activeSession.part_size),
         fileSize: Number(upload.file_size),
       }
     );
@@ -467,8 +605,6 @@ export const presignMultipartParts = async (req: Request, res: Response) => {
 export const completeMultipartUpload = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
   const { uploadId } = req.body;
-  let completedObjectKey: string | null = null;
-  let completedStorageBytes: number | null = null;
 
   if (!uploadId) {
     return res.status(400).json({ error: 'Missing uploadId' });
@@ -476,57 +612,282 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
 
   try {
     const upload = await findFileForUser(uploadId, req.user.id);
-    if (!upload || upload.status !== 'uploading') {
-      return res.status(404).json({ error: 'Upload session not found' });
-    }
+    if (!upload) return res.status(404).json({ error: 'Upload session not found' });
 
-    const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
-    if (!session || !['initiated', 'uploading', 'completing'].includes(session.status)) {
+    let session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+    let ownsCompletion = false;
+    if (!session) {
       return res.status(404).json({ error: 'Multipart upload session not found' });
     }
+    if (session.status === 'completed') return sendMultipartCompleteSuccess(res);
+    if (session.status === 'completing') {
+      try {
+        const object = await inspectCompletedMultipartObject(session, upload);
+        if (!object.exists) {
+          const reclaimed = await reclaimMultipartUploadCompletion(
+            uploadId,
+            req.user.id,
+            MULTIPART_COMPLETION_RETRYABLE
+          );
+          if (!reclaimed) {
+            return res.status(202).json({ status: 'completing' });
+          }
+          session = reclaimed;
+          ownsCompletion = true;
+        } else {
+          const result = await finalizeMultipartUploadCompletion(
+            uploadId,
+            req.user.id,
+            session.object_key,
+            object.storageBytes
+          );
+          if (!result.transitioned && result.session?.status !== 'completed') {
+            return res.status(409).json({ error: 'Multipart completion state changed' });
+          }
+          if (result.transitioned) fileQueue.trigger();
+          return sendMultipartCompleteSuccess(res);
+        }
+      } catch (error) {
+        const integrityMessage = getCompletedMultipartIntegrityMessage(error);
+        if (integrityMessage) {
+          await markMultipartUploadCompletionRetryable(
+            uploadId,
+            req.user.id,
+            integrityMessage
+          ).catch(() => undefined);
+        }
+        return sendUploadError(
+          res,
+          integrityMessage ? 409 : 503,
+          integrityMessage || MULTIPART_COMPLETION_RETRYABLE,
+          error,
+          'Multipart complete reconciliation'
+        );
+      }
+    }
+    if (!ownsCompletion) {
+      if (!['initiated', 'uploading'].includes(session.status) || upload.status !== 'uploading') {
+        return res.status(409).json({ error: 'Multipart upload is not completable' });
+      }
 
-    if (new Date(session.expires_at).getTime() <= Date.now()) {
-      throw new Error('Multipart upload session expired');
+      if (new Date(session.expires_at).getTime() <= Date.now()) {
+        return res.status(410).json({ error: 'Multipart upload session expired' });
+      }
+
+      const claimed = await claimMultipartUploadCompletion(uploadId, req.user.id);
+      if (!claimed) {
+        session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+        if (session?.status === 'completed') return sendMultipartCompleteSuccess(res);
+        if (session?.status === 'completing') {
+          return res.status(202).json({ status: 'completing' });
+        }
+        return res.status(409).json({ error: 'Multipart completion state changed' });
+      }
+      session = claimed;
+    } else if (upload.status !== 'uploading') {
+      return res.status(409).json({ error: 'Multipart completion state changed' });
     }
 
-    await markMultipartUploadSessionCompleting(uploadId);
-    const storageParts = normalizeStorageParts(
-      await listMultipartObjectParts(session.object_key, session.storage_upload_id)
-    );
-    completedStorageBytes = assertCompletePartSet(storageParts, Number(session.total_parts), upload.file_size);
+    let storageParts: ReturnType<typeof normalizeStorageParts>;
+    let completedStorageBytes: number;
+    try {
+      storageParts = normalizeStorageParts(
+        await listMultipartObjectParts(session.object_key, session.storage_upload_id)
+      );
+      completedStorageBytes = assertCompletePartSet(
+        storageParts,
+        Number(session.total_parts),
+        upload.file_size,
+        Number(session.part_size)
+      );
+    } catch (error) {
+      const completionMessage = getMultipartCompletionMessage(error);
+      if (completionMessage) {
+        await releaseMultipartUploadCompletion(
+          uploadId,
+          req.user.id,
+          completionMessage
+        ).catch(() => undefined);
+        return sendUploadError(res, 400, completionMessage, error, 'Multipart complete validation');
+      }
 
-    await completeMultipartObjectUpload(session.object_key, session.storage_upload_id, storageParts);
-    completedObjectKey = session.object_key;
+      if (isMultipartUploadMissingError(error)) {
+        try {
+          const object = await inspectCompletedMultipartObject(session, upload);
+          if (object.exists) {
+            const result = await finalizeMultipartUploadCompletion(
+              uploadId,
+              req.user.id,
+              session.object_key,
+              object.storageBytes
+            );
+            if (result.transitioned) fileQueue.trigger();
+            if (result.transitioned || result.session?.status === 'completed') {
+              return sendMultipartCompleteSuccess(res);
+            }
+          } else {
+            const result = await finalizeMultipartUploadFailure(
+              uploadId,
+              req.user.id,
+              MULTIPART_UPLOAD_MISSING
+            );
+            if (result.transitioned || result.session?.status === 'failed') {
+              return res.status(409).json({ error: MULTIPART_UPLOAD_MISSING });
+            }
+          }
+        } catch {
+          // The stable retryable response below covers failed reconciliation.
+        }
+      } else {
+        await releaseMultipartUploadCompletion(
+          uploadId,
+          req.user.id,
+          MULTIPART_COMPLETION_RETRYABLE
+        ).catch(() => undefined);
+      }
 
-    await updateFile(uploadId, {
-      status: 'pending',
-      object_key: session.object_key,
-      progress: 0,
-      error_message: null,
-      reserved_bytes: 0,
-      storage_bytes: completedStorageBytes,
-    });
-    await markMultipartUploadSessionCompleted(uploadId);
+      await markMultipartUploadCompletionRetryable(
+        uploadId,
+        req.user.id,
+        MULTIPART_COMPLETION_RETRYABLE
+      ).catch(() => undefined);
+      return sendUploadError(
+        res,
+        503,
+        MULTIPART_COMPLETION_RETRYABLE,
+        error,
+        'Multipart complete preparation'
+      );
+    }
 
-    fileQueue.trigger();
+    let completedObjectVerified = false;
+    try {
+      await completeMultipartObjectUpload(session.object_key, session.storage_upload_id, storageParts);
+    } catch (error) {
+      try {
+        const object = await inspectCompletedMultipartObject(session, upload);
+        if (object.exists) {
+          completedStorageBytes = object.storageBytes;
+          completedObjectVerified = true;
+        } else {
+          if (isMultipartUploadMissingError(error)) {
+            const result = await finalizeMultipartUploadFailure(
+              uploadId,
+              req.user.id,
+              MULTIPART_UPLOAD_MISSING
+            );
+            if (result.transitioned || result.session?.status === 'failed') {
+              return res.status(409).json({ error: MULTIPART_UPLOAD_MISSING });
+            }
+          }
+          if (isStorageClientError(error)) {
+            await releaseMultipartUploadCompletion(
+              uploadId,
+              req.user.id,
+              MULTIPART_COMPLETION_REJECTED
+            );
+            return res.status(409).json({ error: MULTIPART_COMPLETION_REJECTED });
+          }
+          await markMultipartUploadCompletionRetryable(
+            uploadId,
+            req.user.id,
+            MULTIPART_COMPLETION_RETRYABLE
+          ).catch(() => undefined);
+          return sendUploadError(
+            res,
+            503,
+            MULTIPART_COMPLETION_RETRYABLE,
+            error,
+            'Multipart complete storage'
+          );
+        }
+      } catch (reconciliationError) {
+        await markMultipartUploadCompletionRetryable(
+          uploadId,
+          req.user.id,
+          MULTIPART_COMPLETION_RETRYABLE
+        ).catch(() => undefined);
+        return sendUploadError(
+          res,
+          503,
+          MULTIPART_COMPLETION_RETRYABLE,
+          reconciliationError,
+          'Multipart complete reconciliation'
+        );
+      }
+    }
 
-    res.json({ success: true, message: 'File uploaded and queued for processing' });
+    if (!completedObjectVerified) {
+      try {
+        const object = await inspectCompletedMultipartObject(session, upload);
+        if (!object.exists) {
+          await markMultipartUploadCompletionRetryable(
+            uploadId,
+            req.user.id,
+            MULTIPART_COMPLETION_RETRYABLE
+          ).catch(() => undefined);
+          return res.status(503).json({ error: MULTIPART_COMPLETION_RETRYABLE });
+        }
+        completedStorageBytes = object.storageBytes;
+      } catch (error) {
+        const integrityMessage = getCompletedMultipartIntegrityMessage(error);
+        await markMultipartUploadCompletionRetryable(
+          uploadId,
+          req.user.id,
+          integrityMessage || MULTIPART_COMPLETION_RETRYABLE
+        ).catch(() => undefined);
+        return sendUploadError(
+          res,
+          integrityMessage ? 409 : 503,
+          integrityMessage || MULTIPART_COMPLETION_RETRYABLE,
+          error,
+          'Multipart complete object verification'
+        );
+      }
+    }
+
+    let result;
+    try {
+      result = await finalizeMultipartUploadCompletion(
+        uploadId,
+        req.user.id,
+        session.object_key,
+        completedStorageBytes
+      );
+    } catch (error) {
+      await markMultipartUploadCompletionRetryable(
+        uploadId,
+        req.user.id,
+        MULTIPART_COMPLETION_RETRYABLE
+      ).catch(() => undefined);
+      return sendUploadError(
+        res,
+        503,
+        MULTIPART_COMPLETION_RETRYABLE,
+        error,
+        'Multipart complete database finalization'
+      );
+    }
+
+    if (!result.transitioned && result.session?.status !== 'completed') {
+      return res.status(409).json({ error: 'Multipart completion state changed' });
+    }
+    if (result.transitioned) fileQueue.trigger();
+
+    return sendMultipartCompleteSuccess(res);
   } catch (err) {
-    const completionMessage = getMultipartCompletionMessage(err);
-    const failureMessage = completionMessage || 'Multipart complete failed';
-    await markMultipartUploadSessionFailed(uploadId, failureMessage).catch(() => undefined);
-    const failedUpdate: Parameters<typeof updateFile>[1] = {
-      status: 'failed',
-      progress: 0,
-      error_message: failureMessage,
-    };
-    if (completedObjectKey && completedStorageBytes !== null) {
-      failedUpdate.object_key = completedObjectKey;
-      failedUpdate.reserved_bytes = 0;
-      failedUpdate.storage_bytes = completedStorageBytes;
-    }
-    await updateFile(uploadId, failedUpdate).catch(() => undefined);
-    return sendUploadError(res, completionMessage ? 400 : 500, failureMessage, err, 'Multipart complete');
+    await markMultipartUploadCompletionRetryable(
+      uploadId,
+      req.user.id,
+      MULTIPART_COMPLETION_RETRYABLE
+    ).catch(() => undefined);
+    return sendUploadError(
+      res,
+      503,
+      MULTIPART_COMPLETION_RETRYABLE,
+      err,
+      'Multipart complete'
+    );
   }
 };
 
@@ -539,26 +900,134 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
   }
 
   try {
-    const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+    let session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
     if (!session) return res.status(404).json({ error: 'Multipart upload session not found' });
+    if (session.status === 'completed' || session.status === 'completing') {
+      return res.status(409).json({ error: 'Multipart upload completion already won' });
+    }
+    if (session.status === 'cancelled') return res.json({ success: true });
+    if (!['initiated', 'uploading', 'cancelling'].includes(session.status)) {
+      return res.status(409).json({ error: 'Multipart upload is not cancellable' });
+    }
 
-    if (['initiated', 'uploading', 'completing'].includes(session.status)) {
-      await abortMultipartObjectUpload(session.object_key, session.storage_upload_id);
+    if (session.status !== 'cancelling') {
+      const claimed = await claimMultipartUploadAbort(uploadId, req.user.id);
+      if (!claimed) {
+        session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
+        if (session?.status === 'cancelled') return res.json({ success: true });
+        if (session?.status === 'completed' || session?.status === 'completing') {
+          return res.status(409).json({ error: 'Multipart upload completion already won' });
+        }
+        if (session?.status !== 'cancelling') {
+          return res.status(409).json({ error: 'Multipart abort state changed' });
+        }
+      } else {
+        session = claimed;
+      }
     }
 
     const message = 'Multipart upload cancelled';
-    await markMultipartUploadSessionCancelled(uploadId, message);
-    await updateFile(uploadId, {
-      status: 'failed',
-      progress: 0,
-      error_message: message,
-      reserved_bytes: 0,
-      storage_bytes: 0,
-    });
+    try {
+      await abortMultipartObjectUpload(session.object_key, session.storage_upload_id);
+    } catch (error) {
+      if (isMultipartUploadMissingError(error)) {
+        try {
+          const upload = await findFileForUser(uploadId, req.user.id);
+          if (!upload) return res.status(404).json({ error: 'Upload session not found' });
+          const object = await inspectCompletedMultipartObject(session, upload);
+          if (object.exists) {
+            const result = await finalizeMultipartUploadCompletion(
+              uploadId,
+              req.user.id,
+              session.object_key,
+              object.storageBytes
+            );
+            if (result.transitioned || result.session?.status === 'completed') {
+              if (result.transitioned) fileQueue.trigger();
+              return res.status(409).json({ error: 'Multipart upload was already completed' });
+            }
+            throw new Error('Multipart completion reconciliation did not transition');
+          }
 
-    res.json({ success: true });
+          const result = await finalizeMultipartUploadAbort(
+            uploadId,
+            req.user.id,
+            message
+          );
+          if (result.transitioned || result.session?.status === 'cancelled') {
+            return res.json({ success: true });
+          }
+          if (result.session?.status === 'completed') {
+            return res.status(409).json({ error: 'Multipart upload was already completed' });
+          }
+        } catch (reconciliationError) {
+          await markMultipartUploadAbortRetryable(
+            uploadId,
+            req.user.id,
+            MULTIPART_ABORT_RETRYABLE
+          ).catch(() => undefined);
+          return sendUploadError(
+            res,
+            503,
+            MULTIPART_ABORT_RETRYABLE,
+            reconciliationError,
+            'Multipart abort reconciliation'
+          );
+        }
+      } else {
+        try {
+          const upload = await findFileForUser(uploadId, req.user.id);
+          if (upload) {
+            const object = await inspectCompletedMultipartObject(session, upload);
+            if (object.exists) {
+              const result = await finalizeMultipartUploadCompletion(
+                uploadId,
+                req.user.id,
+                session.object_key,
+                object.storageBytes
+              );
+              if (result.transitioned || result.session?.status === 'completed') {
+                if (result.transitioned) fileQueue.trigger();
+                return res.status(409).json({ error: 'Multipart upload was already completed' });
+              }
+              throw new Error('Multipart completion reconciliation did not transition');
+            }
+          }
+        } catch {
+          // Unknown storage outcomes remain retryable below.
+        }
+      }
+
+      await markMultipartUploadAbortRetryable(
+        uploadId,
+        req.user.id,
+        MULTIPART_ABORT_RETRYABLE
+      ).catch(() => undefined);
+      return sendUploadError(
+        res,
+        503,
+        MULTIPART_ABORT_RETRYABLE,
+        error,
+        'Multipart abort storage'
+      );
+    }
+
+    const result = await finalizeMultipartUploadAbort(uploadId, req.user.id, message);
+    if (!result.transitioned && result.session?.status !== 'cancelled') {
+      if (result.session?.status === 'completed') {
+        return res.status(409).json({ error: 'Multipart upload was already completed' });
+      }
+      return res.status(409).json({ error: 'Multipart abort state changed' });
+    }
+
+    return res.json({ success: true });
   } catch (err) {
-    return sendUploadError(res, 500, 'Multipart abort failed', err, 'Multipart abort');
+    await markMultipartUploadAbortRetryable(
+      uploadId,
+      req.user.id,
+      MULTIPART_ABORT_RETRYABLE
+    ).catch(() => undefined);
+    return sendUploadError(res, 503, MULTIPART_ABORT_RETRYABLE, err, 'Multipart abort');
   }
 };
 

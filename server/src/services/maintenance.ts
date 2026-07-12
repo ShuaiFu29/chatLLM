@@ -5,12 +5,17 @@ import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
 import { deleteExpiredRateLimitBuckets } from '../repositories/rateLimits';
-import { abortMultipartObjectUpload } from '../lib/storage';
 import {
+  abortMultipartObjectUpload,
+  isMultipartUploadMissingError,
+} from '../lib/storage';
+import {
+  claimMultipartUploadAbort,
+  finalizeMultipartUploadAbort,
   listExpiredMultipartUploadSessions,
-  markMultipartUploadSessionExpired,
+  markMultipartUploadAbortRetryable,
 } from '../repositories/uploadMultipart';
-import { deleteAbandonedUploadingFiles, updateFile } from '../repositories/files';
+import { deleteAbandonedUploadingFiles } from '../repositories/files';
 import { toSafeError } from '../lib/safeError';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
@@ -44,13 +49,30 @@ export const cleanupExpiredMultipartUploadSessions = async () => {
 
   await Promise.all(sessions.map(async (session) => {
     const message = 'Multipart upload session expired';
-    await abortMultipartObjectUpload(session.object_key, session.storage_upload_id).catch(() => undefined);
-    await markMultipartUploadSessionExpired(session.file_id, message);
-    await updateFile(session.file_id, {
-      status: 'failed',
-      progress: 0,
-      error_message: message,
-    });
+    const claimed = session.status === 'cancelling'
+      ? session
+      : await claimMultipartUploadAbort(session.file_id, session.user_id);
+    if (!claimed) return;
+
+    try {
+      await abortMultipartObjectUpload(claimed.object_key, claimed.storage_upload_id);
+    } catch (error) {
+      if (!isMultipartUploadMissingError(error)) {
+        await markMultipartUploadAbortRetryable(
+          claimed.file_id,
+          claimed.user_id,
+          'Expired multipart storage abort is pending reconciliation'
+        );
+        return;
+      }
+    }
+
+    await finalizeMultipartUploadAbort(
+      claimed.file_id,
+      claimed.user_id,
+      message,
+      'expired'
+    );
   }));
 };
 

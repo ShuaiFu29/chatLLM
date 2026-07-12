@@ -6,6 +6,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
+  HeadObjectCommand,
   ListPartsCommand,
   PutObjectCommand,
   S3Client,
@@ -216,6 +217,54 @@ export const abortMultipartObjectUpload = async (
     Key: key,
     UploadId: uploadId,
   }));
+};
+
+export const headObjectMetadata = async (key: string) => {
+  await ensureBucket();
+  const response = await s3.send(new HeadObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: key,
+  }));
+
+  if (!Number.isSafeInteger(response.ContentLength) || Number(response.ContentLength) < 0) {
+    throw new Error('Storage did not return a valid object size');
+  }
+
+  return {
+    size: Number(response.ContentLength),
+    metadata: response.Metadata || {},
+  };
+};
+
+interface StorageServiceError {
+  name?: unknown;
+  code?: unknown;
+  Code?: unknown;
+  $metadata?: { httpStatusCode?: unknown };
+}
+
+const readStorageErrorCodes = (error: unknown) => {
+  if (!error || typeof error !== 'object') return [];
+  const candidate = error as StorageServiceError;
+  return [candidate.name, candidate.code, candidate.Code]
+    .filter((value): value is string => typeof value === 'string' && Boolean(value));
+};
+
+export const isObjectNotFoundError = (error: unknown) => {
+  const codes = readStorageErrorCodes(error);
+  if (codes.includes('NotFound') || codes.includes('NoSuchKey')) return true;
+  if (!error || typeof error !== 'object') return false;
+  return (error as StorageServiceError).$metadata?.httpStatusCode === 404;
+};
+
+export const isMultipartUploadMissingError = (error: unknown) => (
+  readStorageErrorCodes(error).includes('NoSuchUpload')
+);
+
+export const isStorageClientError = (error: unknown) => {
+  if (!error || typeof error !== 'object') return false;
+  const status = (error as StorageServiceError).$metadata?.httpStatusCode;
+  return typeof status === 'number' && status >= 400 && status < 500;
 };
 
 export const deleteObject = async (key?: string | null) => {
