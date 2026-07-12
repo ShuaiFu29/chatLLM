@@ -448,46 +448,86 @@ export const createRagEvalCaseForUser = async (input: {
   expectedSourceFiles?: string[];
   maxCases?: number;
 }) => {
-  const { rows } = await query<RagEvalCaseRow>(
-    `with scoped_dataset as (
-       select d.id, d.user_id,
-         (select count(*)::int from rag_eval_cases
-          where dataset_id = d.id) as case_count
-       from rag_eval_datasets d
-       where d.id = $1 and d.user_id = $2
-     )
-     insert into rag_eval_cases (
-       dataset_id,
-       user_id,
-       question,
-       expected_answer,
-       expected_keywords,
-       expected_source_files
-     )
-     select id, user_id, $3, $4, $5, $6
-     from scoped_dataset
-     where case_count < $7
-     returning ${caseColumns}`,
-    [
-      input.datasetId,
-      input.userId,
-      input.question,
-      input.expectedAnswer || '',
-      input.expectedKeywords || [],
-      input.expectedSourceFiles || [],
-      input.maxCases || 50,
-    ]
-  );
-  return rows[0] || null;
+  const maxCases = input.maxCases ?? 50;
+
+  return withTransaction(async (client) => {
+    const { rows: datasets } = await client.query<Pick<RagEvalDatasetRow, 'id' | 'user_id'>>(
+      `select id, user_id
+       from rag_eval_datasets
+       where id = $1 and user_id = $2
+       for update`,
+      [input.datasetId, input.userId]
+    );
+    const dataset = datasets[0];
+    if (!dataset) return null;
+
+    const { rows: counts } = await client.query<{ case_count: number | string }>(
+      `select count(*)::int as case_count
+       from rag_eval_cases
+       where dataset_id = $1`,
+      [dataset.id]
+    );
+    const case_count = Number(counts[0]?.case_count ?? 0);
+    if (case_count >= maxCases) return null;
+
+    const { rows } = await client.query<RagEvalCaseRow>(
+      `insert into rag_eval_cases (
+         dataset_id,
+         user_id,
+         question,
+         expected_answer,
+         expected_keywords,
+         expected_source_files
+       )
+       values ($1, $2, $3, $4, $5, $6)
+       returning ${caseColumns}`,
+      [
+        dataset.id,
+        dataset.user_id,
+        input.question,
+        input.expectedAnswer || '',
+        input.expectedKeywords || [],
+        input.expectedSourceFiles || [],
+      ]
+    );
+    await client.query(
+      `update rag_eval_datasets
+       set updated_at = now()
+       where id = $1`,
+      [dataset.id]
+    );
+    return rows[0] || null;
+  });
 };
 
 export const deleteRagEvalCaseForUser = async (caseId: string, userId: string) => {
-  const { rowCount } = await query(
-    `delete from rag_eval_cases
-     where id = $1 and user_id = $2`,
-    [caseId, userId]
-  );
-  return (rowCount ?? 0) > 0;
+  return withTransaction(async (client) => {
+    const { rows: datasets } = await client.query<{ id: string }>(
+      `select d.id
+       from rag_eval_datasets d
+       join rag_eval_cases c on c.dataset_id = d.id
+       where c.id = $1 and c.user_id = $2 and d.user_id = $2
+       for update of d`,
+      [caseId, userId]
+    );
+    const dataset = datasets[0];
+    if (!dataset) return false;
+
+    const { rowCount } = await client.query(
+      `delete from rag_eval_cases
+       where id = $1 and user_id = $2`,
+      [caseId, userId]
+    );
+    if ((rowCount ?? 0) > 0) {
+      await client.query(
+        `update rag_eval_datasets
+         set updated_at = now()
+         where id = $1`,
+        [dataset.id]
+      );
+    }
+    return (rowCount ?? 0) > 0;
+  });
 };
 
 export const getRagEvalDatasetWithCasesForUser = async (datasetId: string, userId: string) => {
@@ -688,45 +728,93 @@ export const createRunningRagEvalRunForUser = async (input: {
   datasetId: string;
   caseCount: number;
 }): Promise<CreatedRagEvalRunRow> => {
-  const { rows } = await query<RagEvalRunRow>(
-    `insert into rag_eval_runs (
-       dataset_id,
-       user_id,
-       status,
-       case_count,
-       max_attempts
-     )
-     values ($1, $2, 'running', $3, $4)
-     on conflict (dataset_id) where status = 'running' do nothing
-     returning ${runColumns}`,
-    [input.datasetId, input.userId, input.caseCount, serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS]
-  );
-
-  if (rows[0]) {
-    await query(
-      `update rag_eval_datasets
-       set updated_at = now()
-       where id = $1 and user_id = $2`,
+  return withTransaction(async (client) => {
+    const { rows: datasets } = await client.query<Pick<RagEvalDatasetRow, 'id' | 'user_id'>>(
+      `select id, user_id
+       from rag_eval_datasets
+       where id = $1 and user_id = $2
+       for update`,
       [input.datasetId, input.userId]
     );
+    const dataset = datasets[0];
+    if (!dataset) throw new Error('RAG eval dataset not found');
 
-    return { ...rows[0], results: [], created: true };
-  }
+    const { rows: counts } = await client.query<{ case_count: number | string }>(
+      `select count(*)::int as case_count
+       from rag_eval_cases
+       where dataset_id = $1 and user_id = $2`,
+      [dataset.id, dataset.user_id]
+    );
+    const actualCaseCount = Number(counts[0]?.case_count ?? 0);
+    if (actualCaseCount === 0) throw new Error('RAG eval dataset has no cases');
 
-  const { rows: runningRows } = await query<RagEvalRunRow>(
-    `select ${runColumns}
-     from rag_eval_runs
-     where dataset_id = $1 and user_id = $2 and status = 'running'
-     order by created_at desc
-     limit 1`,
-    [input.datasetId, input.userId]
-  );
+    const { rows } = await client.query<RagEvalRunRow>(
+      `insert into rag_eval_runs (
+         dataset_id,
+         user_id,
+         status,
+         case_count,
+         max_attempts
+       )
+       values ($1, $2, 'running', $3, $4)
+       on conflict (dataset_id) where status = 'running' do nothing
+       returning ${runColumns}`,
+      [dataset.id, dataset.user_id, actualCaseCount, serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS]
+    );
 
-  if (!runningRows[0]) {
-    throw new Error('Unable to create or locate running RAG eval run');
-  }
+    if (rows[0]) {
+      await client.query(
+        `insert into rag_eval_run_cases (
+           run_id,
+           case_id,
+           ordinal,
+           question,
+           expected_answer,
+           expected_keywords,
+           expected_source_files,
+           case_created_at,
+           case_updated_at
+         )
+         select
+           $1,
+           c.id,
+           (row_number() over (order by c.created_at asc, c.id asc) - 1)::int,
+           c.question,
+           c.expected_answer,
+           c.expected_keywords,
+           c.expected_source_files,
+           c.created_at,
+           c.updated_at
+         from rag_eval_cases c
+         where c.dataset_id = $2 and c.user_id = $3
+         order by c.created_at asc, c.id asc`,
+        [rows[0].id, dataset.id, dataset.user_id]
+      );
+      await client.query(
+        `update rag_eval_datasets
+         set updated_at = now()
+         where id = $1 and user_id = $2`,
+        [dataset.id, dataset.user_id]
+      );
 
-  return { ...runningRows[0], results: [], created: false };
+      return { ...rows[0], results: [], created: true };
+    }
+
+    const { rows: runningRows } = await client.query<RagEvalRunRow>(
+      `select ${runColumns}
+       from rag_eval_runs
+       where dataset_id = $1 and user_id = $2 and status = 'running'
+       order by created_at desc
+       limit 1`,
+      [dataset.id, dataset.user_id]
+    );
+
+    if (!runningRows[0]) {
+      throw new Error('Unable to create or locate running RAG eval run');
+    }
+
+    return { ...runningRows[0], results: [], created: false };
+  });
 };
 
 export const claimNextRagEvalRunJob = async (input: {
@@ -799,12 +887,25 @@ export const claimNextRagEvalRunJob = async (input: {
     if (!dataset) return null;
 
     const { rows: cases } = await client.query<RagEvalCaseRow>(
-      `select ${caseColumns}
-       from rag_eval_cases
-       where dataset_id = $1 and user_id = $2
-       order by created_at asc`,
-      [run.dataset_id, run.user_id]
+      `select
+         snapshot.case_id as id,
+         run.dataset_id,
+         run.user_id,
+         snapshot.question,
+         snapshot.expected_answer,
+         snapshot.expected_keywords,
+         snapshot.expected_source_files,
+         snapshot.case_created_at as created_at,
+         snapshot.case_updated_at as updated_at
+       from rag_eval_run_cases snapshot
+       join rag_eval_runs run on run.id = snapshot.run_id
+       where snapshot.run_id = $1
+       order by snapshot.ordinal asc`,
+      [run.id]
     );
+    if (cases.length !== toCount(run.case_count)) {
+      throw new Error('RAG eval run case snapshot is incomplete');
+    }
 
     return {
       ...run,
@@ -953,7 +1054,7 @@ export const completeRagEvalRunWithResults = async (input: {
            trace_summary,
            error_message
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+         values ($1, (select id from rag_eval_cases where id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          returning *`,
         [
           run.id,
@@ -1183,7 +1284,7 @@ export const insertRagEvalRunWithResults = async (input: {
            trace_summary,
            error_message
          )
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+         values ($1, (select id from rag_eval_cases where id = $2), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
          returning *`,
         [
           run.id,

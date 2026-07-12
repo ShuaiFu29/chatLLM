@@ -255,6 +255,7 @@ test('RAG eval runs are bounded before calling the RAG service', () => {
   );
   assert.match(controllerSource, /maxCases: MAX_RAG_EVAL_CASES_PER_DATASET/);
   assert.match(queueSource, /expected_answer: testCase\.expected_answer/);
-  assert.match(repositorySource, /count\(\*\)::int from rag_eval_cases/i);
-  assert.match(repositorySource, /case_count < \$7/i);
+  assert.match(repositorySource, /from rag_eval_datasets[\s\S]*for update/i);
+  assert.match(repositorySource, /case_count >= maxCases/);
+  assert.match(repositorySource, /insert into rag_eval_run_cases/i);
 });
