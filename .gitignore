@@ -42,3 +42,6 @@ server/uploads
 # Local planning and working notes
 docs/
 issue/
+
+# Local isolated development worktrees
+.worktrees/
