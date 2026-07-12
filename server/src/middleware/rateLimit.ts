@@ -1,6 +1,13 @@
+import { createHash } from 'crypto';
 import { RequestHandler } from 'express';
+import { isIP } from 'net';
 import { verifyAccessToken } from '../lib/jwt';
 import { metrics } from '../lib/metrics';
+import { toSafeError } from '../lib/safeError';
+import {
+  consumeRateLimitBucket,
+  RateLimitBucketConsumer,
+} from '../repositories/rateLimits';
 
 interface RateLimitOptions {
   windowMs: number;
@@ -9,14 +16,6 @@ interface RateLimitOptions {
   message?: string;
   skip?: (req: Parameters<RequestHandler>[0]) => boolean;
 }
-
-interface RateLimitBucket {
-  count: number;
-  resetAt: number;
-}
-
-const MAX_RATE_LIMIT_BUCKETS = 10000;
-const buckets = new Map<string, RateLimitBucket>();
 
 const getAuthenticatedUserId = (req: Parameters<RequestHandler>[0]) => {
   if (req.user?.id) return req.user.id;
@@ -31,54 +30,51 @@ const getAuthenticatedUserId = (req: Parameters<RequestHandler>[0]) => {
 
 const getClientKey = (req: Parameters<RequestHandler>[0], keyPrefix: string) => {
   const authenticatedUserId = getAuthenticatedUserId(req);
-  return `${keyPrefix}:${authenticatedUserId || req.ip || 'unknown'}`;
+  const rawIp = typeof req.ip === 'string' ? req.ip.trim() : '';
+  const clientIp = isIP(rawIp) ? rawIp : 'unknown';
+  const principal = authenticatedUserId
+    ? `user:${authenticatedUserId}`
+    : `ip:${clientIp}`;
+  const digest = createHash('sha256').update(principal, 'utf8').digest('hex');
+  return `${keyPrefix}:${digest}`;
 };
 
-const pruneExpiredBuckets = (now: number) => {
-  for (const [key, bucket] of buckets.entries()) {
-    if (bucket.resetAt <= now) buckets.delete(key);
-  }
-};
-
-const pruneOldestBuckets = () => {
-  while (buckets.size > MAX_RATE_LIMIT_BUCKETS) {
-    const oldestKey = buckets.keys().next().value;
-    if (!oldestKey) return;
-    buckets.delete(oldestKey);
-  }
-};
-
-export const createRateLimit = (options: RateLimitOptions): RequestHandler => {
-  return (req, res, next) => {
+export const createRateLimit = (
+  options: RateLimitOptions,
+  consumeBucket: RateLimitBucketConsumer = consumeRateLimitBucket
+): RequestHandler => {
+  return async (req, res, next) => {
     if (options.skip?.(req)) return next();
 
-    const now = Date.now();
-    if (buckets.size >= MAX_RATE_LIMIT_BUCKETS) pruneExpiredBuckets(now);
+    try {
+      const bucket = await consumeBucket({
+        bucketKey: getClientKey(req, options.keyPrefix),
+        windowMs: options.windowMs,
+      });
+      const now = Date.now();
 
-    const key = getClientKey(req, options.keyPrefix);
-    const current = buckets.get(key);
-    const bucket = !current || current.resetAt <= now
-      ? { count: 0, resetAt: now + options.windowMs }
-      : current;
+      res.setHeader('X-RateLimit-Limit', String(options.max));
+      res.setHeader('X-RateLimit-Remaining', String(Math.max(options.max - bucket.count, 0)));
+      res.setHeader('X-RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
 
-    bucket.count += 1;
-    buckets.set(key, bucket);
-    pruneOldestBuckets();
+      if (bucket.count > options.max) {
+        const retryAfterSeconds = Math.max(Math.ceil((bucket.resetAt - now) / 1000), 1);
+        res.setHeader('Retry-After', String(retryAfterSeconds));
+        metrics.recordRateLimitRejected(options.keyPrefix);
+        return res.status(429).json({
+          error: options.message || 'Too many requests',
+          requestId: res.locals.requestId,
+        });
+      }
 
-    res.setHeader('X-RateLimit-Limit', String(options.max));
-    res.setHeader('X-RateLimit-Remaining', String(Math.max(options.max - bucket.count, 0)));
-    res.setHeader('X-RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
-
-    if (bucket.count > options.max) {
-      const retryAfterSeconds = Math.max(Math.ceil((bucket.resetAt - now) / 1000), 1);
-      res.setHeader('Retry-After', String(retryAfterSeconds));
-      metrics.recordRateLimitRejected(options.keyPrefix);
-      return res.status(429).json({
-        error: options.message || 'Too many requests',
+      return next();
+    } catch (error) {
+      console.error('[RateLimit] Shared store unavailable:', toSafeError(error, res.locals.requestId));
+      res.setHeader('Retry-After', '1');
+      return res.status(503).json({
+        error: 'Rate limit service unavailable',
         requestId: res.locals.requestId,
       });
     }
-
-    return next();
   };
 };

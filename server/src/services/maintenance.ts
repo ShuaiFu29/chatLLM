@@ -4,6 +4,7 @@ import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
+import { deleteExpiredRateLimitBuckets } from '../repositories/rateLimits';
 import { abortMultipartObjectUpload } from '../lib/storage';
 import {
   listExpiredMultipartUploadSessions,
@@ -77,6 +78,7 @@ class MaintenanceService {
   private async runOnce() {
     const results = await Promise.allSettled([
       deleteExpiredSessions(),
+      deleteExpiredRateLimitBuckets(),
       this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),

@@ -20,6 +20,12 @@ Object.assign(process.env, {
   DEEPSEEK_API_KEY: 'sk-test',
 });
 
+const rateLimitRepository = require(path.join(serverRoot, 'dist', 'repositories', 'rateLimits.js'));
+rateLimitRepository.consumeRateLimitBucket = async ({ windowMs }) => ({
+  count: 1,
+  resetAt: Date.now() + windowMs,
+});
+
 const { app } = require(path.join(serverRoot, 'dist', 'index.js'));
 const { closeDatabasePool } = require(path.join(serverRoot, 'dist', 'lib', 'db.js'));
 

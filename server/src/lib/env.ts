@@ -17,6 +17,7 @@ const DEFAULT_DB_CONNECTION_TIMEOUT_MS = 5000;
 const DEFAULT_DB_IDLE_TIMEOUT_MS = 30000;
 const DEFAULT_DB_QUERY_TIMEOUT_MS = 30000;
 const DEFAULT_DB_SLOW_QUERY_THRESHOLD_MS = 500;
+const DEFAULT_TRUST_PROXY_HOPS = 0;
 const DEFAULT_RATE_LIMIT_WINDOW_MS = 60000;
 const DEFAULT_RATE_LIMIT_MAX = 600;
 const DEFAULT_CHAT_RATE_LIMIT_MAX = 60;
@@ -86,6 +87,7 @@ export interface ServerEnv {
   DB_IDLE_TIMEOUT_MS: number;
   DB_QUERY_TIMEOUT_MS: number;
   DB_SLOW_QUERY_THRESHOLD_MS: number;
+  TRUST_PROXY_HOPS: number;
   RATE_LIMIT_WINDOW_MS: number;
   RATE_LIMIT_MAX: number;
   CHAT_RATE_LIMIT_MAX: number;
@@ -151,6 +153,29 @@ const getPositiveInteger = (
   return parsed;
 };
 
+const getNonNegativeSafeInteger = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: number,
+  errors: string[]
+) => {
+  const raw = env[key]?.trim();
+  if (!raw) return defaultValue;
+
+  if (!/^(0|[1-9]\d*)$/.test(raw)) {
+    errors.push(`${key} must be a non-negative safe integer`);
+    return defaultValue;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) {
+    errors.push(`${key} must be a non-negative safe integer`);
+    return defaultValue;
+  }
+
+  return parsed;
+};
+
 const getStringList = (value: string | undefined, defaultValue: string[]) => {
   const rawValues = value?.split(',').map((item) => item.trim()).filter(Boolean);
   const values = rawValues && rawValues.length > 0 ? rawValues : defaultValue;
@@ -205,6 +230,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const dbIdleTimeoutMs = getPositiveInteger(env, 'DB_IDLE_TIMEOUT_MS', DEFAULT_DB_IDLE_TIMEOUT_MS, errors);
   const dbQueryTimeoutMs = getPositiveInteger(env, 'DB_QUERY_TIMEOUT_MS', DEFAULT_DB_QUERY_TIMEOUT_MS, errors);
   const dbSlowQueryThresholdMs = getPositiveInteger(env, 'DB_SLOW_QUERY_THRESHOLD_MS', DEFAULT_DB_SLOW_QUERY_THRESHOLD_MS, errors);
+  const trustProxyHops = getNonNegativeSafeInteger(env, 'TRUST_PROXY_HOPS', DEFAULT_TRUST_PROXY_HOPS, errors);
   const rateLimitWindowMs = getPositiveInteger(env, 'RATE_LIMIT_WINDOW_MS', DEFAULT_RATE_LIMIT_WINDOW_MS, errors);
   const rateLimitMax = getPositiveInteger(env, 'RATE_LIMIT_MAX', DEFAULT_RATE_LIMIT_MAX, errors);
   const chatRateLimitMax = getPositiveInteger(env, 'CHAT_RATE_LIMIT_MAX', DEFAULT_CHAT_RATE_LIMIT_MAX, errors);
@@ -285,6 +311,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     DB_IDLE_TIMEOUT_MS: dbIdleTimeoutMs,
     DB_QUERY_TIMEOUT_MS: dbQueryTimeoutMs,
     DB_SLOW_QUERY_THRESHOLD_MS: dbSlowQueryThresholdMs,
+    TRUST_PROXY_HOPS: trustProxyHops,
     RATE_LIMIT_WINDOW_MS: rateLimitWindowMs,
     RATE_LIMIT_MAX: rateLimitMax,
     CHAT_RATE_LIMIT_MAX: chatRateLimitMax,

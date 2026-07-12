@@ -18,3 +18,17 @@ alter table sessions
 
 create unique index if not exists sessions_token_hash_idx
   on sessions(token_hash);
+
+create table if not exists rate_limit_buckets (
+  bucket_key text primary key,
+  window_started_at timestamptz not null,
+  request_count integer not null,
+  expires_at timestamptz not null,
+  constraint rate_limit_buckets_request_count_check
+    check (request_count > 0),
+  constraint rate_limit_buckets_window_check
+    check (expires_at > window_started_at)
+);
+
+create index if not exists rate_limit_buckets_expires_at_idx
+  on rate_limit_buckets(expires_at);

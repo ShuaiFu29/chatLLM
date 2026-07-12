@@ -215,6 +215,51 @@ test('server env derives default backend URL from explicit port', () => {
   assert.equal(parseLastJsonLine(result.stdout), 'http://localhost:3015');
 });
 
+test('server env defaults proxy trust to zero and accepts an explicit hop count', () => {
+  const defaultResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    TRUST_PROXY_HOPS: '',
+  }, 'serverEnv.TRUST_PROXY_HOPS');
+
+  assert.equal(defaultResult.status, 0, defaultResult.stderr);
+  assert.equal(parseLastJsonLine(defaultResult.stdout), 0);
+
+  const explicitResult = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    TRUST_PROXY_HOPS: '2',
+  }, 'serverEnv.TRUST_PROXY_HOPS');
+
+  assert.equal(explicitResult.status, 0, explicitResult.stderr);
+  assert.equal(parseLastJsonLine(explicitResult.stdout), 2);
+});
+
+test('server env rejects malformed proxy hop counts', () => {
+  for (const value of ['-1', '1.5', '1proxy', '9007199254740992']) {
+    const result = importServerEnv({
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      DEEPSEEK_API_KEY: 'sk-test',
+      TRUST_PROXY_HOPS: value,
+    });
+
+    assert.notEqual(result.status, 0, value);
+    assert.match(result.stderr, /TRUST_PROXY_HOPS must be a non-negative safe integer/);
+  }
+});
+
 test('server env defaults embedding debug logs off and parses explicit opt-in', () => {
   const defaultResult = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',

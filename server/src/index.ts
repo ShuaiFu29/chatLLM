@@ -34,7 +34,7 @@ const PORT = serverEnv.PORT;
 
 const allowedOrigins = serverEnv.CORS_ALLOWED_ORIGINS;
 
-app.set('trust proxy', 1);
+app.set('trust proxy', serverEnv.TRUST_PROXY_HOPS);
 app.disable('x-powered-by');
 app.use(requestContextMiddleware);
 app.use(securityHeadersMiddleware);
@@ -62,6 +62,8 @@ app.get('/health/live', liveHealthHandler);
 app.get('/health/ready', readyHealthHandler);
 app.get('/metrics', metricsAuthMiddleware, metricsHandler);
 
+app.use(cookieParser());
+
 app.use(createRateLimit({
   keyPrefix: 'global',
   windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
@@ -70,7 +72,6 @@ app.use(createRateLimit({
 
 app.use(express.json({ limit: JSON_REQUEST_LIMIT }));
 app.use(express.urlencoded({ limit: URLENCODED_REQUEST_LIMIT, extended: true }));
-app.use(cookieParser());
 
 app.use('/api/auth', authRoutes);
 app.use('/api/project-spaces', projectSpaceRoutes);
