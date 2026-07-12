@@ -3,12 +3,11 @@ import crypto from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { serverEnv } from '../lib/env';
 import { generateAccessToken } from '../lib/jwt';
-import { cleanupRagFileVectors } from '../lib/ragClient';
-import { deleteObject } from '../lib/storage';
-import { createSession, deleteSession, deleteSessionsByUser, rotateSession } from '../repositories/sessions';
-import { createUser, deleteUser, findUserByGithubId, findUserById, updateUser } from '../repositories/users';
-import { listFilesForUserCleanup } from '../repositories/files';
+import { createSession, deleteSession, rotateSession } from '../repositories/sessions';
+import { createUser, findUserByGithubId, findUserById, updateUser } from '../repositories/users';
+import { enqueueAccountCleanup } from '../repositories/cleanupJobs';
 import { toSafeError } from '../lib/safeError';
+import { artifactCleanupQueue } from '../services/cleanupQueue';
 
 const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000;
 const ACCESS_TOKEN_DURATION = 15 * 60 * 1000;
@@ -132,6 +131,11 @@ export const githubCallback = async (req: Request, res: Response) => {
 
     let user = await findUserByGithubId(Number(ghUser.id));
 
+    if (user?.deletion_status === 'pending') {
+      res.status(409).json({ error: 'Account deletion is in progress' });
+      return;
+    }
+
     if (!user) {
       user = await createUser({
         github_id: Number(ghUser.id),
@@ -214,43 +218,20 @@ export const updateProfile = async (req: Request, res: Response) => {
   res.json({ user });
 };
 
-export const cleanupUserExternalArtifacts = async (
-  files: Array<{ id: string; object_key?: string | null }>,
-  avatarObjectKey?: string | null
-) => {
-  try {
-    for (const file of files) {
-      await cleanupRagFileVectors(file.id);
-      if (file.object_key) {
-        await deleteObject(file.object_key);
-      }
-    }
-
-    if (avatarObjectKey) {
-      await deleteObject(avatarObjectKey);
-    }
-  } catch (error) {
-    const cleanupError = new Error('Failed to cleanup external artifacts') as Error & { cause?: unknown };
-    cleanupError.cause = error;
-    throw cleanupError;
-  }
-};
-
 export const deleteAccount = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
     const userId = req.user.id;
-    const user = await findUserById(userId);
-    const files = await listFilesForUserCleanup(userId);
-
-    await cleanupUserExternalArtifacts(files, user?.avatar_object_key);
-
-    await deleteSessionsByUser(userId);
-    await deleteUser(userId);
-
+    const cleanup = await enqueueAccountCleanup(userId);
+    if (!cleanup) return res.status(404).json({ error: 'User not found' });
     clearAuthCookies(res);
-    res.json({ success: true });
+    artifactCleanupQueue.trigger();
+    res.status(202).json({
+      status: 'deleting',
+      cleanup_job_id: cleanup.job.id,
+      child_jobs: cleanup.childCount,
+    });
   } catch (error) {
     console.error('Delete account error:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete account' });

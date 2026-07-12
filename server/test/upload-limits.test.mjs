@@ -85,6 +85,14 @@ function withMockedUploadController(overrides = {}) {
     fileQueue: { trigger: () => undefined },
     ...(overrides.fileQueue || {}),
   });
+  mockModule('services/cleanupQueue.js', {
+    artifactCleanupQueue: { trigger: () => undefined },
+    ...(overrides.cleanupQueue || {}),
+  });
+  mockModule('repositories/cleanupJobs.js', {
+    enqueueFileCleanup: async () => null,
+    ...(overrides.cleanupJobs || {}),
+  });
   mockModule('lib/ragClient.js', {
     cleanupRagFileVectors: async () => undefined,
     ...(overrides.ragClient || {}),
@@ -350,6 +358,38 @@ test('upload init reports an existing canonical file discovered inside the reser
   }
 });
 
+test('upload init returns stable conflict semantics when deletion wins the reservation lock', async () => {
+  for (const [code, expectedStatus, expectedMessage] of [
+    ['UPLOAD_PROJECT_NOT_FOUND', 404, 'Project space not found'],
+    ['UPLOAD_USER_NOT_FOUND', 409, 'Account is unavailable'],
+  ]) {
+    const { controller, restore } = withMockedUploadController({
+      files: {
+        reserveUploadFile: async () => {
+          throw Object.assign(new Error('do-not-reflect'), { code });
+        },
+      },
+    });
+
+    try {
+      const response = createResponse();
+      await controller.initUpload({
+        user: { id: 'user-1' },
+        body: { filename: 'notes.md', hash: 'a'.repeat(64), size: 10 },
+      }, response);
+
+      assert.equal(response.statusCode, expectedStatus);
+      assert.deepEqual(response.body, {
+        error: expectedMessage,
+        details: expectedMessage,
+      });
+      assert.doesNotMatch(JSON.stringify(response.body), /do-not-reflect/);
+    } finally {
+      restore();
+    }
+  }
+});
+
 test('legacy merge converts reserved bytes to measured storage bytes after integrity succeeds', async () => {
   const content = '# valid\n';
   const { createHash } = await import('node:crypto');
@@ -378,7 +418,7 @@ test('legacy merge converts reserved bytes to measured storage bytes after integ
       }),
       updateFile: async (id, values) => {
         updates.push({ id, values });
-        return null;
+        return { id, ...values };
       },
     },
   });
@@ -577,6 +617,65 @@ test('legacy merge accounts for a stored object when database queueing fails', a
     });
   } finally {
     console.error = originalConsoleError;
+    restore();
+    rmSync(uploadDir, { recursive: true, force: true });
+    rmSync(mergedPath, { force: true });
+  }
+});
+
+test('legacy merge requeues cleanup instead of reviving a file when deletion wins', async () => {
+  const content = '# deleted while merging\n';
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha256').update(content).digest('hex');
+  const uploadId = 'deletion-race-upload';
+  const uploadDir = path.join(serverRoot, 'uploads', 'temp', uploadId);
+  const mergedPath = path.join(serverRoot, 'uploads', 'temp', `${uploadId}_merged`);
+  rmSync(uploadDir, { recursive: true, force: true });
+  rmSync(mergedPath, { force: true });
+  mkdirSync(uploadDir, { recursive: true });
+  writeFileSync(path.join(uploadDir, '0'), content);
+
+  let fileQueueTriggered = false;
+  let cleanupQueueTriggered = false;
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      findFileForUser: async () => ({
+        id: uploadId,
+        user_id: 'user-1',
+        filename: 'notes.md',
+        file_hash: hash,
+        file_size: Buffer.byteLength(content),
+        file_type: 'text/markdown',
+        status: 'uploading',
+        progress: 0,
+      }),
+      updateFile: async () => null,
+    },
+    fileQueue: {
+      fileQueue: { trigger: () => { fileQueueTriggered = true; } },
+    },
+    cleanupQueue: {
+      artifactCleanupQueue: { trigger: () => { cleanupQueueTriggered = true; } },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.mergeChunks({
+      user: { id: 'user-1' },
+      body: { uploadId, filename: 'notes.md', totalChunks: '1' },
+    }, response);
+
+    assert.equal(response.statusCode, 409);
+    assert.deepEqual(response.body, {
+      error: 'Upload was deleted while finalizing',
+      details: 'Upload was deleted while finalizing',
+    });
+    assert.equal(fileQueueTriggered, false);
+    assert.equal(cleanupQueueTriggered, true);
+    assert.equal(existsSync(uploadDir), false);
+    assert.equal(existsSync(mergedPath), false);
+  } finally {
     restore();
     rmSync(uploadDir, { recursive: true, force: true });
     rmSync(mergedPath, { force: true });

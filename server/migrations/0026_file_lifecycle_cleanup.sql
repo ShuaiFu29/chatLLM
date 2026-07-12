@@ -166,3 +166,83 @@ create unique index if not exists file_ingestion_jobs_attempt_id_idx
 create index if not exists file_ingestion_jobs_lease_expiry_idx
   on file_ingestion_jobs(lease_expires_at)
   where status in ('queued', 'processing');
+
+alter table users
+  add column if not exists deletion_status text not null default 'active';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'users_deletion_status_check'
+      and conrelid = 'users'::regclass
+  ) then
+    alter table users
+      add constraint users_deletion_status_check
+      check (deletion_status in ('active', 'pending'));
+  end if;
+end $$;
+
+alter table project_spaces
+  add column if not exists status text not null default 'active';
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_constraint
+    where conname = 'project_spaces_status_check'
+      and conrelid = 'project_spaces'::regclass
+  ) then
+    alter table project_spaces
+      add constraint project_spaces_status_check
+      check (status in ('active', 'deleting'));
+  end if;
+end $$;
+
+create table if not exists artifact_cleanup_jobs (
+  id uuid primary key default gen_random_uuid(),
+  resource_key text not null unique,
+  resource_type text not null,
+  resource_id text not null,
+  owner_user_id uuid references users(id) on delete set null,
+  parent_job_id uuid references artifact_cleanup_jobs(id) on delete set null,
+  status text not null default 'queued',
+  step_state jsonb not null default '{}'::jsonb,
+  payload jsonb not null default '{}'::jsonb,
+  attempts integer not null default 0,
+  max_attempts integer not null default 10,
+  next_attempt_at timestamptz,
+  worker_id text,
+  lease_token uuid,
+  lease_expires_at timestamptz,
+  last_error text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  constraint artifact_cleanup_jobs_resource_type_check check (
+    resource_type in ('file', 'project_space', 'account', 'avatar')
+  ),
+  constraint artifact_cleanup_jobs_status_check check (
+    status in ('queued', 'processing', 'waiting', 'failed', 'completed')
+  ),
+  constraint artifact_cleanup_jobs_attempts_check check (
+    attempts >= 0 and max_attempts > 0
+  )
+);
+
+create index if not exists artifact_cleanup_jobs_ready_idx
+  on artifact_cleanup_jobs(status, next_attempt_at, created_at)
+  where status in ('queued', 'waiting', 'failed');
+
+create index if not exists artifact_cleanup_jobs_lease_idx
+  on artifact_cleanup_jobs(lease_expires_at)
+  where status = 'processing';
+
+create index if not exists artifact_cleanup_jobs_parent_idx
+  on artifact_cleanup_jobs(parent_job_id, status);
+
+create index if not exists project_spaces_user_active_idx
+  on project_spaces(user_id, updated_at desc)
+  where status = 'active';

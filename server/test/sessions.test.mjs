@@ -78,6 +78,12 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
         return { rows: [{ user_id: userId }], rowCount: 1 };
       }
 
+      if (normalized.startsWith('select user_id') && normalized.includes('from sessions')) {
+        return activeHash === params[0]
+          ? { rows: [{ user_id: userId }], rowCount: 1 }
+          : { rows: [], rowCount: 0 };
+      }
+
       if (normalized.startsWith('insert into sessions')) {
         insertedSessions += 1;
         activeHash = params[0];
@@ -102,6 +108,7 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
             avatar_object_key: null,
             display_name: 'Octo Cat',
             settings: {},
+            deletion_status: 'active',
             created_at: '2026-07-12T00:00:00.000Z',
           }],
           rowCount: 1,

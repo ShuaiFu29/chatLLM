@@ -36,6 +36,7 @@ test('resolveAuthenticatedUser returns the current database user rather than sta
     username: 'new-name',
     avatar_url: 'https://example.com/new.png',
     display_name: 'New Name',
+    deletion_status: 'active',
     settings: { model: 'deepseek-chat' },
   };
 

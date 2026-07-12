@@ -22,7 +22,6 @@ import {
 } from '../lib/storage';
 import {
   type FileRow,
-  deleteFileForUser,
   findClaimedFileByUserAndHash,
   findFileForUser,
   listFilesForUser,
@@ -30,6 +29,7 @@ import {
   retryFailedFileForUser,
   updateFile,
 } from '../repositories/files';
+import { enqueueFileCleanup } from '../repositories/cleanupJobs';
 import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
@@ -52,7 +52,7 @@ import {
   releaseMultipartUploadCompletion,
 } from '../repositories/uploadMultipart';
 import { fileQueue } from '../services/fileQueue';
-import { cleanupRagFileVectors } from '../lib/ragClient';
+import { artifactCleanupQueue } from '../services/cleanupQueue';
 import { verifyMergedUploadFile } from '../lib/uploadIntegrity';
 import {
   MAX_MULTIPART_UPLOAD_PARTS,
@@ -85,21 +85,34 @@ const getUploadInputMessage = (error: unknown): string | null => {
   return null;
 };
 
-const uploadReservationMessages = {
-  DOCUMENT_TOO_LARGE: UPLOAD_TOO_LARGE_ERROR,
-  USER_STORAGE_QUOTA_EXCEEDED: 'User storage quota exceeded',
-  ACTIVE_UPLOAD_QUOTA_EXCEEDED: 'Active upload quota exceeded',
+const uploadReservationFailures = {
+  DOCUMENT_TOO_LARGE: { status: 413, message: UPLOAD_TOO_LARGE_ERROR },
+  USER_STORAGE_QUOTA_EXCEEDED: { status: 413, message: 'User storage quota exceeded' },
+  ACTIVE_UPLOAD_QUOTA_EXCEEDED: { status: 413, message: 'Active upload quota exceeded' },
+  UPLOAD_USER_NOT_FOUND: { status: 409, message: 'Account is unavailable' },
+  UPLOAD_PROJECT_NOT_FOUND: { status: 404, message: 'Project space not found' },
 } as const;
 
-const getUploadReservationMessage = (error: unknown): string | null => {
+const getUploadReservationFailure = (error: unknown) => {
   if (!error || typeof error !== 'object' || !('code' in error)) return null;
   const code = error.code;
-  if (typeof code !== 'string' || !(code in uploadReservationMessages)) return null;
-  return uploadReservationMessages[code as keyof typeof uploadReservationMessages];
+  if (typeof code !== 'string' || !(code in uploadReservationFailures)) return null;
+  return uploadReservationFailures[code as keyof typeof uploadReservationFailures];
 };
 
-const getUploadFailureStatus = (inputMessage: string | null, quotaMessage: string | null) => {
-  if (quotaMessage || inputMessage === UPLOAD_TOO_LARGE_ERROR) return 413;
+const isMultipartUploadUnavailableError = (error: unknown) => Boolean(
+  error
+    && typeof error === 'object'
+    && 'code' in error
+    && error.code === 'MULTIPART_UPLOAD_UNAVAILABLE'
+);
+
+const getUploadFailureStatus = (
+  inputMessage: string | null,
+  reservationFailure: ReturnType<typeof getUploadReservationFailure>
+) => {
+  if (reservationFailure) return reservationFailure.status;
+  if (inputMessage === UPLOAD_TOO_LARGE_ERROR) return 413;
   return inputMessage ? 400 : 500;
 };
 
@@ -436,11 +449,11 @@ export const initUpload = async (req: Request, res: Response) => {
     res.json({ uploadId: file.id, projectSpaceId });
   } catch (err) {
     const inputMessage = getUploadInputMessage(err);
-    const quotaMessage = getUploadReservationMessage(err);
-    const publicMessage = quotaMessage || inputMessage || 'Init failed';
+    const reservationFailure = getUploadReservationFailure(err);
+    const publicMessage = reservationFailure?.message || inputMessage || 'Init failed';
     return sendUploadError(
       res,
-      getUploadFailureStatus(inputMessage, quotaMessage),
+      getUploadFailureStatus(inputMessage, reservationFailure),
       publicMessage,
       err,
       'Init'
@@ -533,8 +546,11 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     });
   } catch (err) {
     const inputMessage = getUploadInputMessage(err);
-    const quotaMessage = getUploadReservationMessage(err);
-    const failureMessage = quotaMessage || inputMessage || 'Multipart init failed';
+    const reservationFailure = getUploadReservationFailure(err);
+    const stateChanged = isMultipartUploadUnavailableError(err);
+    const failureMessage = stateChanged
+      ? 'Multipart upload state changed'
+      : reservationFailure?.message || inputMessage || 'Multipart init failed';
     if (unclaimedStorageUpload) {
       await abortMultipartObjectUpload(
         unclaimedStorageUpload.objectKey,
@@ -543,7 +559,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     }
     return sendUploadError(
       res,
-      getUploadFailureStatus(inputMessage, quotaMessage),
+      stateChanged ? 409 : getUploadFailureStatus(inputMessage, reservationFailure),
       failureMessage,
       err,
       'Multipart init'
@@ -1133,7 +1149,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
     await uploadFilePath(objectKey, mergedFilePath, upload.file_type || contentType);
     completedObjectKey = objectKey;
 
-    await updateFile(uploadId, {
+    const updatedFile = await updateFile(uploadId, {
       status: 'pending',
       object_key: objectKey,
       progress: 0,
@@ -1145,6 +1161,12 @@ export const mergeChunks = async (req: Request, res: Response) => {
     await fs.remove(chunkDir);
     await fs.remove(mergedFilePath);
 
+    if (!updatedFile) {
+      artifactCleanupQueue.trigger();
+      const message = 'Upload was deleted while finalizing';
+      return sendUploadError(res, 409, message, new Error(message), 'Merge');
+    }
+
     fileQueue.trigger();
 
     res.json({ success: true, message: 'File merged and queued for processing' });
@@ -1154,7 +1176,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
     const failureMessage = inputMessage || integrityMessage || 'Merge failed';
     const isIntegrityFailure = Boolean(integrityMessage || inputMessage === UPLOAD_HASH_ERROR);
     if (completedObjectKey && completedStorageBytes !== null) {
-      await updateFile(uploadId, {
+      const updatedFile = await updateFile(uploadId, {
         status: 'failed',
         object_key: completedObjectKey,
         progress: 0,
@@ -1162,6 +1184,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
         reserved_bytes: 0,
         storage_bytes: completedStorageBytes,
       }).catch(() => undefined);
+      if (!updatedFile) artifactCleanupQueue.trigger();
     } else if (isIntegrityFailure) {
       await Promise.all([
         chunkDirToCleanup ? fs.remove(chunkDirToCleanup).catch(() => undefined) : Promise.resolve(),
@@ -1249,29 +1272,13 @@ export const deleteFile = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
-    const file = await findFileForUser(id, req.user.id);
-    if (!file) return res.status(404).json({ error: 'File not found' });
-
-    try {
-      await cleanupRagFileVectors(file.id);
-    } catch (err) {
-      return sendUploadError(
-        res,
-        502,
-        'Vector cleanup failed; file was not deleted',
-        err,
-        'Vector cleanup'
-      );
-    }
-
-    if (file.object_key) {
-      await deleteObject(file.object_key);
-    }
-    const deleted = await deleteFileForUser(id, req.user.id);
-
-    if (!deleted) return res.status(404).json({ error: 'File not found' });
-
-    res.json({ message: 'File deleted successfully' });
+    const cleanup = await enqueueFileCleanup(id, req.user.id);
+    if (!cleanup) return res.status(404).json({ error: 'File not found' });
+    artifactCleanupQueue.trigger();
+    res.status(202).json({
+      status: 'deleting',
+      cleanup_job_id: cleanup.id,
+    });
   } catch (err) {
     return sendUploadError(res, 500, 'Internal server error', err, 'File deletion');
   }

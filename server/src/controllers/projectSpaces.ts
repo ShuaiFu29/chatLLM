@@ -1,17 +1,15 @@
 import { Request, Response } from 'express';
-import axios from 'axios';
-import { cleanupRagFileVectors } from '../lib/ragClient';
-import { deleteObject } from '../lib/storage';
 import { toSafeError } from '../lib/safeError';
-import { listFilesForUser } from '../repositories/files';
+import { enqueueProjectSpaceCleanup } from '../repositories/cleanupJobs';
 import {
   createProjectSpaceForUser,
-  deleteProjectSpaceForUser,
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
+  findProjectSpaceForUserIncludingDeleting,
   listProjectSpacesForUser,
   updateProjectSpaceForUser,
 } from '../repositories/projectSpaces';
+import { artifactCleanupQueue } from '../services/cleanupQueue';
 
 export const listProjectSpaces = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
@@ -63,6 +61,7 @@ export const updateProjectSpace = async (req: Request, res: Response) => {
   try {
     const current = await findProjectSpaceForUser(projectSpaceId, req.user.id);
     if (!current) return res.status(404).json({ error: 'Project space not found' });
+    if (current.status !== 'active') return res.status(409).json({ error: 'Project space is being deleted' });
     if (current.is_default && updates.name && updates.name !== current.name) {
       return res.status(400).json({ error: 'Default project space cannot be renamed' });
     }
@@ -79,25 +78,22 @@ export const deleteProjectSpace = async (req: Request, res: Response) => {
   if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const current = await findProjectSpaceForUser(req.params.projectSpaceId, req.user.id);
+    const current = await findProjectSpaceForUserIncludingDeleting(
+      req.params.projectSpaceId,
+      req.user.id
+    );
     if (!current) return res.status(404).json({ error: 'Project space not found' });
     if (current.is_default) return res.status(400).json({ error: 'Default workspace cannot be deleted' });
 
-    const files = await listFilesForUser(req.user.id, req.params.projectSpaceId);
-    for (const file of files) {
-      await cleanupRagFileVectors(file.id);
-      if (file.object_key) {
-        await deleteObject(file.object_key);
-      }
-    }
-
-    const deleted = await deleteProjectSpaceForUser(req.params.projectSpaceId, req.user.id);
-    if (!deleted) return res.status(404).json({ error: 'Project space not found' });
-    res.json({ success: true });
+    const cleanup = await enqueueProjectSpaceCleanup(req.params.projectSpaceId, req.user.id);
+    if (!cleanup) return res.status(404).json({ error: 'Project space not found' });
+    artifactCleanupQueue.trigger();
+    res.status(202).json({
+      status: 'deleting',
+      cleanup_job_id: cleanup.job.id,
+      child_jobs: cleanup.childCount,
+    });
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      return res.status(502).json({ error: 'Workspace file cleanup failed; workspace was not deleted' });
-    }
     console.error('[ProjectSpaces] Failed to delete space:', toSafeError(error, res.locals.requestId));
     res.status(500).json({ error: 'Failed to delete project space' });
   }

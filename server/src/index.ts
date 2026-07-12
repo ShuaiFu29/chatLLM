@@ -15,6 +15,7 @@ import personaRoutes from './routes/persona';
 import { fileQueue } from './services/fileQueue';
 import { ragEvalQueue } from './services/ragEvalQueue';
 import { maintenanceService } from './services/maintenance';
+import { artifactCleanupQueue } from './services/cleanupQueue';
 import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
 import { runMigrations } from './lib/migrations';
 import { liveHealthHandler, readyHealthHandler } from './lib/health';
@@ -120,6 +121,7 @@ export const startServer = async () => {
     console.log(`Server running on port ${PORT}`);
     fileQueue.start();
     ragEvalQueue.start();
+    artifactCleanupQueue.start();
     maintenanceService.start();
   });
 

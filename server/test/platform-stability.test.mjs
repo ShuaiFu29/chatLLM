@@ -347,6 +347,7 @@ test('RAG cleanup uses the shared client and configurable timeout', () => {
   const uploadSource = readSource('src/controllers/upload.ts');
   const projectSpacesSource = readSource('src/controllers/projectSpaces.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
+  const cleanupQueueSource = readOptionalSource('src/services/cleanupQueue.ts');
 
   assert.match(ragClientSource, /cleanupRagFileVectors/);
   assert.match(ragClientSource, /\/cleanup-file/);
@@ -354,17 +355,29 @@ test('RAG cleanup uses the shared client and configurable timeout', () => {
   assert.doesNotMatch(authSource, /\/cleanup-file/);
   assert.doesNotMatch(uploadSource, /\/cleanup-file/);
   assert.doesNotMatch(projectSpacesSource, /\/cleanup-file/);
-  assert.match(authSource, /cleanupRagFileVectors/);
-  assert.match(uploadSource, /cleanupRagFileVectors/);
-  assert.match(projectSpacesSource, /cleanupRagFileVectors/);
+  assert.doesNotMatch(authSource, /cleanupRagFileVectors/);
+  assert.doesNotMatch(uploadSource, /cleanupRagFileVectors/);
+  assert.doesNotMatch(projectSpacesSource, /cleanupRagFileVectors/);
+  assert.match(cleanupQueueSource, /cleanupRagFileVectors/);
+  assert.match(uploadSource, /enqueueFileCleanup/);
+  assert.match(projectSpacesSource, /enqueueProjectSpaceCleanup/);
+  assert.match(authSource, /enqueueAccountCleanup/);
 });
 
-test('account deletion fails visibly instead of silently orphaning external RAG indexes', () => {
+test('account deletion durably queues external cleanup before returning acceptance', () => {
   const authSource = readSource('src/controllers/auth.ts');
+  const cleanupRepositorySource = readOptionalSource('src/repositories/cleanupJobs.ts');
+  const cleanupQueueSource = readOptionalSource('src/services/cleanupQueue.ts');
 
   assert.doesNotMatch(authSource, /Promise\.allSettled\(files\.map/);
-  assert.match(authSource, /cleanupUserExternalArtifacts/);
-  assert.match(authSource, /Failed to cleanup external artifacts/);
+  assert.match(authSource, /enqueueAccountCleanup/);
+  assert.match(authSource, /status\(202\)/);
+  assert.match(cleanupRepositorySource, /set deletion_status = 'pending'/i);
+  assert.match(cleanupRepositorySource, /delete from sessions[\s\S]*where user_id/i);
+  assert.match(cleanupRepositorySource, /resourceType: 'account'/);
+  assert.match(cleanupRepositorySource, /prepareFileCleanupWithClient/);
+  assert.match(cleanupQueueSource, /cleanupRagFileVectors/);
+  assert.match(cleanupQueueSource, /finalizeAccountCleanup/);
 });
 
 test('upload merge verifies server-side hash and final file size before ingestion', () => {

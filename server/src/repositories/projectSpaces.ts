@@ -1,4 +1,4 @@
-import { query, withTransaction } from '../lib/db';
+import { query } from '../lib/db';
 
 export interface ProjectSpaceRow {
   id: string;
@@ -6,6 +6,7 @@ export interface ProjectSpaceRow {
   name: string;
   description: string;
   is_default: boolean;
+  status: 'active' | 'deleting';
   knowledge_version: number;
   knowledge_version_updated_at: string;
   created_at: string;
@@ -18,6 +19,7 @@ const columns = `
   name,
   description,
   is_default,
+  status,
   knowledge_version,
   knowledge_version_updated_at,
   created_at,
@@ -31,6 +33,7 @@ export const listProjectSpacesForUser = async (userId: string) => {
     `select ${columns}
      from project_spaces
      where user_id = $1
+       and status = 'active'
      order by is_default desc, updated_at desc, name asc`,
     [userId]
   );
@@ -38,6 +41,21 @@ export const listProjectSpacesForUser = async (userId: string) => {
 };
 
 export const findProjectSpaceForUser = async (projectSpaceId: string, userId: string) => {
+  const { rows } = await query<ProjectSpaceRow>(
+    `select ${columns}
+     from project_spaces
+     where id = $1
+       and user_id = $2
+       and status = 'active'`,
+    [projectSpaceId, userId]
+  );
+  return rows[0] || null;
+};
+
+export const findProjectSpaceForUserIncludingDeleting = async (
+  projectSpaceId: string,
+  userId: string
+) => {
   const { rows } = await query<ProjectSpaceRow>(
     `select ${columns}
      from project_spaces
@@ -101,43 +119,11 @@ export const updateProjectSpaceForUser = async (
   const { rows } = await query<ProjectSpaceRow>(
     `update project_spaces
      set ${fields.join(', ')}
-     where id = $${values.length - 1} and user_id = $${values.length}
+     where id = $${values.length - 1}
+       and user_id = $${values.length}
+       and status = 'active'
      returning ${columns}`,
     values
   );
   return rows[0] || null;
-};
-
-export const deleteProjectSpaceForUser = async (projectSpaceId: string, userId: string) => {
-  return withTransaction(async (client) => {
-    const { rows } = await client.query<Pick<ProjectSpaceRow, 'id'>>(
-      `select id
-       from project_spaces
-       where id = $1 and user_id = $2 and is_default = false
-       for update`,
-      [projectSpaceId, userId]
-    );
-
-    if (!rows[0]) return false;
-
-    await client.query(
-      `delete from conversations
-       where user_id = $1 and project_space_id = $2`,
-      [userId, projectSpaceId]
-    );
-
-    await client.query(
-      `delete from files
-       where user_id = $1 and project_space_id = $2`,
-      [userId, projectSpaceId]
-    );
-
-    await client.query(
-      `delete from project_spaces
-       where id = $1 and user_id = $2 and is_default = false`,
-      [projectSpaceId, userId]
-    );
-
-    return true;
-  });
 };

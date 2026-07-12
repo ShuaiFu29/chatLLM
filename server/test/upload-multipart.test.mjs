@@ -984,6 +984,20 @@ test('multipart repository defines compare-and-set claims and transactional term
   assert.match(repositorySource, /for update/i);
 });
 
+test('multipart session creation locks and rechecks the upload row before accepting storage state', () => {
+  const repositorySource = readFileSync(
+    path.join(serverRoot, 'src', 'repositories', 'uploadMultipart.ts'),
+    'utf8',
+  );
+  const createSource = repositorySource.split('export const createMultipartUploadSession', 2)[1]
+    ?.split('export const findMultipartUploadSessionForUser', 1)[0] || '';
+
+  assert.match(createSource, /withTransaction/);
+  assert.match(createSource, /from files[\s\S]*status = 'uploading'[\s\S]*for update/i);
+  assert.match(createSource, /MULTIPART_UPLOAD_UNAVAILABLE/);
+  assert.match(createSource, /insert into upload_multipart_sessions/i);
+});
+
 test('concurrent multipart completion sends exactly one storage completion request', async () => {
   let sessionStatus = 'uploading';
   let fileStatus = 'uploading';
@@ -1628,6 +1642,52 @@ test('concurrent multipart initialization keeps one canonical storage upload and
     assert.notEqual(abortedStorageUploads[0], canonicalSession.storage_upload_id);
     assert.equal(firstResponse.body.expiresAt, canonicalSession.expires_at);
     assert.equal(secondResponse.body.expiresAt, canonicalSession.expires_at);
+  } finally {
+    restore();
+  }
+});
+
+test('multipart initialization aborts its new storage upload when file deletion wins', async () => {
+  const abortedStorageUploads = [];
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      reserveUploadFile: async () => ({ file: makeMultipartFile(), created: false }),
+    },
+    multipart: {
+      findActiveMultipartUploadSession: async () => null,
+      createMultipartUploadSession: async () => {
+        throw Object.assign(new Error('do-not-reflect'), {
+          code: 'MULTIPART_UPLOAD_UNAVAILABLE',
+        });
+      },
+    },
+    storage: {
+      createMultipartObjectUpload: async () => 'late-storage-upload',
+      abortMultipartObjectUpload: async (_key, uploadId) => {
+        abortedStorageUploads.push(uploadId);
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.initMultipartUpload({
+      user: { id: 'user-1' },
+      body: {
+        filename: 'notes.md',
+        hash: 'a'.repeat(64),
+        size: 12,
+        type: 'text/markdown',
+      },
+    }, response);
+
+    assert.equal(response.statusCode, 409);
+    assert.deepEqual(response.body, {
+      error: 'Multipart upload state changed',
+      details: 'Multipart upload state changed',
+    });
+    assert.deepEqual(abortedStorageUploads, ['late-storage-upload']);
+    assert.doesNotMatch(JSON.stringify(response.body), /do-not-reflect/);
   } finally {
     restore();
   }

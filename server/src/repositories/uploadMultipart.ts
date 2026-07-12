@@ -42,76 +42,103 @@ const columns = `
   updated_at
 `;
 
-export const createMultipartUploadSession = async (input: {
-  fileId: string;
-  userId: string;
-  projectSpaceId?: string | null;
-  objectKey: string;
-  storageUploadId: string;
-  partSize: number;
-  totalParts: number;
-  expiresAt: Date;
-}) => {
-  const { rows } = await query<MultipartUploadSessionRow & { created: boolean }>(
-    `with accepted as (
-       insert into upload_multipart_sessions (
-         file_id,
-         user_id,
-         project_space_id,
-         object_key,
-         storage_upload_id,
-         part_size,
-         total_parts,
-         expires_at
-       )
-       values ($1, $2, $3, $4, $5, $6, $7, $8)
-       on conflict (file_id) do update
-         set storage_upload_id = excluded.storage_upload_id,
-             object_key = excluded.object_key,
-             part_size = excluded.part_size,
-             total_parts = excluded.total_parts,
-             status = 'initiated',
-             expires_at = excluded.expires_at,
-             completed_at = null,
-             error_message = null,
-             updated_at = now()
-         where upload_multipart_sessions.status in ('failed', 'cancelled', 'expired')
-       returning true as created, ${columns}
-     )
-     select created, ${columns}
-     from accepted
-     union all
-     select false as created, ${columns}
-     from upload_multipart_sessions
-     where file_id = $1
-       and user_id = $2
-       and not exists (select 1 from accepted)
-     limit 1`,
-    [
-      input.fileId,
-      input.userId,
-      input.projectSpaceId || null,
-      input.objectKey,
-      input.storageUploadId,
-      input.partSize,
-      input.totalParts,
-      input.expiresAt.toISOString(),
-    ]
-  );
+export const MULTIPART_UPLOAD_UNAVAILABLE = 'MULTIPART_UPLOAD_UNAVAILABLE';
 
-  let row = rows[0];
-  if (!row) {
-    const existing = await query<MultipartUploadSessionRow & { created: boolean }>(
-      `select false as created, ${columns}
-       from upload_multipart_sessions
-       where file_id = $1 and user_id = $2`,
+interface CreateMultipartUploadSessionOptions {
+  runInTransaction?: typeof withTransaction;
+}
+
+export const createMultipartUploadSession = async (
+  input: {
+    fileId: string;
+    userId: string;
+    projectSpaceId?: string | null;
+    objectKey: string;
+    storageUploadId: string;
+    partSize: number;
+    totalParts: number;
+    expiresAt: Date;
+  },
+  options: CreateMultipartUploadSessionOptions = {}
+) => {
+  const runInTransaction = options.runInTransaction || withTransaction;
+  return runInTransaction(async (client) => {
+    const file = await client.query<{ id: string }>(
+      `select id
+       from files
+       where id = $1
+         and user_id = $2
+         and status = 'uploading'
+       for update`,
       [input.fileId, input.userId]
     );
-    row = existing.rows[0];
-  }
-  if (!row) throw new Error('Multipart upload session conflict could not be resolved');
-  const { created, ...session } = row;
-  return { created, session };
+    if (!file.rows[0]) {
+      throw Object.assign(new Error('Multipart upload file is unavailable'), {
+        code: MULTIPART_UPLOAD_UNAVAILABLE,
+      });
+    }
+
+    const { rows } = await client.query<MultipartUploadSessionRow & { created: boolean }>(
+      `with accepted as (
+         insert into upload_multipart_sessions (
+           file_id,
+           user_id,
+           project_space_id,
+           object_key,
+           storage_upload_id,
+           part_size,
+           total_parts,
+           expires_at
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8)
+         on conflict (file_id) do update
+           set storage_upload_id = excluded.storage_upload_id,
+               object_key = excluded.object_key,
+               part_size = excluded.part_size,
+               total_parts = excluded.total_parts,
+               status = 'initiated',
+               expires_at = excluded.expires_at,
+               completed_at = null,
+               error_message = null,
+               updated_at = now()
+           where upload_multipart_sessions.status in ('failed', 'cancelled', 'expired')
+         returning true as created, ${columns}
+       )
+       select created, ${columns}
+       from accepted
+       union all
+       select false as created, ${columns}
+       from upload_multipart_sessions
+       where file_id = $1
+         and user_id = $2
+         and not exists (select 1 from accepted)
+       limit 1`,
+      [
+        input.fileId,
+        input.userId,
+        input.projectSpaceId || null,
+        input.objectKey,
+        input.storageUploadId,
+        input.partSize,
+        input.totalParts,
+        input.expiresAt.toISOString(),
+      ]
+    );
+
+    let row = rows[0];
+    if (!row) {
+      const existing = await client.query<MultipartUploadSessionRow & { created: boolean }>(
+        `select false as created, ${columns}
+         from upload_multipart_sessions
+         where file_id = $1 and user_id = $2`,
+        [input.fileId, input.userId]
+      );
+      row = existing.rows[0];
+    }
+    if (!row) throw new Error('Multipart upload session conflict could not be resolved');
+    const { created, ...session } = row;
+    return { created, session };
+  });
 };
 
 export const findMultipartUploadSessionForUser = async (fileId: string, userId: string) => {

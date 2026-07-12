@@ -3,6 +3,7 @@ import { User } from '../types';
 
 export interface DbUser extends User {
   avatar_object_key?: string | null;
+  deletion_status: 'active' | 'pending';
 }
 
 const userColumns = `
@@ -13,6 +14,7 @@ const userColumns = `
   avatar_object_key,
   display_name,
   settings,
+  deletion_status,
   created_at
 `;
 
@@ -72,13 +74,10 @@ export const updateUser = async (
   const { rows } = await query<DbUser>(
     `update users set ${fields.join(', ')}
      where id = $${values.length}
+       and deletion_status = 'active'
      returning ${userColumns}`,
     values
   );
 
   return rows[0] || null;
-};
-
-export const deleteUser = async (id: string) => {
-  await query('delete from users where id = $1', [id]);
 };

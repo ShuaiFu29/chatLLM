@@ -4,6 +4,7 @@ import { serverEnv } from './env';
 import { fileQueue } from '../services/fileQueue';
 import { ragEvalQueue } from '../services/ragEvalQueue';
 import { maintenanceService } from '../services/maintenance';
+import { artifactCleanupQueue } from '../services/cleanupQueue';
 import { toSafeError } from './safeError';
 
 const closeHttpServer = (server: Server) => new Promise<void>((resolve, reject) => {
@@ -23,6 +24,7 @@ export const installGracefulShutdown = (server: Server) => {
     console.log(`[Server] ${signal} received; closing HTTP server`);
     fileQueue.stop();
     ragEvalQueue.stop();
+    artifactCleanupQueue.stop();
     maintenanceService.stop();
 
     const timeout = setTimeout(() => {

@@ -21,7 +21,9 @@ export const resolveAuthenticatedUser = async (
   const tokenUser = verifyAccessToken(accessToken);
   if (!tokenUser) return null;
 
-  return findUser(tokenUser.id);
+  const user = await findUser(tokenUser.id);
+  if (!user || user.deletion_status !== 'active') return null;
+  return user;
 };
 
 export const requireAuth = async (req: Request, res: Response, next: NextFunction) => {

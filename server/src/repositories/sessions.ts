@@ -21,6 +21,7 @@ interface SessionUserRow extends DbSession {
   avatar_object_key?: string | null;
   display_name?: string;
   settings?: DbUser['settings'];
+  deletion_status: 'active' | 'pending';
   user_created_at?: string;
 }
 
@@ -37,6 +38,7 @@ const toSessionWithUser = (row: SessionUserRow): SessionWithUser => ({
     avatar_object_key: row.avatar_object_key,
     display_name: row.display_name,
     settings: row.settings,
+    deletion_status: row.deletion_status,
     created_at: row.user_created_at,
   },
 });
@@ -44,12 +46,29 @@ const toSessionWithUser = (row: SessionUserRow): SessionWithUser => ({
 export const hashRefreshToken = (rawToken: string) =>
   createHash('sha256').update(rawToken, 'utf8').digest('hex');
 
-export const createSession = async (rawToken: string, userId: string, expiresAt: string) => {
-  await query(
-    `insert into sessions (token_hash, user_id, expires_at)
-     values ($1, $2, $3)`,
-    [hashRefreshToken(rawToken), userId, expiresAt]
-  );
+export const createSession = async (
+  rawToken: string,
+  userId: string,
+  expiresAt: string,
+  runInTransaction: typeof withTransaction = withTransaction
+) => {
+  await runInTransaction(async (client) => {
+    const user = await client.query<{ id: string }>(
+      `select id
+       from users
+       where id = $1
+         and deletion_status = 'active'
+       for update`,
+      [userId]
+    );
+    if (!user.rows[0]) throw new Error('Session user is unavailable');
+
+    await client.query(
+      `insert into sessions (token_hash, user_id, expires_at)
+       values ($1, $2, $3)`,
+      [hashRefreshToken(rawToken), userId, expiresAt]
+    );
+  });
 };
 
 export const findSessionWithUser = async (rawToken: string) => {
@@ -66,10 +85,12 @@ export const findSessionWithUser = async (rawToken: string) => {
        u.avatar_object_key,
        u.display_name,
        u.settings,
+       u.deletion_status,
        u.created_at as user_created_at
      from sessions s
      join users u on u.id = s.user_id
-     where s.token_hash = $1`,
+     where s.token_hash = $1
+       and u.deletion_status = 'active'`,
     [hashRefreshToken(rawToken)]
   );
 
@@ -86,14 +107,44 @@ export const rotateSession = async (
   runInTransaction: typeof withTransaction = withTransaction
 ): Promise<SessionWithUser | null> => {
   return runInTransaction(async (client) => {
+    const { rows: candidateRows } = await client.query<{ user_id: string }>(
+      `select user_id
+       from sessions
+       where token_hash = $1
+         and expires_at > now()`,
+      [hashRefreshToken(oldRawToken)]
+    );
+    const candidate = candidateRows[0];
+    if (!candidate) return null;
+
+    const { rows: userRows } = await client.query<DbUser>(
+      `select
+         id,
+         github_id,
+         username,
+         avatar_url,
+         avatar_object_key,
+         display_name,
+         settings,
+         deletion_status,
+         created_at
+       from users
+       where id = $1
+         and deletion_status = 'active'
+       for update`,
+      [candidate.user_id]
+    );
+    const user = userRows[0];
+    if (!user) return null;
+
     const { rows: consumedRows } = await client.query<{ user_id: string }>(
       `delete from sessions
        where token_hash = $1
+         and user_id = $2
          and expires_at > now()
        returning user_id`,
-      [hashRefreshToken(oldRawToken)]
+      [hashRefreshToken(oldRawToken), candidate.user_id]
     );
-
     const consumed = consumedRows[0];
     if (!consumed) return null;
 
@@ -105,21 +156,6 @@ export const rotateSession = async (
     );
     const session = sessionRows[0];
 
-    const { rows: userRows } = await client.query<DbUser>(
-      `select
-         id,
-         github_id,
-         username,
-         avatar_url,
-         avatar_object_key,
-         display_name,
-         settings,
-         created_at
-       from users
-       where id = $1`,
-      [consumed.user_id]
-    );
-    const user = userRows[0];
     if (!session || !user) {
       throw new Error('Rotated session user is unavailable');
     }

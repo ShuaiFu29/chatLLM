@@ -150,7 +150,8 @@ export type UploadReservationErrorCode =
   | 'DOCUMENT_TOO_LARGE'
   | 'USER_STORAGE_QUOTA_EXCEEDED'
   | 'ACTIVE_UPLOAD_QUOTA_EXCEEDED'
-  | 'UPLOAD_USER_NOT_FOUND';
+  | 'UPLOAD_USER_NOT_FOUND'
+  | 'UPLOAD_PROJECT_NOT_FOUND';
 
 export class UploadReservationError extends Error {
   constructor(readonly code: UploadReservationErrorCode) {
@@ -216,10 +217,26 @@ export const reserveUploadFile = async (
       `select id
        from users
        where id = $1
+         and deletion_status = 'active'
        for update`,
       [input.userId]
     );
     if (!user.rows[0]) throw new UploadReservationError('UPLOAD_USER_NOT_FOUND');
+
+    if (input.projectSpaceId) {
+      const projectSpace = await client.query<{ id: string }>(
+        `select id
+         from project_spaces
+         where id = $1
+           and user_id = $2
+           and status = 'active'
+         for update`,
+        [input.projectSpaceId, input.userId]
+      );
+      if (!projectSpace.rows[0]) {
+        throw new UploadReservationError('UPLOAD_PROJECT_NOT_FOUND');
+      }
+    }
 
     const claimed = await findClaimedFileWithClient(
       client,
@@ -344,11 +361,51 @@ export const listFilesForUser = async (userId: string, projectSpaceId?: string) 
     `select ${columns}
      from files
      where user_id = $1
+       and status <> 'deleting'
        ${projectSpaceFilter}
      order by created_at desc`,
     values
   );
   return rows;
+};
+
+const requeueFileCleanupForStoredObject = async (
+  client: PoolClient,
+  fileId: string,
+  objectKey: string
+) => {
+  const { rows } = await client.query<{ id: string }>(
+    `insert into artifact_cleanup_jobs (
+       resource_key,
+       resource_type,
+       resource_id,
+       payload
+     )
+     values (
+       'file:' || $1,
+       'file',
+       $1,
+       jsonb_build_object('object_key', $2::text)
+     )
+     on conflict (resource_key) do update set
+       status = 'queued',
+       step_state = artifact_cleanup_jobs.step_state - 'storage_deleted' - 'finalized',
+       payload = artifact_cleanup_jobs.payload || jsonb_build_object('object_key', $2::text),
+       attempts = case
+         when artifact_cleanup_jobs.attempts >= artifact_cleanup_jobs.max_attempts then 0
+         else artifact_cleanup_jobs.attempts
+       end,
+       next_attempt_at = null,
+       worker_id = null,
+       lease_token = null,
+       lease_expires_at = null,
+       last_error = '',
+       completed_at = null,
+       updated_at = now()
+     returning id`,
+    [fileId, objectKey]
+  );
+  if (!rows[0]) throw new Error('Stored upload cleanup could not be queued');
 };
 
 export const updateFile = async (
@@ -368,26 +425,48 @@ export const updateFile = async (
     'storage_bytes'
   >>
 ) => {
-  const fields: string[] = ['updated_at = now()'];
-  const values: unknown[] = [];
+  return withTransaction(async (client) => {
+    const { rows: lockedRows } = await client.query<Pick<FileRow, 'status'>>(
+      `select status
+       from files
+       where id = $1
+       for update`,
+      [fileId]
+    );
+    const lockedFile = lockedRows[0];
+    const objectKey = typeof updates.object_key === 'string' && updates.object_key
+      ? updates.object_key
+      : null;
 
-  Object.entries(updates).forEach(([key, value]) => {
-    if (value !== undefined) {
-      values.push(value);
-      fields.push(`${key} = $${values.length}`);
+    if (!lockedFile || lockedFile.status === 'deleting') {
+      if (objectKey) {
+        await requeueFileCleanupForStoredObject(client, fileId, objectKey);
+      }
+      return null;
     }
+
+    const fields: string[] = ['updated_at = now()'];
+    const values: unknown[] = [];
+
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value !== undefined) {
+        values.push(value);
+        fields.push(`${key} = $${values.length}`);
+      }
+    });
+
+    values.push(fileId);
+    const { rows } = await client.query<FileRow>(
+      `update files
+       set ${fields.join(', ')}
+       where id = $${values.length}
+         and status <> 'deleting'
+       returning ${columns}`,
+      values
+    );
+
+    return rows[0] || null;
   });
-
-  values.push(fileId);
-  const { rows } = await query<FileRow>(
-    `update files
-     set ${fields.join(', ')}
-     where id = $${values.length}
-     returning ${columns}`,
-    values
-  );
-
-  return rows[0] || null;
 };
 
 export const deleteAbandonedUploadingFiles = async (
@@ -439,24 +518,6 @@ export const retryFailedFileForUser = async (fileId: string, userId: string) => 
   );
 
   return rows[0] || null;
-};
-
-export const deleteFileForUser = async (fileId: string, userId: string) => {
-  return withTransaction(async (client) => {
-    const { rows } = await client.query<FileRow>(
-      `select ${columns}
-       from files
-       where id = $1 and user_id = $2
-       for update`,
-      [fileId, userId]
-    );
-
-    const file = rows[0];
-    if (!file) return null;
-
-    await client.query('delete from files where id = $1 and user_id = $2', [fileId, userId]);
-    return file;
-  });
 };
 
 export interface FileIngestionClaim {
