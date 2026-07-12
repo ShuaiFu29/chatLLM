@@ -107,9 +107,10 @@ def query_hash(normalized_query: str) -> str:
 
 
 def build_retrieval_scope_fingerprint(scope: dict) -> str:
+    project_space_id = str(scope.get("project_space_id") or "")
     stable_scope = {
         "user_id": str(scope.get("user_id") or ""),
-        "project_space_id": str(scope.get("project_space_id") or ""),
+        "project_space_id": project_space_id,
         "knowledge_version": int(scope.get("knowledge_version") or 1),
         "vector_version": int(scope.get("vector_version") or 1),
         "bm25_version": int(scope.get("bm25_version") or 1),
@@ -119,6 +120,19 @@ def build_retrieval_scope_fingerprint(scope: dict) -> str:
         "embedding_dimension": int(scope.get("embedding_dimension") or 0),
         "settings_fingerprint": str(scope.get("settings_fingerprint") or ""),
     }
+    if not project_space_id:
+        project_versions = []
+        for item in scope.get("project_versions") or []:
+            if not isinstance(item, dict):
+                continue
+            project_versions.append({
+                "project_space_id": str(item.get("project_space_id") or ""),
+                "knowledge_version": int(item.get("knowledge_version") or 1),
+            })
+        stable_scope["project_versions"] = sorted(
+            project_versions,
+            key=lambda item: (item["project_space_id"], item["knowledge_version"]),
+        )
     payload = json.dumps(stable_scope, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 

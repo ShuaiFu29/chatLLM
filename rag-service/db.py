@@ -260,17 +260,27 @@ def get_retrieval_scope(user_id: str, project_space_id: str | None = None) -> di
 
             cur.execute(
                 """
-                select coalesce(max(knowledge_version), 1) as knowledge_version
+                select id::text as project_space_id, knowledge_version
                 from project_spaces
                 where user_id::text = %s
+                order by id::text
                 """,
                 (user_id,),
             )
-            row = cur.fetchone() or {}
+            project_versions = [
+                {
+                    "project_space_id": str(row["project_space_id"]),
+                    "knowledge_version": int(row.get("knowledge_version") or 1),
+                }
+                for row in (cur.fetchall() or [])
+            ]
             return {
                 "user_id": user_id,
                 "project_space_id": None,
-                "knowledge_version": int(row.get("knowledge_version") or 1),
+                "knowledge_version": max(
+                    [item["knowledge_version"] for item in project_versions] or [1]
+                ),
+                "project_versions": project_versions,
                 "vector_version": 1,
                 "bm25_version": 1,
                 "graph_version": 1,
