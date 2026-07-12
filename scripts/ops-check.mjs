@@ -21,6 +21,14 @@ const parsePositiveInteger = (value, fallback, key) => {
   return parsed;
 };
 
+const firstNonBlank = (...values) => {
+  for (const value of values) {
+    const normalized = value === undefined || value === null ? '' : String(value).trim();
+    if (normalized) return normalized;
+  }
+  return '';
+};
+
 function parseEnvFile(filePath) {
   if (!fs.existsSync(filePath)) return {};
   const env = {};
@@ -47,7 +55,7 @@ function parseEnvFile(filePath) {
   return env;
 }
 
-export function buildOpsTargets(env = process.env) {
+export function buildOpsTargets(env = process.env, envFiles = {}) {
   if (env.OPS_TARGETS_JSON) {
     const targets = JSON.parse(env.OPS_TARGETS_JSON);
     if (!Array.isArray(targets) || targets.length === 0) {
@@ -63,8 +71,19 @@ export function buildOpsTargets(env = process.env) {
   const backendUrl = env.OPS_BACKEND_URL || env.LOAD_TARGET_URL || 'http://localhost:3000';
   const ragUrl = env.OPS_RAG_URL || 'http://localhost:8000';
   const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const serverEnv = parseEnvFile(path.join(rootDir, 'server', '.env'));
-  const metricsToken = env.OPS_METRICS_TOKEN || env.METRICS_TOKEN || serverEnv.METRICS_TOKEN || '';
+  const serverEnv = envFiles.serverEnv ?? parseEnvFile(path.join(rootDir, 'server', '.env'));
+  const ragEnv = envFiles.ragEnv ?? parseEnvFile(path.join(rootDir, 'rag-service', '.env'));
+  const metricsToken = firstNonBlank(
+    env.OPS_METRICS_TOKEN,
+    env.METRICS_TOKEN,
+    serverEnv.METRICS_TOKEN,
+  );
+  const ragToken = firstNonBlank(
+    env.OPS_RAG_TOKEN,
+    env.RAG_SERVICE_TOKEN,
+    serverEnv.RAG_SERVICE_TOKEN,
+    ragEnv.RAG_SERVICE_TOKEN,
+  );
   const targets = [
     { label: 'backend live', url: joinUrl(backendUrl, '/health/live') },
     { label: 'backend ready', url: joinUrl(backendUrl, '/health/ready') },
@@ -73,7 +92,17 @@ export function buildOpsTargets(env = process.env) {
       url: joinUrl(backendUrl, '/metrics'),
       headers: metricsToken ? { authorization: `Bearer ${metricsToken}` } : undefined,
     },
-    { label: 'rag ready', url: joinUrl(ragUrl, '/health/ready') },
+    {
+      label: 'backend queue health',
+      url: joinUrl(backendUrl, '/health/queues'),
+      headers: metricsToken ? { authorization: `Bearer ${metricsToken}` } : undefined,
+      responseKind: 'queue-health',
+    },
+    {
+      label: 'rag ready',
+      url: joinUrl(ragUrl, '/health/ready'),
+      headers: ragToken ? { 'X-ChatLLM-RAG-Token': ragToken } : undefined,
+    },
   ];
 
   if (!parseBoolean(env.OPS_SKIP_INFRA, false)) {
@@ -96,6 +125,24 @@ export function buildOpsTargets(env = process.env) {
   return targets;
 }
 
+const QUEUE_HEALTH_CHECKS = ['cleanup', 'ingestion_leases', 'eval_leases'];
+const QUEUE_HEALTH_STATUSES = new Set(['ok', 'degraded', 'error']);
+
+const readQueueHealthSummary = async (response) => {
+  if (typeof response.json !== 'function') return null;
+
+  try {
+    const body = await response.json();
+    const statuses = QUEUE_HEALTH_CHECKS.map((key) => {
+      const status = body?.checks?.[key]?.status;
+      return QUEUE_HEALTH_STATUSES.has(status) ? `${key}=${status}` : null;
+    });
+    return statuses.every(Boolean) ? statuses.join(', ') : null;
+  } catch {
+    return null;
+  }
+};
+
 const runOneCheck = async (target, options, fetchImpl) => {
   const startedAt = performance.now();
   const controller = new AbortController();
@@ -109,12 +156,22 @@ const runOneCheck = async (target, options, fetchImpl) => {
       signal: controller.signal,
     });
     const durationMs = performance.now() - startedAt;
-    const ok = response.status >= 200 && response.status < 300;
+    let ok = response.status >= 200 && response.status < 300;
+    let detail = `HTTP ${response.status}`;
+    if (target.responseKind === 'queue-health') {
+      const summary = await readQueueHealthSummary(response);
+      if (summary) {
+        detail += `; ${summary}`;
+      } else {
+        ok = false;
+        detail += '; invalid queue health response';
+      }
+    }
     return {
       label: target.label,
       url: toSafeUrl(target.url),
       status: ok ? 'ok' : 'error',
-      detail: `HTTP ${response.status}`,
+      detail,
       durationMs,
     };
   } catch (error) {

@@ -40,7 +40,14 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   const ragEvalConcurrency = asInt(serverEnv, 'RAG_EVAL_QUEUE_CONCURRENCY', 1);
   const ragRetrieveTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TIMEOUT_MS', 10000);
   const ragCircuitThreshold = asInt(serverEnv, 'RAG_CIRCUIT_FAILURE_THRESHOLD', 5);
+  const maxDocumentBytes = asInt(serverEnv, 'MAX_DOCUMENT_BYTES', 100 * 1024 * 1024);
+  const maxUserStorageBytes = asInt(serverEnv, 'MAX_USER_STORAGE_BYTES', 10 * 1024 * 1024 * 1024);
+  const maxUserActiveUploadBytes = asInt(serverEnv, 'MAX_USER_ACTIVE_UPLOAD_BYTES', 1024 * 1024 * 1024);
+  const fileQueueStaleAfterMs = asInt(serverEnv, 'FILE_QUEUE_STALE_AFTER_MS', 15 * 60 * 1000);
+  const ragEvalQueueStaleAfterMs = asInt(serverEnv, 'RAG_EVAL_QUEUE_STALE_AFTER_MS', 15 * 60 * 1000);
   const ragIngestConcurrency = asInt(ragEnv, 'RAG_INGEST_CONCURRENCY', 2);
+  const ragDbPoolMax = asInt(ragEnv, 'RAG_DB_POOL_MAX', 10);
+  const ragDbPoolTimeoutMs = asInt(ragEnv, 'RAG_DB_POOL_TIMEOUT_MS', 5000);
   const ragStreamingThresholdBytes = asInt(ragEnv, 'RAG_INGEST_STREAMING_THRESHOLD_BYTES', 50 * 1024 * 1024);
   const ragChunkBatchSize = asInt(ragEnv, 'RAG_INGEST_CHUNK_BATCH_SIZE', 100);
   const ragEmbeddingBatchSize = asInt(ragEnv, 'RAG_INGEST_EMBEDDING_BATCH_SIZE', 10);
@@ -119,6 +126,13 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   }
   checks.push({ label: 'RAG_RETRIEVE_TIMEOUT_MS', status: 'ok', detail: `RAG_RETRIEVE_TIMEOUT_MS=${ragRetrieveTimeoutMs}` });
   checks.push({ label: 'RAG_CIRCUIT_FAILURE_THRESHOLD', status: 'ok', detail: `RAG_CIRCUIT_FAILURE_THRESHOLD=${ragCircuitThreshold}` });
+  checks.push({ label: 'MAX_DOCUMENT_BYTES', status: 'ok', detail: `MAX_DOCUMENT_BYTES=${maxDocumentBytes}` });
+  checks.push({ label: 'MAX_USER_STORAGE_BYTES', status: 'ok', detail: `MAX_USER_STORAGE_BYTES=${maxUserStorageBytes}` });
+  checks.push({ label: 'MAX_USER_ACTIVE_UPLOAD_BYTES', status: 'ok', detail: `MAX_USER_ACTIVE_UPLOAD_BYTES=${maxUserActiveUploadBytes}` });
+  checks.push({ label: 'FILE_QUEUE_STALE_AFTER_MS', status: 'ok', detail: `FILE_QUEUE_STALE_AFTER_MS=${fileQueueStaleAfterMs}` });
+  checks.push({ label: 'RAG_EVAL_QUEUE_STALE_AFTER_MS', status: 'ok', detail: `RAG_EVAL_QUEUE_STALE_AFTER_MS=${ragEvalQueueStaleAfterMs}` });
+  checks.push({ label: 'RAG_DB_POOL_MAX', status: 'ok', detail: `RAG_DB_POOL_MAX=${ragDbPoolMax}` });
+  checks.push({ label: 'RAG_DB_POOL_TIMEOUT_MS', status: 'ok', detail: `RAG_DB_POOL_TIMEOUT_MS=${ragDbPoolTimeoutMs}` });
 
   const esEnabled = asBool(ragEnv, 'ELASTICSEARCH_ENABLED', true);
   const neo4jEnabled = asBool(ragEnv, 'NEO4J_ENABLED', true);

@@ -33,11 +33,16 @@ const enterpriseServerEnv = {
   FILE_QUEUE_CONCURRENCY: '6',
   FILE_QUEUE_INGEST_TIMEOUT_MS: '60000',
   FILE_QUEUE_MAX_ATTEMPTS: '5',
+  FILE_QUEUE_STALE_AFTER_MS: '720000',
   RAG_EVAL_QUEUE_CONCURRENCY: '2',
+  RAG_EVAL_QUEUE_STALE_AFTER_MS: '840000',
   RAG_RETRIEVE_TIMEOUT_MS: '10000',
   RAG_CIRCUIT_FAILURE_THRESHOLD: '5',
   CHAT_STREAM_MAX_CONCURRENT: '80',
   CHAT_STREAM_MAX_CONCURRENT_PER_USER: '5',
+  MAX_DOCUMENT_BYTES: '104857600',
+  MAX_USER_STORAGE_BYTES: '10737418240',
+  MAX_USER_ACTIVE_UPLOAD_BYTES: '1073741824',
 };
 
 const enterpriseRagEnv = {
@@ -74,6 +79,8 @@ const enterpriseRagEnv = {
   RAG_INGEST_EMBEDDING_BATCH_SIZE: '10',
   RAG_READINESS_TIMEOUT_MS: '2000',
   RAG_SERVICE_TOKEN: 'test-rag-service-token-at-least-32-characters',
+  RAG_DB_POOL_MAX: '12',
+  RAG_DB_POOL_TIMEOUT_MS: '4500',
 };
 
 const tunedCompose = `
@@ -113,6 +120,27 @@ test('validateCapacityConfig accepts an enterprise-oriented capacity profile', (
 
   assert.deepEqual(report.errors, []);
   assert.deepEqual(report.warnings, []);
+});
+
+test('validateCapacityConfig reports quota, lease, and RAG database pool settings', () => {
+  const report = validateCapacityConfig({
+    envMaps: {
+      '.env': enterpriseInfrastructureEnv,
+      'server/.env': enterpriseServerEnv,
+      'rag-service/.env': enterpriseRagEnv,
+    },
+    composeText: tunedCompose,
+    profile: 'enterprise',
+  });
+  const details = Object.fromEntries(report.checks.map((check) => [check.label, check.detail]));
+
+  assert.equal(details.MAX_DOCUMENT_BYTES, 'MAX_DOCUMENT_BYTES=104857600');
+  assert.equal(details.MAX_USER_STORAGE_BYTES, 'MAX_USER_STORAGE_BYTES=10737418240');
+  assert.equal(details.MAX_USER_ACTIVE_UPLOAD_BYTES, 'MAX_USER_ACTIVE_UPLOAD_BYTES=1073741824');
+  assert.equal(details.FILE_QUEUE_STALE_AFTER_MS, 'FILE_QUEUE_STALE_AFTER_MS=720000');
+  assert.equal(details.RAG_EVAL_QUEUE_STALE_AFTER_MS, 'RAG_EVAL_QUEUE_STALE_AFTER_MS=840000');
+  assert.equal(details.RAG_DB_POOL_MAX, 'RAG_DB_POOL_MAX=12');
+  assert.equal(details.RAG_DB_POOL_TIMEOUT_MS, 'RAG_DB_POOL_TIMEOUT_MS=4500');
 });
 
 test('validateCapacityConfig reports risky bottleneck settings for enterprise mode', () => {

@@ -17,6 +17,14 @@ const rootEnvExampleUrl = new URL('../.env.example', import.meta.url);
 const rootEnvExample = fs.existsSync(rootEnvExampleUrl)
   ? fs.readFileSync(rootEnvExampleUrl, 'utf8')
   : '';
+const serverEnvExample = fs.readFileSync(new URL('../server/.env.example', import.meta.url), 'utf8');
+const ragEnvExample = fs.readFileSync(new URL('../rag-service/.env.example', import.meta.url), 'utf8');
+const readmeSource = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const isolatedEnvFiles = { serverEnv: {}, ragEnv: {} };
+const testOpsEnv = {
+  OPS_METRICS_TOKEN: 'metrics-token-for-ops-tests',
+  OPS_RAG_TOKEN: 'rag-token-for-ops-tests-at-least-32-characters',
+};
 
 test('docker compose binds every published infrastructure port to loopback by default', () => {
   const expectedPorts = [
@@ -76,52 +84,138 @@ test('docker compose renders with the documented secure example configuration', 
   assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
 });
 
+test('configuration examples and README document secure lifecycle operations', () => {
+  const serverVariables = [
+    'S3_REGION',
+    'TRUST_PROXY_HOPS',
+    'MAX_DOCUMENT_BYTES',
+    'MAX_USER_STORAGE_BYTES',
+    'MAX_USER_ACTIVE_UPLOAD_BYTES',
+    'MULTIPART_UPLOAD_PART_SIZE_BYTES',
+    'MULTIPART_UPLOAD_URL_EXPIRES_SECONDS',
+    'MULTIPART_UPLOAD_SESSION_TTL_MS',
+  ];
+  const ragVariables = [
+    'S3_REGION',
+    'RAG_DB_POOL_MAX',
+    'RAG_DB_POOL_TIMEOUT_MS',
+  ];
+
+  for (const variable of serverVariables) {
+    assert.match(serverEnvExample, new RegExp(`^${variable}=`, 'm'), `${variable} missing from server/.env.example`);
+    assert.match(readmeSource, new RegExp(`\\b${variable}\\b`), `${variable} missing from README.md`);
+  }
+  for (const variable of ragVariables) {
+    assert.match(ragEnvExample, new RegExp(`^${variable}=`, 'm'), `${variable} missing from rag-service/.env.example`);
+    assert.match(readmeSource, new RegExp(`\\b${variable}\\b`), `${variable} missing from README.md`);
+  }
+
+  for (const source of [rootEnvExample, serverEnvExample, ragEnvExample, readmeSource]) {
+    assert.match(source, /openssl rand -hex 32/);
+  }
+  for (const source of [serverEnvExample, ragEnvExample, readmeSource]) {
+    assert.doesNotMatch(source, /postgres:\/\/chatllm:chatllm@/);
+    assert.doesNotMatch(source, /\bminioadmin\b/);
+    assert.doesNotMatch(source, /\bchatllm-password\b/);
+  }
+
+  assert.match(readmeSource, /202 Accepted/);
+  assert.match(readmeSource, /deletion_status/);
+  assert.match(readmeSource, /reserved_bytes/);
+  assert.match(readmeSource, /storage_bytes/);
+  assert.match(readmeSource, /外部对象确认不存在后[^\n]*释放/);
+  assert.match(readmeSource, /0025_security_sessions_rate_limits\.sql/);
+  assert.match(readmeSource, /(?:备份|backup)/i);
+  assert.match(readmeSource, /旧版本[^\n]*(?:不能|无法)[^\n]*(?:回滚|token)/i);
+  assert.match(readmeSource, /npm run check:ops/);
+  assert.match(readmeSource, /\/health\/queues/);
+  assert.match(readmeSource, /OPS_RAG_TOKEN/);
+});
+
 test('buildOpsTargets includes app, RAG, and infra readiness endpoints by default', () => {
   const targets = buildOpsTargets({
+    ...testOpsEnv,
     OPS_BACKEND_URL: 'http://localhost:3000',
     OPS_RAG_URL: 'http://localhost:8000',
     OPS_ELASTICSEARCH_URL: 'http://localhost:9200',
     OPS_NEO4J_URL: 'http://localhost:7474',
     OPS_MILVUS_HEALTH_URL: 'http://localhost:9091/healthz',
-  });
+  }, isolatedEnvFiles);
 
   assert.deepEqual(targets.map((target) => target.label), [
     'backend live',
     'backend ready',
     'backend metrics',
+    'backend queue health',
     'rag ready',
     'elasticsearch',
     'neo4j',
     'milvus',
   ]);
   assert.equal(targets[0].url, 'http://localhost:3000/health/live');
-  assert.equal(targets[3].url, 'http://localhost:8000/health/ready');
-  assert.equal(targets[6].url, 'http://localhost:9091/healthz');
+  assert.equal(targets[3].url, 'http://localhost:3000/health/queues');
+  assert.equal(targets[4].url, 'http://localhost:8000/health/ready');
+  assert.equal(targets[7].url, 'http://localhost:9091/healthz');
 });
 
-test('buildOpsTargets attaches a metrics bearer token when configured', () => {
+test('buildOpsTargets authenticates metrics, queue health, and RAG readiness probes', () => {
   const targets = buildOpsTargets({
     OPS_BACKEND_URL: 'http://localhost:3000',
     OPS_RAG_URL: 'http://localhost:8000',
     OPS_METRICS_TOKEN: 'metrics-token',
+    OPS_RAG_TOKEN: 'rag-token-at-least-32-characters',
     OPS_SKIP_INFRA: 'true',
-  });
+  }, isolatedEnvFiles);
   const metricsTarget = targets.find((target) => target.label === 'backend metrics');
+  const queueTarget = targets.find((target) => target.label === 'backend queue health');
+  const ragTarget = targets.find((target) => target.label === 'rag ready');
 
   assert.equal(metricsTarget.headers.authorization, 'Bearer metrics-token');
+  assert.equal(queueTarget.headers.authorization, 'Bearer metrics-token');
+  assert.equal(ragTarget.headers['X-ChatLLM-RAG-Token'], 'rag-token-at-least-32-characters');
+});
+
+test('buildOpsTargets reads RAG credentials from injected server and RAG env maps', () => {
+  const fromServer = buildOpsTargets({
+    OPS_BACKEND_URL: 'http://localhost:3000',
+    OPS_RAG_URL: 'http://localhost:8000',
+    OPS_SKIP_INFRA: 'true',
+  }, {
+    serverEnv: { METRICS_TOKEN: 'server-metrics-token', RAG_SERVICE_TOKEN: 'server-rag-token' },
+    ragEnv: { RAG_SERVICE_TOKEN: 'rag-env-token' },
+  });
+  const fromRag = buildOpsTargets({
+    OPS_BACKEND_URL: 'http://localhost:3000',
+    OPS_RAG_URL: 'http://localhost:8000',
+    OPS_SKIP_INFRA: 'true',
+  }, {
+    serverEnv: { METRICS_TOKEN: 'server-metrics-token' },
+    ragEnv: { RAG_SERVICE_TOKEN: 'rag-env-token' },
+  });
+
+  assert.equal(
+    fromServer.find((target) => target.label === 'rag ready').headers['X-ChatLLM-RAG-Token'],
+    'server-rag-token',
+  );
+  assert.equal(
+    fromRag.find((target) => target.label === 'rag ready').headers['X-ChatLLM-RAG-Token'],
+    'rag-env-token',
+  );
 });
 
 test('buildOpsTargets can skip external infrastructure checks for app-only smoke', () => {
   const targets = buildOpsTargets({
+    ...testOpsEnv,
     OPS_BACKEND_URL: 'http://localhost:3000',
     OPS_RAG_URL: 'http://localhost:8000',
     OPS_SKIP_INFRA: 'true',
-  });
+  }, isolatedEnvFiles);
 
   assert.deepEqual(targets.map((target) => target.label), [
     'backend live',
     'backend ready',
     'backend metrics',
+    'backend queue health',
     'rag ready',
   ]);
 });
@@ -161,6 +255,33 @@ test('runOpsChecks passes target headers to probes', async () => {
   ], { timeoutMs: 1000 }, fakeFetch);
 
   assert.equal(requests[0].init.headers.authorization, 'Bearer metrics-token');
+});
+
+test('runOpsChecks reports only allowlisted queue health statuses', async () => {
+  const checks = await runOpsChecks([
+    {
+      label: 'backend queue health',
+      url: 'http://localhost:3000/health/queues',
+      responseKind: 'queue-health',
+    },
+  ], { timeoutMs: 1000 }, async () => ({
+    status: 503,
+    json: async () => ({
+      status: 'degraded',
+      checks: {
+        cleanup: { status: 'degraded', exhausted: 7, last_error: 'database-secret' },
+        ingestion_leases: { status: 'ok', expired: 0 },
+        eval_leases: { status: 'degraded', expired: 2 },
+      },
+    }),
+  }));
+
+  assert.equal(checks[0].status, 'error');
+  assert.equal(
+    checks[0].detail,
+    'HTTP 503; cleanup=degraded, ingestion_leases=ok, eval_leases=degraded',
+  );
+  assert.doesNotMatch(checks[0].detail, /database-secret|last_error|exhausted|expired/);
 });
 
 test('runOpsChecks preserves request URLs while redacting report URLs and network errors', async () => {

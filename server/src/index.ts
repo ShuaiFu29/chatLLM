@@ -19,6 +19,7 @@ import { artifactCleanupQueue } from './services/cleanupQueue';
 import { JSON_REQUEST_LIMIT, URLENCODED_REQUEST_LIMIT } from './lib/requestLimits';
 import { runMigrations } from './lib/migrations';
 import { liveHealthHandler, readyHealthHandler } from './lib/health';
+import { queueHealthHandler } from './lib/queueHealth';
 import { installGracefulShutdown } from './lib/gracefulShutdown';
 import { requestContextMiddleware } from './middleware/requestContext';
 import { createRateLimit } from './middleware/rateLimit';
@@ -61,6 +62,7 @@ app.use(cors({
 app.get('/health', liveHealthHandler);
 app.get('/health/live', liveHealthHandler);
 app.get('/health/ready', readyHealthHandler);
+app.get('/health/queues', metricsAuthMiddleware, queueHealthHandler);
 app.get('/metrics', metricsAuthMiddleware, metricsHandler);
 
 app.use(cookieParser());
