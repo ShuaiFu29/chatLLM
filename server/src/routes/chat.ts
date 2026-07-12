@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getConversations, createConversation, updateConversation, deleteConversation, getMessages, sendMessage, searchMessages, branchConversation, compareConversations } from '../controllers/chat';
+import { getConversations, createConversation, updateConversation, deleteConversation, getMessages, sendMessage, searchMessages, branchConversation, compareConversations, truncateConversation } from '../controllers/chat';
 import { mutationSchemas } from '../lib/mutationSchemas';
 import { validateMutation } from '../lib/validation';
 import { requireAuth } from '../middleware/auth';
@@ -18,6 +18,7 @@ router.delete('/conversations/:conversationId', requireAuth, validateMutation(mu
 router.delete('/messages/:messageId', requireAuth, validateMutation(mutationSchemas.chatDeleteMessage), (req, res, next) => {
   import('../controllers/chat').then(mod => mod.deleteMessage(req, res)).catch(next);
 });
+router.delete('/conversations/:conversationId/messages/:messageId/truncate', requireAuth, validateMutation(mutationSchemas.chatTruncateConversation), truncateConversation);
 router.get('/conversations/:conversationId/messages', requireAuth, getMessages);
 router.post('/conversations/:conversationId/messages', requireAuth, validateMutation(mutationSchemas.chatSendMessage), sendMessage);
 

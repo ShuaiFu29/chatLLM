@@ -245,13 +245,18 @@ export const compareConversationsForUser = async (
   };
 };
 
-export const updateConversationTitle = async (conversationId: string, title: string) => {
-  await query(
+export const updateConversationTitleIfPlaceholder = async (
+  conversationId: string,
+  title: string,
+  runQuery: typeof query = query
+) => {
+  const { rowCount } = await runQuery(
     `update conversations
      set title = $1, updated_at = now()
-     where id = $2`,
+     where id = $2 and title = 'New Chat'`,
     [title, conversationId]
   );
+  return (rowCount ?? 0) > 0;
 };
 
 export const touchConversation = async (conversationId: string, userId: string) => {

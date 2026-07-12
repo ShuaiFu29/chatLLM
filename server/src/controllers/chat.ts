@@ -28,7 +28,7 @@ import {
   listConversations,
   touchConversation,
   updateConversationForUser,
-  updateConversationTitle,
+  updateConversationTitleIfPlaceholder,
 } from '../repositories/conversations';
 import {
   deleteMessageForUser,
@@ -36,6 +36,7 @@ import {
   listMessagesForConversationPage,
   listRecentMessages,
   searchMessagesForUser,
+  truncateConversationFromUserMessage,
 } from '../repositories/messages';
 import { insertRagRunForMessage } from '../repositories/ragRuns';
 import { buildPersonalizedSystemPrompt } from '../lib/personaInsights';
@@ -244,6 +245,20 @@ export const deleteMessage = async (req: Request, res: Response) => {
   }
 };
 
+export const truncateConversation = async (req: Request, res: Response) => {
+  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+  const { conversationId, messageId } = req.params;
+
+  try {
+    const result = await truncateConversationFromUserMessage(conversationId, messageId, req.user.id);
+    if (!result) return res.status(404).json({ error: 'Conversation or user message not found' });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Error truncating conversation:', toSafeError(error, res.locals.requestId));
+    res.status(500).json({ error: 'Failed to truncate conversation' });
+  }
+};
+
 const generateConversationTitle = async (conversationId: string, firstMessage: string) => {
   try {
     const { client: titleClient, resolvedModel } = createChatClientForModel(getDefaultChatModel());
@@ -261,7 +276,7 @@ const generateConversationTitle = async (conversationId: string, firstMessage: s
     });
 
     const title = response.choices[0]?.message?.content?.trim();
-    if (title) await updateConversationTitle(conversationId, title);
+    if (title) await updateConversationTitleIfPlaceholder(conversationId, title);
   } catch (error) {
     console.warn('[Chat] Failed to generate title:', toSafeError(error));
   }

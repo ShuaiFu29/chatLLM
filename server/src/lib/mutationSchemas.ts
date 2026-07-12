@@ -46,6 +46,7 @@ const projectSpaceAliases = [['project_space_id', 'projectSpaceId']] as const;
 
 const conversationIdParams = strictObject({ conversationId: uuid });
 const messageIdParams = strictObject({ messageId: uuid });
+const conversationMessageIdParams = strictObject({ conversationId: uuid, messageId: uuid });
 const interestIdParams = strictObject({ interestId: uuid });
 const observationIdParams = strictObject({ observationId: uuid });
 const suggestionIdParams = strictObject({ suggestionId: uuid });
@@ -278,6 +279,7 @@ export const mutationSchemas = {
   chatUpdateConversation: { body: chatUpdateConversationBody, params: conversationIdParams },
   chatDeleteConversation: { body: emptyBody, params: conversationIdParams },
   chatDeleteMessage: { body: emptyBody, params: messageIdParams },
+  chatTruncateConversation: { body: emptyBody, params: conversationMessageIdParams },
   chatSendMessage: {
     body: strictBody({ content: requiredText(MAX_CHAT_MESSAGE_CONTENT_LENGTH) }),
     params: conversationIdParams,

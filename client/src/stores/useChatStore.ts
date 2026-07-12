@@ -131,7 +131,7 @@ interface ChatState {
   continueGeneration: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
   loadOlderMessages: (id?: string) => Promise<void>;
-  sendMessage: (content: string, isContinue?: boolean) => Promise<void>;
+  sendMessage: (content: string, isContinue?: boolean, targetConversationId?: string) => Promise<void>;
 }
 
 const DEFAULT_MESSAGE_PAGE_LIMIT = 100;
@@ -591,7 +591,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   regenerateMessage: async () => {
-    const { messages, sendMessage } = get();
+    const conversationId = get().currentConversationId;
+    if (!conversationId) return;
+    const messages = getConversationMessages(get(), conversationId);
+    const { sendMessage } = get();
     if (messages.length === 0) return;
 
     // Find the last user message to use as trigger
@@ -608,39 +611,22 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (lastUserMessageIndex === -1) return;
 
-    // We keep everything up to the last user message
-    const historyToKeep = messages.slice(0, lastUserMessageIndex + 1);
     const lastUserMessage = messages[lastUserMessageIndex];
 
-    // Optimistically set messages to history (removing the last user message too, as it will be re-added by sendMessage)
-    set((state) => ({
-      messages: historyToKeep.slice(0, -1),
-      messagesCache: {
-        ...state.messagesCache,
-        [state.currentConversationId!]: historyToKeep.slice(0, -1)
-      }
-    }));
-
-    // Identify assistant messages to delete (those after the user message)
-    const messagesToDelete = messages.slice(lastUserMessageIndex + 1);
-
-    // Delete them from server asynchronously
-    // We don't wait for this to finish to start generating, but we should fire and forget
-    messagesToDelete.forEach(m => {
-      api.delete(`/chat/messages/${m.id}`).catch(e => console.error('Failed to delete stale message:', toSafeError(e)));
-    });
-
-    // Also delete the user message from server to avoid duplicates when we re-send it
-    // But we MUST keep the content to re-send
     try {
-      await api.delete(`/chat/messages/${lastUserMessage.id}`);
+      await api.delete(
+        `/chat/conversations/${conversationId}/messages/${lastUserMessage.id}/truncate`,
+      );
     } catch (e) {
-      console.error('Failed to delete user message for regen:', toSafeError(e));
+      console.error('Failed to truncate conversation for regeneration:', toSafeError(e));
+      return;
     }
 
-    // Trigger sendMessage with the last user content
-    // We pass isRegenerate=true to handle this case cleanly if needed, or just standard send
-    await sendMessage(lastUserMessage.content);
+    updateConversationMessages(set, conversationId, (currentMessages) => {
+      const selectedIndex = currentMessages.findIndex((message) => message.id === lastUserMessage.id);
+      return selectedIndex === -1 ? currentMessages : currentMessages.slice(0, selectedIndex);
+    });
+    await sendMessage(lastUserMessage.content, false, conversationId);
   },
 
   stopGeneration: () => {
@@ -744,8 +730,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }
   },
 
-  sendMessage: async (content: string, isContinue = false) => {
-    const { currentConversationId } = get();
+  sendMessage: async (content: string, isContinue = false, targetConversationId?: string) => {
+    const currentConversationId = targetConversationId || get().currentConversationId;
     if (!currentConversationId) return;
     const messages = getConversationMessages(get(), currentConversationId);
 

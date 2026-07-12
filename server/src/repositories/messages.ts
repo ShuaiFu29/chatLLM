@@ -1,4 +1,4 @@
-import { query } from '../lib/db';
+import { query, withTransaction } from '../lib/db';
 import { ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { encodeMessageCursor, MessageCursor } from '../lib/messagePagination';
 
@@ -215,3 +215,39 @@ export const deleteMessageForUser = async (messageId: string, userId: string) =>
   );
   return rows.length > 0;
 };
+
+export const truncateConversationFromUserMessage = async (
+  conversationId: string,
+  messageId: string,
+  userId: string,
+  runInTransaction: typeof withTransaction = withTransaction
+) => runInTransaction(async (client) => {
+  const { rows: conversationRows } = await client.query<{ id: string }>(
+    `select id
+     from conversations
+     where id = $1 and user_id = $2
+     for update`,
+    [conversationId, userId]
+  );
+  if (!conversationRows[0]) return null;
+
+  const { rows: messageRows } = await client.query<Pick<MessageRow, 'id' | 'created_at'>>(
+    `select id, created_at
+     from messages
+     where id = $1
+       and conversation_id = $2
+       and role = 'user'
+     for update`,
+    [messageId, conversationId]
+  );
+  const selectedMessage = messageRows[0];
+  if (!selectedMessage) return null;
+
+  const { rowCount } = await client.query(
+    `delete from messages
+     where conversation_id = $1
+       and created_at >= $2`,
+    [conversationId, selectedMessage.created_at]
+  );
+  return { deletedCount: rowCount ?? 0 };
+});

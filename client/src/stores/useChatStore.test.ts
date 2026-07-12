@@ -448,3 +448,67 @@ describe('conversation request isolation', () => {
     expect(apiMock.get).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('conversation regeneration', () => {
+  test('truncate failure keeps the existing history and never starts a model stream', async () => {
+    const originalMessages = [
+      message('earlier', 'earlier answer'),
+      message('user-message', 'regenerate this', 'user'),
+      message('assistant-message', 'old answer'),
+    ];
+    apiMock.delete.mockRejectedValue(new Error('truncate failed'));
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => (
+      { ok: true, body: null } as Response
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: originalMessages,
+      messagesCache: { 'conversation-a': originalMessages },
+    });
+
+    await useChatStore.getState().regenerateMessage();
+
+    expect(apiMock.delete).toHaveBeenCalledTimes(1);
+    expect(apiMock.delete).toHaveBeenCalledWith(
+      '/chat/conversations/conversation-a/messages/user-message/truncate',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(useChatStore.getState().messages).toEqual(originalMessages);
+    expect(useChatStore.getState().messagesCache['conversation-a']).toEqual(originalMessages);
+  });
+
+  test('successful truncation sends regeneration to its captured conversation after switching away', async () => {
+    const truncateRequest = deferred<{ data: { success: boolean; deletedCount: number } }>();
+    const messageB = message('b', 'visible B');
+    const originalMessages = [
+      message('user-message', 'regenerate A', 'user'),
+      message('assistant-message', 'old answer A'),
+    ];
+    apiMock.delete.mockImplementation(() => truncateRequest.promise);
+    apiMock.get.mockResolvedValue({ data: [messageB], headers: {} });
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => (
+      { ok: true, body: null } as Response
+    ));
+    vi.stubGlobal('fetch', fetchMock);
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: originalMessages,
+      messagesCache: {
+        'conversation-a': originalMessages,
+        'conversation-b': [messageB],
+      },
+    });
+
+    const regeneration = useChatStore.getState().regenerateMessage();
+    await vi.waitFor(() => expect(apiMock.delete).toHaveBeenCalled());
+    await useChatStore.getState().selectConversation('conversation-b');
+    truncateRequest.resolve({ data: { success: true, deletedCount: 2 } });
+    await regeneration;
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/chat/conversations/conversation-a/messages');
+    expect(useChatStore.getState().currentConversationId).toBe('conversation-b');
+    expect(useChatStore.getState().messages).toEqual([messageB]);
+  });
+});
