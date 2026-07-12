@@ -5,6 +5,7 @@ export const MAX_MULTIPART_UPLOAD_PARTS = 10000;
 export const MAX_MULTIPART_PRESIGN_PARTS = 100;
 export const UPLOAD_HASH_ERROR = 'A valid SHA-256 file hash is required';
 export const UPLOAD_SIZE_ERROR = 'A valid file size is required';
+export const UPLOAD_TOO_LARGE_ERROR = 'Document exceeds the maximum allowed size';
 
 const DOCUMENT_CONTENT_TYPES = new Map([
   ['.md', 'text/markdown'],
@@ -42,8 +43,13 @@ export const parseUploadFileHash = (value: unknown): string | null => {
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;
 };
 
-export const parseUploadFileSize = (value: unknown): number | null =>
-  parseBoundedInteger(value, 1, Number.MAX_SAFE_INTEGER);
+export const parseUploadFileSize = (
+  value: unknown,
+  maxBytes = Number.MAX_SAFE_INTEGER
+): number | null => {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) return null;
+  return parseBoundedInteger(value, 1, maxBytes);
+};
 
 export const chooseMultipartPartSize = (
   fileSize: number,

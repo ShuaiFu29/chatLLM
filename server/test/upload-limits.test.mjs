@@ -51,7 +51,9 @@ function withMockedUploadController(overrides = {}) {
 
   mockModule('repositories/files.js', {
     createUploadFile: async () => ({ id: 'upload-1' }),
+    reserveUploadFile: async () => ({ file: { id: 'upload-1', status: 'uploading' }, created: true }),
     deleteFileForUser: async () => null,
+    findClaimedFileByUserAndHash: async () => null,
     findCompletedFileByUserAndHash: async () => null,
     findFileForUser: async () => null,
     findUploadingFileByUserAndHash: async () => null,
@@ -197,9 +199,9 @@ test('upload init rejects blank hashes before creating upload rows', async () =>
   let createCalled = false;
   const { controller, restore } = withMockedUploadController({
     files: {
-      createUploadFile: async () => {
+      reserveUploadFile: async () => {
         createCalled = true;
-        return { id: 'should-not-create' };
+        return { file: { id: 'should-not-create', status: 'uploading' }, created: true };
       },
     },
   });
@@ -226,13 +228,186 @@ test('upload init rejects blank hashes before creating upload rows', async () =>
   }
 });
 
+test('chunk upload rejects bytes outside the file reservation before writing to disk', async () => {
+  const uploadId = 'chunk-reservation-boundary';
+  const uploadDir = path.join(serverRoot, 'uploads', 'temp', uploadId);
+  rmSync(uploadDir, { recursive: true, force: true });
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      findFileForUser: async () => ({
+        id: uploadId,
+        user_id: 'user-1',
+        status: 'uploading',
+        file_size: 10,
+        reserved_bytes: 10,
+        storage_bytes: 0,
+      }),
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.uploadChunk({
+      user: { id: 'user-1' },
+      body: { uploadId, chunkIndex: '1' },
+      file: { buffer: Buffer.from('overflow') },
+    }, response);
+
+    assert.equal(response.statusCode, 413);
+    assert.equal(response.body.error, 'Chunk exceeds the reserved document size');
+    assert.equal(existsSync(uploadDir), false);
+  } finally {
+    restore();
+    rmSync(uploadDir, { recursive: true, force: true });
+  }
+});
+
+test('upload init rejects a document above the configured maximum before reserving quota', async () => {
+  const { serverEnv } = require(path.join(serverRoot, 'dist', 'lib', 'env.js'));
+  let reserveCalled = false;
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      reserveUploadFile: async () => {
+        reserveCalled = true;
+        return { file: { id: 'should-not-create', status: 'uploading' }, created: true };
+      },
+    },
+  });
+
+  try {
+    assert.equal(Number.isSafeInteger(serverEnv.MAX_DOCUMENT_BYTES), true);
+    const response = createResponse();
+    await controller.initUpload({
+      user: { id: 'user-1' },
+      body: {
+        filename: 'notes.md',
+        hash: 'a'.repeat(64),
+        size: serverEnv.MAX_DOCUMENT_BYTES + 1,
+      },
+    }, response);
+
+    assert.equal(response.statusCode, 413);
+    assert.equal(response.body.error, 'Document exceeds the maximum allowed size');
+    assert.equal(reserveCalled, false);
+  } finally {
+    restore();
+  }
+});
+
+test('upload init returns a stable non-reflective quota response', async () => {
+  const secret = 'postgres://secret-user:secret-password@private-database/chatllm';
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      reserveUploadFile: async () => {
+        throw Object.assign(new Error(secret), { code: 'USER_STORAGE_QUOTA_EXCEEDED' });
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.initUpload({
+      user: { id: 'user-1' },
+      body: { filename: 'notes.md', hash: 'a'.repeat(64), size: 10 },
+    }, response);
+
+    assert.equal(response.statusCode, 413);
+    assert.deepEqual(response.body, {
+      error: 'User storage quota exceeded',
+      details: 'User storage quota exceeded',
+    });
+    assert.doesNotMatch(JSON.stringify(response.body), /secret-password|private-database/);
+  } finally {
+    restore();
+  }
+});
+
+test('upload init reports an existing canonical file discovered inside the reservation transaction', async () => {
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      reserveUploadFile: async () => ({
+        file: { id: 'canonical-file', status: 'completed' },
+        created: false,
+      }),
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.initUpload({
+      user: { id: 'user-1' },
+      body: { filename: 'notes.md', hash: 'a'.repeat(64), size: 10 },
+    }, response);
+
+    assert.deepEqual(response.body, {
+      exists: true,
+      uploadNeeded: false,
+      uploadId: 'canonical-file',
+      projectSpaceId: 'default-user-1',
+    });
+  } finally {
+    restore();
+  }
+});
+
+test('legacy merge converts reserved bytes to measured storage bytes after integrity succeeds', async () => {
+  const content = '# valid\n';
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha256').update(content).digest('hex');
+  const uploadId = 'quota-success-upload';
+  const uploadDir = path.join(serverRoot, 'uploads', 'temp', uploadId);
+  const mergedPath = path.join(serverRoot, 'uploads', 'temp', `${uploadId}_merged`);
+  rmSync(uploadDir, { recursive: true, force: true });
+  rmSync(mergedPath, { force: true });
+  mkdirSync(uploadDir, { recursive: true });
+  writeFileSync(path.join(uploadDir, '0'), content);
+  const updates = [];
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      findFileForUser: async () => ({
+        id: uploadId,
+        user_id: 'user-1',
+        filename: 'notes.md',
+        file_hash: hash,
+        file_size: Buffer.byteLength(content),
+        file_type: 'text/markdown',
+        status: 'uploading',
+        progress: 0,
+        reserved_bytes: Buffer.byteLength(content),
+        storage_bytes: 0,
+      }),
+      updateFile: async (id, values) => {
+        updates.push({ id, values });
+        return null;
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.mergeChunks({
+      user: { id: 'user-1' },
+      body: { uploadId, filename: 'notes.md', totalChunks: '1' },
+    }, response);
+
+    assert.equal(response.body.success, true);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].values.reserved_bytes, 0);
+    assert.equal(updates[0].values.storage_bytes, Buffer.byteLength(content));
+  } finally {
+    restore();
+    rmSync(uploadDir, { recursive: true, force: true });
+    rmSync(mergedPath, { force: true });
+  }
+});
+
 test('upload init never exposes downstream exception text in public error details', async () => {
   const originalConsoleError = console.error;
   const logs = [];
   console.error = (...args) => logs.push(args);
   const { controller, restore } = withMockedUploadController({
     files: {
-      createUploadFile: async () => {
+      reserveUploadFile: async () => {
         throw new Error('exception-secret-value');
       },
     },
@@ -332,6 +507,8 @@ test('merge integrity failures mark the upload row failed instead of leaving it 
         status: 'failed',
         progress: 0,
         error_message: response.body.details,
+        reserved_bytes: 0,
+        storage_bytes: 0,
       },
     });
     assert.equal(uploadedToStorage, false);
@@ -339,6 +516,67 @@ test('merge integrity failures mark the upload row failed instead of leaving it 
     assert.equal(existsSync(uploadDir), false);
     assert.equal(existsSync(mergedPath), false);
   } finally {
+    restore();
+    rmSync(uploadDir, { recursive: true, force: true });
+    rmSync(mergedPath, { force: true });
+  }
+});
+
+test('legacy merge accounts for a stored object when database queueing fails', async () => {
+  const content = '# stored before database failure\n';
+  const { createHash } = await import('node:crypto');
+  const hash = createHash('sha256').update(content).digest('hex');
+  const uploadId = 'quota-db-failure-upload';
+  const uploadDir = path.join(serverRoot, 'uploads', 'temp', uploadId);
+  const mergedPath = path.join(serverRoot, 'uploads', 'temp', `${uploadId}_merged`);
+  rmSync(uploadDir, { recursive: true, force: true });
+  rmSync(mergedPath, { force: true });
+  mkdirSync(uploadDir, { recursive: true });
+  writeFileSync(path.join(uploadDir, '0'), content);
+  const updates = [];
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      findFileForUser: async () => ({
+        id: uploadId,
+        user_id: 'user-1',
+        filename: 'notes.md',
+        file_hash: hash,
+        file_size: Buffer.byteLength(content),
+        file_type: 'text/markdown',
+        status: 'uploading',
+        progress: 0,
+        reserved_bytes: Buffer.byteLength(content),
+        storage_bytes: 0,
+      }),
+      updateFile: async (id, values) => {
+        updates.push({ id, values });
+        if (updates.length === 1) throw new Error('database unavailable');
+        return null;
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.mergeChunks({
+      user: { id: 'user-1' },
+      body: { uploadId, filename: 'notes.md', totalChunks: '1' },
+    }, response);
+
+    assert.equal(response.statusCode, 500);
+    assert.equal(updates.length, 2);
+    assert.deepEqual(updates[1].values, {
+      status: 'failed',
+      object_key: 'document-key',
+      progress: 0,
+      error_message: 'Merge failed',
+      reserved_bytes: 0,
+      storage_bytes: Buffer.byteLength(content),
+    });
+  } finally {
+    console.error = originalConsoleError;
     restore();
     rmSync(uploadDir, { recursive: true, force: true });
     rmSync(mergedPath, { force: true });

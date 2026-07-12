@@ -115,23 +115,33 @@ export const presignMultipartUploadParts = async (
   key: string,
   uploadId: string,
   partNumbers: number[],
-  expiresIn: number
+  expiresIn: number,
+  reservation: { partSize: number; fileSize: number }
 ) => {
   await ensureBucket();
 
-  return Promise.all(partNumbers.map(async (partNumber) => ({
-    partNumber,
-    url: await getSignedUrl(
-      s3,
-      new UploadPartCommand({
-        Bucket: S3_BUCKET,
-        Key: key,
-        UploadId: uploadId,
-        PartNumber: partNumber,
-      }),
-      { expiresIn }
-    ),
-  })));
+  return Promise.all(partNumbers.map(async (partNumber) => {
+    const partOffset = (partNumber - 1) * reservation.partSize;
+    const contentLength = Math.min(reservation.partSize, reservation.fileSize - partOffset);
+    if (!Number.isSafeInteger(contentLength) || contentLength <= 0) {
+      throw new Error('Multipart part exceeds reserved object size');
+    }
+
+    return {
+      partNumber,
+      url: await getSignedUrl(
+        s3,
+        new UploadPartCommand({
+          Bucket: S3_BUCKET,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+          ContentLength: contentLength,
+        }),
+        { expiresIn }
+      ),
+    };
+  }));
 };
 
 export interface MultipartObjectPart {

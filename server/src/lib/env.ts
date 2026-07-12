@@ -45,6 +45,9 @@ const DEFAULT_CHAT_STREAM_MAX_CONCURRENT = 20;
 const DEFAULT_CHAT_STREAM_MAX_CONCURRENT_PER_USER = 3;
 const DEFAULT_MAINTENANCE_INTERVAL_MS = 60 * 60 * 1000;
 const DEFAULT_UPLOAD_TEMP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MAX_DOCUMENT_BYTES = 100 * 1024 * 1024;
+const DEFAULT_MAX_USER_STORAGE_BYTES = 10 * 1024 * 1024 * 1024;
+const DEFAULT_MAX_USER_ACTIVE_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MULTIPART_UPLOAD_PART_SIZE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS = 15 * 60;
 const DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -114,6 +117,9 @@ export interface ServerEnv {
   CHAT_STREAM_MAX_CONCURRENT_PER_USER: number;
   MAINTENANCE_INTERVAL_MS: number;
   UPLOAD_TEMP_MAX_AGE_MS: number;
+  MAX_DOCUMENT_BYTES: number;
+  MAX_USER_STORAGE_BYTES: number;
+  MAX_USER_ACTIVE_UPLOAD_BYTES: number;
   MULTIPART_UPLOAD_PART_SIZE_BYTES: number;
   MULTIPART_UPLOAD_URL_EXPIRES_SECONDS: number;
   MULTIPART_UPLOAD_SESSION_TTL_MS: number;
@@ -170,6 +176,29 @@ const getNonNegativeSafeInteger = (
   const parsed = Number(raw);
   if (!Number.isSafeInteger(parsed)) {
     errors.push(`${key} must be a non-negative safe integer`);
+    return defaultValue;
+  }
+
+  return parsed;
+};
+
+const getPositiveSafeInteger = (
+  env: NodeJS.ProcessEnv,
+  key: string,
+  defaultValue: number,
+  errors: string[]
+) => {
+  const raw = env[key]?.trim();
+  if (!raw) return defaultValue;
+
+  if (!/^[1-9]\d*$/.test(raw)) {
+    errors.push(`${key} must be a positive safe integer`);
+    return defaultValue;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed)) {
+    errors.push(`${key} must be a positive safe integer`);
     return defaultValue;
   }
 
@@ -257,6 +286,14 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const chatStreamMaxConcurrentPerUser = getPositiveInteger(env, 'CHAT_STREAM_MAX_CONCURRENT_PER_USER', DEFAULT_CHAT_STREAM_MAX_CONCURRENT_PER_USER, errors);
   const maintenanceIntervalMs = getPositiveInteger(env, 'MAINTENANCE_INTERVAL_MS', DEFAULT_MAINTENANCE_INTERVAL_MS, errors);
   const uploadTempMaxAgeMs = getPositiveInteger(env, 'UPLOAD_TEMP_MAX_AGE_MS', DEFAULT_UPLOAD_TEMP_MAX_AGE_MS, errors);
+  const maxDocumentBytes = getPositiveSafeInteger(env, 'MAX_DOCUMENT_BYTES', DEFAULT_MAX_DOCUMENT_BYTES, errors);
+  const maxUserStorageBytes = getPositiveSafeInteger(env, 'MAX_USER_STORAGE_BYTES', DEFAULT_MAX_USER_STORAGE_BYTES, errors);
+  const maxUserActiveUploadBytes = getPositiveSafeInteger(
+    env,
+    'MAX_USER_ACTIVE_UPLOAD_BYTES',
+    DEFAULT_MAX_USER_ACTIVE_UPLOAD_BYTES,
+    errors
+  );
   const multipartUploadPartSizeBytes = getPositiveInteger(env, 'MULTIPART_UPLOAD_PART_SIZE_BYTES', DEFAULT_MULTIPART_UPLOAD_PART_SIZE_BYTES, errors);
   const multipartUploadUrlExpiresSeconds = getPositiveInteger(env, 'MULTIPART_UPLOAD_URL_EXPIRES_SECONDS', DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS, errors);
   const multipartUploadSessionTtlMs = getPositiveInteger(env, 'MULTIPART_UPLOAD_SESSION_TTL_MS', DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS, errors);
@@ -338,6 +375,9 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     CHAT_STREAM_MAX_CONCURRENT_PER_USER: chatStreamMaxConcurrentPerUser,
     MAINTENANCE_INTERVAL_MS: maintenanceIntervalMs,
     UPLOAD_TEMP_MAX_AGE_MS: uploadTempMaxAgeMs,
+    MAX_DOCUMENT_BYTES: maxDocumentBytes,
+    MAX_USER_STORAGE_BYTES: maxUserStorageBytes,
+    MAX_USER_ACTIVE_UPLOAD_BYTES: maxUserActiveUploadBytes,
     MULTIPART_UPLOAD_PART_SIZE_BYTES: multipartUploadPartSizeBytes,
     MULTIPART_UPLOAD_URL_EXPIRES_SECONDS: multipartUploadUrlExpiresSeconds,
     MULTIPART_UPLOAD_SESSION_TTL_MS: multipartUploadSessionTtlMs,

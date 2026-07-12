@@ -11,13 +11,15 @@ export interface FileRow {
   file_size?: number | null;
   file_type?: string | null;
   object_key?: string | null;
-  status: 'uploading' | 'pending' | 'processing' | 'completed' | 'failed';
+  status: 'uploading' | 'pending' | 'processing' | 'completed' | 'failed' | 'deleting';
   progress: number;
   error_message?: string | null;
   attempts: number;
   max_attempts: number;
   next_attempt_at?: string | null;
   last_attempt_at?: string | null;
+  reserved_bytes: number | string;
+  storage_bytes: number | string;
   created_at: string;
   updated_at: string;
 }
@@ -38,75 +40,284 @@ const columns = `
   max_attempts,
   next_attempt_at,
   last_attempt_at,
+  reserved_bytes,
+  storage_bytes,
   created_at,
   updated_at
 `;
 
-export const findCompletedFileByUserAndHash = async (userId: string, hash: string, projectSpaceId?: string | null) => {
-  const values: unknown[] = [userId, hash];
-  let projectSpaceFilter = '';
+const claimedColumns = `
+  file.id,
+  file.user_id,
+  file.project_space_id,
+  file.filename,
+  file.file_hash,
+  file.file_size,
+  file.file_type,
+  file.object_key,
+  file.status,
+  file.progress,
+  file.error_message,
+  file.attempts,
+  file.max_attempts,
+  file.next_attempt_at,
+  file.last_attempt_at,
+  file.reserved_bytes,
+  file.storage_bytes,
+  file.created_at,
+  file.updated_at
+`;
 
-  if (projectSpaceId) {
-    values.push(projectSpaceId);
-    projectSpaceFilter = `and project_space_id = $${values.length}`;
-  }
+export const getFileContentScopeKey = (projectSpaceId?: string | null) => (
+  projectSpaceId || '__global__'
+);
 
+const findClaimedFileWithClient = async (
+  client: PoolClient,
+  userId: string,
+  hash: string,
+  projectSpaceId?: string | null
+) => {
+  const { rows } = await client.query<FileRow>(
+    `select ${claimedColumns}
+     from file_content_claims claim
+     join files file on file.id = claim.file_id
+     where claim.user_id = $1
+       and claim.scope_key = $2
+       and claim.file_hash = $3`,
+    [userId, getFileContentScopeKey(projectSpaceId), hash]
+  );
+  return rows[0] || null;
+};
+
+export const findClaimedFileByUserAndHash = async (
+  userId: string,
+  hash: string,
+  projectSpaceId?: string | null
+) => {
   const { rows } = await query<FileRow>(
-    `select ${columns}
-     from files
-     where user_id = $1 and file_hash = $2 and status = 'completed'
-       ${projectSpaceFilter}
-     order by created_at desc
-     limit 1`,
-    values
+    `select ${claimedColumns}
+     from file_content_claims claim
+     join files file on file.id = claim.file_id
+     where claim.user_id = $1
+       and claim.scope_key = $2
+       and claim.file_hash = $3`,
+    [userId, getFileContentScopeKey(projectSpaceId), hash]
   );
   return rows[0] || null;
 };
 
-export const findUploadingFileByUserAndHash = async (userId: string, hash: string, projectSpaceId?: string | null) => {
-  const values: unknown[] = [userId, hash];
-  let projectSpaceFilter = '';
-
-  if (projectSpaceId) {
-    values.push(projectSpaceId);
-    projectSpaceFilter = `and project_space_id = $${values.length}`;
-  }
-
-  const { rows } = await query<Pick<FileRow, 'id'>>(
-    `select id
-     from files
-     where user_id = $1 and file_hash = $2 and status = 'uploading'
-       ${projectSpaceFilter}
-     order by created_at desc
-     limit 1`,
-    values
-  );
-  return rows[0] || null;
+export const findCompletedFileByUserAndHash = async (
+  userId: string,
+  hash: string,
+  projectSpaceId?: string | null
+) => {
+  const file = await findClaimedFileByUserAndHash(userId, hash, projectSpaceId);
+  return file?.status === 'completed' ? file : null;
 };
 
-export const createUploadFile = async (input: {
+export const findUploadingFileByUserAndHash = async (
+  userId: string,
+  hash: string,
+  projectSpaceId?: string | null
+) => {
+  const file = await findClaimedFileByUserAndHash(userId, hash, projectSpaceId);
+  return file?.status === 'uploading' ? { id: file.id } : null;
+};
+
+export interface UploadReservationInput {
   userId: string;
   filename: string;
   hash: string;
-  size?: number;
+  size: number;
   type?: string;
   projectSpaceId?: string | null;
-}) => {
-  const { rows } = await query<FileRow>(
-    `insert into files (user_id, project_space_id, filename, file_hash, file_size, file_type, status, max_attempts)
-     values ($1, $2, $3, $4, $5, $6, 'uploading', $7)
-     returning ${columns}`,
-    [
-      input.userId,
-      input.projectSpaceId || null,
-      input.filename,
-      input.hash,
-      input.size || null,
-      input.type || null,
-      serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
-    ]
+}
+
+export interface UploadQuotaLimits {
+  maxDocumentBytes: number;
+  maxUserStorageBytes: number;
+  maxUserActiveUploadBytes: number;
+}
+
+export interface ReserveUploadFileOptions {
+  limits?: UploadQuotaLimits;
+  runInTransaction?: typeof withTransaction;
+}
+
+export type UploadReservationErrorCode =
+  | 'DOCUMENT_TOO_LARGE'
+  | 'USER_STORAGE_QUOTA_EXCEEDED'
+  | 'ACTIVE_UPLOAD_QUOTA_EXCEEDED'
+  | 'UPLOAD_USER_NOT_FOUND';
+
+export class UploadReservationError extends Error {
+  constructor(readonly code: UploadReservationErrorCode) {
+    super(code);
+    this.name = 'UploadReservationError';
+  }
+}
+
+const defaultUploadQuotaLimits = (): UploadQuotaLimits => ({
+  maxDocumentBytes: serverEnv.MAX_DOCUMENT_BYTES,
+  maxUserStorageBytes: serverEnv.MAX_USER_STORAGE_BYTES,
+  maxUserActiveUploadBytes: serverEnv.MAX_USER_ACTIVE_UPLOAD_BYTES,
+});
+
+const toByteCount = (value: unknown) => {
+  const parsed = BigInt(String(value ?? 0));
+  if (parsed < 0n) throw new Error('Invalid negative upload accounting value');
+  return parsed;
+};
+
+const ensureQuotaAvailable = async (
+  client: PoolClient,
+  userId: string,
+  additionalBytes: number,
+  limits: UploadQuotaLimits
+) => {
+  const { rows } = await client.query<{ storage_bytes: string; reserved_bytes: string }>(
+    `select
+       coalesce(sum(storage_bytes), 0)::text as storage_bytes,
+       coalesce(sum(reserved_bytes), 0)::text as reserved_bytes
+     from files
+     where user_id = $1
+       and (reserved_bytes > 0 or storage_bytes > 0)`,
+    [userId]
   );
-  return rows[0];
+  const storageBytes = toByteCount(rows[0]?.storage_bytes);
+  const reservedBytes = toByteCount(rows[0]?.reserved_bytes);
+  const requestedBytes = BigInt(additionalBytes);
+
+  if (reservedBytes + requestedBytes > BigInt(limits.maxUserActiveUploadBytes)) {
+    throw new UploadReservationError('ACTIVE_UPLOAD_QUOTA_EXCEEDED');
+  }
+  if (storageBytes + reservedBytes + requestedBytes > BigInt(limits.maxUserStorageBytes)) {
+    throw new UploadReservationError('USER_STORAGE_QUOTA_EXCEEDED');
+  }
+};
+
+export const reserveUploadFile = async (
+  input: UploadReservationInput,
+  options: ReserveUploadFileOptions = {}
+) => {
+  const limits = options.limits || defaultUploadQuotaLimits();
+  if (!Number.isSafeInteger(input.size) || input.size < 1) {
+    throw new Error('Invalid upload size');
+  }
+  if (input.size > limits.maxDocumentBytes) {
+    throw new UploadReservationError('DOCUMENT_TOO_LARGE');
+  }
+
+  const runInTransaction = options.runInTransaction || withTransaction;
+  return runInTransaction(async (client) => {
+    const user = await client.query<{ id: string }>(
+      `select id
+       from users
+       where id = $1
+       for update`,
+      [input.userId]
+    );
+    if (!user.rows[0]) throw new UploadReservationError('UPLOAD_USER_NOT_FOUND');
+
+    const claimed = await findClaimedFileWithClient(
+      client,
+      input.userId,
+      input.hash,
+      input.projectSpaceId
+    );
+    if (claimed) {
+      const canResumeUpload = !claimed.object_key
+        && (claimed.status === 'uploading' || claimed.status === 'failed');
+      if (!canResumeUpload) return { file: claimed, created: false };
+
+      const currentReservation = toByteCount(claimed.reserved_bytes);
+      const desiredReservation = BigInt(input.size);
+      if (desiredReservation > currentReservation) {
+        await ensureQuotaAvailable(
+          client,
+          input.userId,
+          Number(desiredReservation - currentReservation),
+          limits
+        );
+      }
+
+      if (claimed.status === 'failed' || desiredReservation !== currentReservation) {
+        const { rows } = await client.query<FileRow>(
+          `update files
+           set status = 'uploading',
+               filename = $2,
+               file_size = $3,
+               file_type = $4,
+               reserved_bytes = $5,
+               storage_bytes = 0,
+               progress = 0,
+               error_message = null,
+               updated_at = now()
+           where id = $1
+           returning ${columns}`,
+          [claimed.id, input.filename, input.size, input.type || null, input.size]
+        );
+        return { file: rows[0], created: false };
+      }
+
+      return { file: claimed, created: false };
+    }
+
+    await ensureQuotaAvailable(client, input.userId, input.size, limits);
+
+    const inserted = await client.query<FileRow>(
+      `insert into files (
+         user_id,
+         project_space_id,
+         filename,
+         file_hash,
+         file_size,
+         file_type,
+         status,
+         max_attempts,
+         reserved_bytes,
+         storage_bytes
+       )
+       values ($1, $2, $3, $4, $5, $6, 'uploading', $7, $8, 0)
+       returning ${columns}`,
+      [
+        input.userId,
+        input.projectSpaceId || null,
+        input.filename,
+        input.hash,
+        input.size,
+        input.type || null,
+        serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
+        input.size,
+      ]
+    );
+    const file = inserted.rows[0];
+
+    const claim = await client.query<{ file_id: string }>(
+      `insert into file_content_claims (user_id, scope_key, file_hash, file_id)
+       values ($1, $2, $3, $4)
+       on conflict do nothing
+       returning file_id`,
+      [input.userId, getFileContentScopeKey(input.projectSpaceId), input.hash, file.id]
+    );
+    if (claim.rows[0]) return { file, created: true };
+
+    const canonical = await findClaimedFileWithClient(
+      client,
+      input.userId,
+      input.hash,
+      input.projectSpaceId
+    );
+    await client.query('delete from files where id = $1', [file.id]);
+    if (!canonical) throw new Error('Canonical upload claim disappeared');
+    return { file: canonical, created: false };
+  });
+};
+
+export const createUploadFile = async (input: UploadReservationInput) => {
+  const reservation = await reserveUploadFile(input);
+  return reservation.file;
 };
 
 export const findFileForUser = async (fileId: string, userId: string) => {
@@ -151,7 +362,9 @@ export const updateFile = async (
     'attempts' |
     'max_attempts' |
     'next_attempt_at' |
-    'last_attempt_at'
+    'last_attempt_at' |
+    'reserved_bytes' |
+    'storage_bytes'
   >>
 ) => {
   const fields: string[] = ['updated_at = now()'];

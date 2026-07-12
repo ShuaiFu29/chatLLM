@@ -404,6 +404,52 @@ test('server env exposes configurable RAG cleanup timeout for destructive cleanu
   assert.equal(parseLastJsonLine(explicitResult.stdout), 30000);
 });
 
+test('server env exposes strict document and per-user upload byte budgets', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    MAX_DOCUMENT_BYTES: '104857600',
+    MAX_USER_STORAGE_BYTES: '1073741824',
+    MAX_USER_ACTIVE_UPLOAD_BYTES: '209715200',
+  }, `({
+    document: serverEnv.MAX_DOCUMENT_BYTES,
+    storage: serverEnv.MAX_USER_STORAGE_BYTES,
+    active: serverEnv.MAX_USER_ACTIVE_UPLOAD_BYTES
+  })`);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(parseLastJsonLine(result.stdout), {
+    document: 104857600,
+    storage: 1073741824,
+    active: 209715200,
+  });
+});
+
+test('server env rejects malformed or unsafe upload byte budgets', () => {
+  for (const [key, value] of [
+    ['MAX_DOCUMENT_BYTES', '10mb'],
+    ['MAX_USER_STORAGE_BYTES', '1.5'],
+    ['MAX_USER_ACTIVE_UPLOAD_BYTES', '9007199254740992'],
+  ]) {
+    const result = importServerEnv({
+      DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+      S3_ENDPOINT: 'http://localhost:9000',
+      S3_ACCESS_KEY: 'minioadmin',
+      S3_SECRET_KEY: 'minioadmin',
+      JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+      DEEPSEEK_API_KEY: 'sk-test',
+      [key]: value,
+    });
+
+    assert.notEqual(result.status, 0, `${key}=${value}`);
+    assert.match(result.stderr, new RegExp(`${key} must be a positive safe integer`));
+  }
+});
+
 test('server env exposes configurable RAG evaluation route rate limit', () => {
   const defaultResult = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',

@@ -52,7 +52,9 @@ function withMockedUploadController(overrides = {}) {
 
   mockModule('repositories/files.js', {
     createUploadFile: async () => ({ id: 'file-1' }),
+    reserveUploadFile: async () => ({ file: { id: 'file-1', status: 'uploading' }, created: true }),
     deleteFileForUser: async () => null,
+    findClaimedFileByUserAndHash: async () => null,
     findCompletedFileByUserAndHash: async () => null,
     findFileForUser: async () => null,
     findUploadingFileByUserAndHash: async () => null,
@@ -70,6 +72,7 @@ function withMockedUploadController(overrides = {}) {
     createMultipartUploadSession: async () => null,
     findActiveMultipartUploadSession: async () => null,
     findMultipartUploadSessionForUser: async () => null,
+    markMultipartUploadSessionCancelled: async () => null,
     markMultipartUploadSessionCompleted: async () => null,
     markMultipartUploadSessionCompleting: async () => null,
     markMultipartUploadSessionFailed: async () => null,
@@ -224,6 +227,8 @@ test('multipart completion marks the file pending only after storage completion 
         object_key: 'users/user-1/files/file-1/notes.md',
         progress: 0,
         error_message: null,
+        reserved_bytes: 0,
+        storage_bytes: 12,
       }],
       ['sessionCompleted', 'file-1'],
       ['queueTrigger'],
@@ -449,9 +454,194 @@ test('multipart completion preserves completed object key when database queueing
       object_key: 'users/user-1/files/file-1/notes.md',
       progress: 0,
       error_message: response.body.details,
+      reserved_bytes: 0,
+      storage_bytes: 12,
     }]);
     assert.equal(logs.length, 1);
     assert.doesNotMatch(JSON.stringify(logs), /database temporarily unavailable/);
+  } finally {
+    console.error = originalConsoleError;
+    restore();
+  }
+});
+
+test('multipart presigning rejects part numbers outside the reserved session', async () => {
+  let presignCalled = false;
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      findFileForUser: async () => ({ id: 'file-1', user_id: 'user-1', file_size: 12 }),
+    },
+    multipart: {
+      findMultipartUploadSessionForUser: async () => ({
+        file_id: 'file-1',
+        user_id: 'user-1',
+        object_key: 'document-key',
+        storage_upload_id: 'storage-upload-1',
+        part_size: 10,
+        total_parts: 2,
+        status: 'uploading',
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    },
+    storage: {
+      presignMultipartUploadParts: async () => {
+        presignCalled = true;
+        return [];
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.presignMultipartParts({
+      user: { id: 'user-1' },
+      body: { uploadId: 'file-1', partNumbers: [3] },
+    }, response);
+
+    assert.equal(response.statusCode, 400);
+    assert.equal(response.body.error, 'Part number exceeds reserved upload');
+    assert.equal(presignCalled, false);
+  } finally {
+    restore();
+  }
+});
+
+test('multipart presigned URLs bind each part to its reserved content length', async () => {
+  const calls = [];
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      findFileForUser: async () => ({ id: 'file-1', user_id: 'user-1', file_size: 12 }),
+    },
+    multipart: {
+      findMultipartUploadSessionForUser: async () => ({
+        file_id: 'file-1',
+        user_id: 'user-1',
+        object_key: 'document-key',
+        storage_upload_id: 'storage-upload-1',
+        part_size: 10,
+        total_parts: 2,
+        status: 'uploading',
+        expires_at: '2099-01-01T00:00:00.000Z',
+      }),
+    },
+    storage: {
+      presignMultipartUploadParts: async (...args) => {
+        calls.push(args);
+        return [];
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.presignMultipartParts({
+      user: { id: 'user-1' },
+      body: { uploadId: 'file-1', partNumbers: [1, 2] },
+    }, response);
+
+    assert.equal(response.statusCode, undefined);
+    assert.deepEqual(calls, [[
+      'document-key',
+      'storage-upload-1',
+      [1, 2],
+      900,
+      { partSize: 10, fileSize: 12 },
+    ]]);
+    const storageSource = readFileSync(path.join(serverRoot, 'src', 'lib', 'storage.ts'), 'utf8');
+    assert.match(storageSource, /ContentLength:\s*contentLength/);
+  } finally {
+    restore();
+  }
+});
+
+test('multipart abort releases reservation only after storage confirms the upload is absent', async () => {
+  const calls = [];
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      updateFile: async (id, updates) => {
+        calls.push(['updateFile', id, updates]);
+        return null;
+      },
+    },
+    multipart: {
+      findMultipartUploadSessionForUser: async () => ({
+        file_id: 'file-1',
+        user_id: 'user-1',
+        object_key: 'users/user-1/files/file-1/notes.md',
+        storage_upload_id: 'storage-upload-1',
+        status: 'uploading',
+      }),
+      markMultipartUploadSessionCancelled: async () => {
+        calls.push(['sessionCancelled']);
+      },
+    },
+    storage: {
+      abortMultipartObjectUpload: async () => {
+        calls.push(['storageAbort']);
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.abortMultipartUpload({
+      user: { id: 'user-1' },
+      body: { uploadId: 'file-1' },
+    }, response);
+
+    assert.equal(response.body.success, true);
+    assert.deepEqual(calls, [
+      ['storageAbort'],
+      ['sessionCancelled'],
+      ['updateFile', 'file-1', {
+        status: 'failed',
+        progress: 0,
+        error_message: 'Multipart upload cancelled',
+        reserved_bytes: 0,
+        storage_bytes: 0,
+      }],
+    ]);
+  } finally {
+    restore();
+  }
+});
+
+test('multipart abort keeps reservation when storage absence cannot be confirmed', async () => {
+  let updateCalled = false;
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  const { controller, restore } = withMockedUploadController({
+    files: {
+      updateFile: async () => {
+        updateCalled = true;
+        return null;
+      },
+    },
+    multipart: {
+      findMultipartUploadSessionForUser: async () => ({
+        file_id: 'file-1',
+        user_id: 'user-1',
+        object_key: 'users/user-1/files/file-1/notes.md',
+        storage_upload_id: 'storage-upload-1',
+        status: 'uploading',
+      }),
+    },
+    storage: {
+      abortMultipartObjectUpload: async () => {
+        throw new Error('ambiguous storage failure');
+      },
+    },
+  });
+
+  try {
+    const response = createResponse();
+    await controller.abortMultipartUpload({
+      user: { id: 'user-1' },
+      body: { uploadId: 'file-1' },
+    }, response);
+
+    assert.equal(response.statusCode, 500);
+    assert.equal(updateCalled, false);
   } finally {
     console.error = originalConsoleError;
     restore();

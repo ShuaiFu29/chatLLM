@@ -12,6 +12,7 @@ const {
   MAX_UPLOAD_CHUNKS,
   getSupportedDocumentContentType,
   parseUploadChunkIndex,
+  parseUploadFileSize,
   parseUploadTotalChunks,
 } = require(path.join(serverRoot, 'dist', 'lib', 'uploadInput.js'));
 
@@ -44,4 +45,11 @@ test('getSupportedDocumentContentType accepts markdown document names only', () 
   assert.equal(getSupportedDocumentContentType('paper.PDF'), null);
   assert.equal(getSupportedDocumentContentType('notes.txt'), null);
   assert.equal(getSupportedDocumentContentType(''), null);
+});
+
+test('parseUploadFileSize enforces the configured document byte ceiling', () => {
+  assert.equal(parseUploadFileSize(1, 10), 1);
+  assert.equal(parseUploadFileSize('10', 10), 10);
+  assert.equal(parseUploadFileSize(11, 10), null);
+  assert.equal(parseUploadFileSize(Number.MAX_SAFE_INTEGER, 10), null);
 });

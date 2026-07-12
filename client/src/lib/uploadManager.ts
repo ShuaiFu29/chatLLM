@@ -216,6 +216,10 @@ const uploadWithLegacyChunks = async (
       type: file.type,
       project_space_id: options?.projectSpaceId || undefined
     });
+    if (initData.exists || initData.uploadNeeded === false) {
+      onProgress({ status: 'completed', progress: 100, message: 'File already exists (Instant Upload)' });
+      return;
+    }
     uploadId = initData.uploadId;
   }
 
