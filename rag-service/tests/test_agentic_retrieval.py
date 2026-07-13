@@ -2,7 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agentic_retrieval import agentic_retrieve
+from agentic_retrieval import _select_diverse_documents, _source_depth_ids, agentic_retrieve
 from evaluation import evaluate_retrieval_quality
 from query_planner import plan_queries
 from retrieval_cache import InMemoryRetrievalCache
@@ -12,6 +12,87 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AgenticRetrievalTests(unittest.TestCase):
+    def test_agentic_retrieve_expands_exact_named_source_for_depth_question(self):
+        shallow = {
+            "id": "target-2",
+            "content": "字段概览",
+            "similarity": 0.9,
+            "metadata": {"filename": "06-FW-4.8.2固件变更说明.md", "file_id": "target", "chunk_index": 2},
+        }
+        depth_calls = []
+
+        def source_depth(user_id, project_space_id, file_ids, limit):
+            depth_calls.append((user_id, project_space_id, file_ids, limit))
+            return [
+                {
+                    "id": "target-1", "file_id": "target", "chunk_index": 1,
+                    "content": "普通固件背景", "filename": "06-FW-4.8.2固件变更说明.md",
+                    "project_space_id": "space-1", "metadata": {},
+                },
+                {
+                    "id": "target-5", "file_id": "target", "chunk_index": 5,
+                    "content": "诊断字段 OC_LOCK TEMP_DRIFT MOS_MARGIN WDG_TRACE",
+                    "filename": "06-FW-4.8.2固件变更说明.md",
+                    "project_space_id": "space-1", "metadata": {},
+                },
+            ]
+
+        result = agentic_retrieve(
+            "FW-4.8.2 新增哪些诊断字段？",
+            "user-1",
+            "space-1",
+            limit=2,
+            retrieve_fn=lambda *_args: [shallow],
+            rerank_fn=lambda _query, documents: sorted(documents, key=lambda item: item["id"], reverse=True),
+            source_depth_fn=source_depth,
+        )
+
+        self.assertEqual(depth_calls, [("user-1", "space-1", ["target"], 30)])
+        bundle = next(item for item in result["results"] if item["id"] == "source-depth:target")
+        self.assertNotIn("target-2", [item["id"] for item in result["results"]])
+        self.assertLess(bundle["content"].index("OC_LOCK"), bundle["content"].index("普通固件背景"))
+        self.assertEqual(bundle["metadata"]["source_depth_chunk_count"], 2)
+        depth_trace = next(step for step in result["trace_steps"] if step["step_type"] == "source_depth")
+        self.assertEqual(depth_trace["output"]["chunk_count"], 2)
+        self.assertEqual(depth_trace["output"]["bundle_count"], 1)
+
+    def test_diverse_selection_reserves_same_file_depth_for_enumeration_questions(self):
+        documents = [
+            {"id": "target-2", "content": "字段概览", "metadata": {"filename": "FW-4.8.2-firmware.md", "file_id": "target", "chunk_index": 2}},
+            {"id": "a", "content": "其他证据 A", "metadata": {"filename": "a.md", "file_id": "a", "chunk_index": 0}},
+            {"id": "b", "content": "其他证据 B", "metadata": {"filename": "b.md", "file_id": "b", "chunk_index": 0}},
+            {"id": "c", "content": "其他证据 C", "metadata": {"filename": "c.md", "file_id": "c", "chunk_index": 0}},
+            {"id": "target-5", "content": "OC_LOCK TEMP_DRIFT MOS_MARGIN WDG_TRACE", "metadata": {"filename": "FW-4.8.2-firmware.md", "file_id": "target", "chunk_index": 5}},
+        ]
+
+        deep = _select_diverse_documents(documents, 4, "FW-4.8.2 新增哪些诊断字段？")
+        ordinary = _select_diverse_documents(documents, 4, "固件变更背景是什么？")
+
+        self.assertEqual([item["id"] for item in deep], ["target-2", "a", "b", "target-5"])
+        self.assertEqual([item["id"] for item in ordinary], ["target-2", "a", "b", "c"])
+
+    def test_diverse_selection_prefers_content_specific_depth_over_filename_only_score(self):
+        documents = [
+            {"id": "overview", "content": "FW-4.8.2 升级日志背景", "metadata": {"filename": "FW-4.8.2.md", "file_id": "target", "chunk_index": 1}},
+            {"id": "a", "content": "其他证据 A", "metadata": {"filename": "a.md", "file_id": "a", "chunk_index": 0}},
+            {"id": "b", "content": "其他证据 B", "metadata": {"filename": "b.md", "file_id": "b", "chunk_index": 0}},
+            {"id": "release", "content": "升级前必须保留原始日志和旧板照片", "metadata": {"filename": "FW-4.8.2.md", "file_id": "target", "chunk_index": 4}},
+            {"id": "generic", "content": "升级后改善日志", "metadata": {"filename": "FW-4.8.2.md", "file_id": "target", "chunk_index": 6}},
+        ]
+
+        selected = _select_diverse_documents(documents, 4, "FW-4.8.2 升级前为什么要保留日志？")
+
+        self.assertIn("release", [item["id"] for item in selected])
+        self.assertNotIn("generic", [item["id"] for item in selected])
+
+    def test_source_depth_prefers_filename_marker_over_cross_references(self):
+        documents = [
+            {"id": "target", "content": "固件内容", "metadata": {"filename": "06-FW-4.8.2固件变更说明.md", "file_id": "target"}},
+            {"id": "reference", "content": "请参考 FW-4.8.2", "metadata": {"filename": "other.md", "file_id": "reference"}},
+        ]
+
+        self.assertEqual(_source_depth_ids("FW-4.8.2 有哪些字段？", documents), ["target"])
+
     def test_agentic_retrieve_reports_query_cache_write_failure_without_failing_retrieval(self):
         class FailingWriteCache(InMemoryRetrievalCache):
             def upsert_query_cache(self, *args, **kwargs):

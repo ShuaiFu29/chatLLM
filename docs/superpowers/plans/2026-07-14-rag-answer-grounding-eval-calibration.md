@@ -22,6 +22,7 @@
 ## Phase 3: Issue documentation and complete regression
 
 10. Create detailed local `ISSUE-064-rag-final-answer-citation-attrition.md` and `ISSUE-065-rag-final-answer-evaluation-calibration.md`, following the full 061–063 causal-analysis structure and recording the pre-fix baseline.
+    - Implementation clarification: use a frozen JSON sidecar for structured obligations, record retrieval/prompt/model/verifier/final citation stages, and use scoped exact-marker source bundles instead of arbitrary same-file chunk selection.
 11. Restart only changed services, then run the same 50-case generation and offline scoring configuration.
 12. Diagnose every failed acceptance gate by per-case reason; continue implementation until the fixed gates pass without lowering thresholds.
 13. Run full `npm test`, lint, build, static checks, and diff checks.

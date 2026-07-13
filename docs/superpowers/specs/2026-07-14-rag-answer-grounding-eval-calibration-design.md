@@ -6,6 +6,14 @@
 
 **Scope:** Repair final-answer evidence use and citation attrition after retrieval, and add an auditable offline answer-quality scorer that separates genuine answer defects from evaluation false negatives. The design preserves the existing chat, retrieval, storage, and public API architecture.
 
+## Implementation Clarification After Empirical Review
+
+The flat Markdown answer table remains the human-readable source, while a frozen JSON sidecar records only structure the table cannot safely express: required versus optional concepts, declared equivalents, numeric/version/polarity roles, and `requiredAll`/`requiredAny` source obligations. The sidecar is read only after generation and its hash is recorded in the score report.
+
+Citation attrition is reported as first-failure stages: retrieval miss, context omission, model citation omission, verifier rejection, and artifact loss. A source obligation is counted once at its earliest failed stage.
+
+When a question explicitly names an exact document, version, or case marker, retrieval may load bounded chunks only for an already retrieved file in the same user and project-space scope. Those chunks are relevance-ordered into one source-depth bundle that replaces partial chunks from the same file. This prevents later sections from disappearing while preserving source identity and authorization boundaries.
+
 ## Problem Statement
 
 The isolated intelligent-manufacturing evaluation ingested only the 24 Markdown files under `rag-demo/智能制造质量追溯与供应链索赔争议/corpus/`. The answer pack remained outside PostgreSQL, MinIO, Milvus, Elasticsearch, Neo4j, and all answer-generation prompts.

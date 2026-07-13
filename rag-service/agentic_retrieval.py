@@ -6,8 +6,8 @@ from typing import Callable
 from evaluation import evaluate_retrieval_quality
 from evidence_verifier import assess_query_risk, verify_evidence_support
 from query_planner import plan_queries
-from db import list_files_for_inventory
-from reranker import classify_source_role, query_requests_evaluation_guide, rerank_documents
+from db import list_file_chunks_for_sources, list_files_for_inventory
+from reranker import classify_source_role, extract_exact_markers, query_requests_evaluation_guide, rerank_documents
 from retrieval import retrieve_documents
 from retrieval_cache import (
     CONVERSATION_EVIDENCE_THRESHOLD,
@@ -21,8 +21,10 @@ from retrieval_cache import (
 RetrieveFn = Callable[[str, str, str | None, int, float], list[dict]]
 RerankFn = Callable[[str, list[dict]], list[dict]]
 InventoryFn = Callable[[str, str | None, int], list[dict]]
+SourceDepthFn = Callable[[str, str | None, list[str], int], list[dict]]
 
 INVENTORY_RESULT_LIMIT = 500
+SOURCE_DEPTH_CHUNK_LIMIT = 30
 
 
 def _now_ms() -> int:
@@ -51,6 +53,100 @@ def _document_key(document: dict) -> str:
 def _source_key(document: dict) -> str:
     metadata = document.get("metadata") or {}
     return str(metadata.get("file_id") or metadata.get("filename") or document.get("id") or "")
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        uuid.UUID(str(value))
+        return True
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def _query_requests_source_depth(query: str) -> bool:
+    normalized_query = "".join(str(query or "").lower().split())
+    return any(term in normalized_query for term in (
+        "哪些", "有哪些", "包含", "包括", "字段", "如何计算", "怎么计算", "公式", "权重", "步骤", "条件", "为什么",
+        "which", "list", "fields", "calculate", "formula", "steps", "conditions", "why",
+    ))
+
+
+def _source_depth_ids(query: str, documents: list[dict]) -> list[str]:
+    all_markers = {marker.lower() for marker in extract_exact_markers(query)}
+    query_markers = {
+        marker for marker in all_markers
+        if not any(marker != other and other.startswith(marker) for other in all_markers)
+    }
+    if not query_markers:
+        return []
+
+    filename_matching_ids: list[str] = []
+    content_matching_ids: list[str] = []
+    for document in documents:
+        metadata = document.get("metadata") or {}
+        filename = str(metadata.get("filename") or document.get("filename") or "").lower()
+        content = str(document.get("content") or "").lower()
+        file_id = str(metadata.get("file_id") or document.get("file_id") or "")
+        if not file_id:
+            continue
+        if any(marker in filename for marker in query_markers) and file_id not in filename_matching_ids:
+            filename_matching_ids.append(file_id)
+        elif any(marker in content for marker in query_markers) and file_id not in content_matching_ids:
+            content_matching_ids.append(file_id)
+    return filename_matching_ids or content_matching_ids
+
+
+def _depth_content_score(query: str, document: dict) -> int:
+    content = "".join(str(document.get("content") or "").lower().split())
+    normalized_query = "".join(str(query or "").lower().split())
+    query_terms: set[str] = set(re.findall(r"[a-z0-9][a-z0-9.+-]{1,}|[\u4e00-\u9fff]{2,}", normalized_query))
+    for token in list(query_terms):
+        if re.fullmatch(r"[\u4e00-\u9fff]{2,}", token):
+            for size in (2, 3, 4):
+                query_terms.update(token[index:index + size] for index in range(max(0, len(token) - size + 1)))
+    return sum(1 for term in query_terms if term and term in content)
+
+
+def _source_depth_documents(query: str, rows: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        file_id = str(row.get("file_id") or (row.get("metadata") or {}).get("file_id") or "")
+        if file_id:
+            grouped.setdefault(file_id, []).append(row)
+
+    documents: list[dict] = []
+    for file_id, source_rows in grouped.items():
+        ordered_rows = sorted(
+            source_rows,
+            key=lambda item: (
+                -_depth_content_score(query, {"content": item.get("content")}),
+                int(item.get("chunk_index") or 0),
+            ),
+        )
+        first = ordered_rows[0]
+        metadata = dict(first.get("metadata") or {})
+        metadata.update({
+            "filename": first.get("filename") or metadata.get("filename"),
+            "file_id": file_id,
+            "chunk_index": None,
+            "project_space_id": str(first.get("project_space_id")) if first.get("project_space_id") else None,
+            "retrieval_mode": "source_depth",
+            "source_depth_chunk_count": len(ordered_rows),
+        })
+        content = "\n\n".join(
+            f"[Chunk {row.get('chunk_index')}]\n{str(row.get('content') or '').strip()}"
+            for row in ordered_rows
+            if str(row.get("content") or "").strip()
+        )
+        documents.append({
+            "id": f"source-depth:{file_id}",
+            "content": content,
+            "metadata": metadata,
+            "similarity": 0.0,
+            "retrieval_score": 0.0,
+            "retrieval_channels": ["source_depth"],
+        })
+    return documents
 
 
 def _retrieval_channel_summary(documents: list[dict]) -> dict:
@@ -127,6 +223,9 @@ def _select_diverse_documents(ranked_documents: list[dict], limit: int, query: s
     guide_documents = [document for document in ranked_documents if classify_source_role(document) == "evaluation_guide"]
     guide_requested = query_requests_evaluation_guide(query)
     ordered_documents = ranked_documents if guide_requested else primary_documents + guide_documents
+    depth_requested = _query_requests_source_depth(query)
+    depth_slots = min(3, max(1, limit // 3)) if depth_requested and limit >= 3 else 0
+    unique_source_limit = max(1, limit - depth_slots)
 
     selected: list[dict] = []
     selected_keys: set[str] = set()
@@ -135,7 +234,7 @@ def _select_diverse_documents(ranked_documents: list[dict], limit: int, query: s
     if limit >= 4 and not guide_requested:
         selected_facets: set[str] = set()
         available_facets = {_document_facet(document) for document in primary_documents}
-        target_facet_count = min(limit, len(available_facets), 6)
+        target_facet_count = min(unique_source_limit, len(available_facets), 6)
         for document in primary_documents:
             source_key = _source_key(document)
             document_key = _document_key(document)
@@ -161,8 +260,43 @@ def _select_diverse_documents(ranked_documents: list[dict], limit: int, query: s
         selected.append(document)
         selected_keys.add(source_key)
         selected_document_keys.add(document_key)
-        if len(selected) >= limit:
-            return selected
+        if len(selected) >= unique_source_limit:
+            break
+
+    if depth_slots:
+        query_markers = {marker.lower() for marker in extract_exact_markers(query)}
+        preferred_source_keys = {
+            _source_key(document)
+            for document in selected
+            if any(
+                marker in str((document.get("metadata") or {}).get("filename") or "").lower()
+                for marker in query_markers
+            )
+        }
+        ranked_depth_documents = sorted(
+            enumerate(ordered_documents),
+            key=lambda item: (-_depth_content_score(query, item[1]), item[0]),
+        )
+        depth_documents = [document for _, document in ranked_depth_documents]
+        for preferred_only in (True, False):
+            for document in depth_documents:
+                source_key = _source_key(document)
+                document_key = _document_key(document)
+                if source_key not in selected_keys:
+                    continue
+                if preferred_only and preferred_source_keys and source_key not in preferred_source_keys:
+                    continue
+                if not preferred_only and preferred_source_keys and source_key in preferred_source_keys:
+                    continue
+                if document_key in selected_document_keys:
+                    continue
+                selected.append(document)
+                selected_document_keys.add(document_key)
+                if len(selected) >= limit:
+                    return selected
+
+    if len(selected) >= limit:
+        return selected
 
     for document in ordered_documents:
         document_key = _document_key(document)
@@ -542,6 +676,7 @@ def agentic_retrieve(
     rerank_fn: RerankFn = default_rerank_documents,
     inventory_fn: InventoryFn = list_files_for_inventory,
     cache_store: RetrievalCacheStore | None = None,
+    source_depth_fn: SourceDepthFn = list_file_chunks_for_sources,
 ) -> dict:
     run_id = str(uuid.uuid4())
     trace_steps: list[dict] = []
@@ -997,6 +1132,37 @@ def agentic_retrieve(
             },
         ))
         _merge_documents(merged_by_key, documents, retry_query)
+
+    source_depth_ids = _source_depth_ids(query, list(merged_by_key.values()))
+    if source_depth_fn is list_file_chunks_for_sources:
+        source_depth_ids = [
+            file_id for file_id in source_depth_ids
+            if _is_uuid(file_id)
+        ]
+    if source_depth_ids:
+        started_at = _now_ms()
+        depth_rows = source_depth_fn(
+            user_id,
+            project_space_id,
+            source_depth_ids,
+            SOURCE_DEPTH_CHUNK_LIMIT,
+        )
+        depth_documents = _source_depth_documents(query, depth_rows)
+        for document_key, document in list(merged_by_key.items()):
+            if _source_key(document) in source_depth_ids:
+                del merged_by_key[document_key]
+        _merge_documents(merged_by_key, depth_documents, query)
+        trace_steps.append(_trace_step(
+            "source_depth",
+            "success" if depth_documents else "partial",
+            started_at,
+            {
+                "file_ids": source_depth_ids,
+                "project_space_id": project_space_id,
+                "limit": SOURCE_DEPTH_CHUNK_LIMIT,
+            },
+            {"chunk_count": len(depth_rows), "bundle_count": len(depth_documents)},
+        ))
 
     started_at = _now_ms()
     reranker_name = "local-evidence" if rerank_fn is default_rerank_documents else "custom"

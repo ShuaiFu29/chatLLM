@@ -758,6 +758,43 @@ def get_chunks_by_ids(chunk_ids: Iterable[str]) -> list[dict]:
     return [by_id[str(chunk_id)] for chunk_id in ids if str(chunk_id) in by_id]
 
 
+def list_file_chunks_for_sources(
+    user_id: str,
+    project_space_id: str | None,
+    file_ids: Iterable[str],
+    limit: int = 30,
+) -> list[dict]:
+    """Load bounded chunks for already-retrieved sources within the caller's scope."""
+    source_ids = list(dict.fromkeys(str(file_id) for file_id in file_ids if str(file_id).strip()))
+    if not source_ids or limit <= 0:
+        return []
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select
+                  file_chunks.id,
+                  file_chunks.file_id,
+                  file_chunks.user_id,
+                  file_chunks.chunk_index,
+                  file_chunks.content,
+                  file_chunks.metadata,
+                  files.project_space_id,
+                  files.filename
+                from file_chunks
+                join files on files.id = file_chunks.file_id
+                where file_chunks.user_id::text = %s
+                  and file_chunks.file_id = any(%s::uuid[])
+                  and (%s::text is null or files.project_space_id::text = %s)
+                order by files.filename asc, file_chunks.chunk_index asc
+                limit %s
+                """,
+                (user_id, source_ids, project_space_id, project_space_id, limit),
+            )
+            return cur.fetchall()
+
+
 def search_chunks_by_text(query: str, user_id: str, project_space_id: str | None = None, limit: int = 20) -> list[dict]:
     if not query.strip():
         return []

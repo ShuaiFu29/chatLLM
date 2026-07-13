@@ -7,7 +7,9 @@ import {
 } from '../lib/llmProviders';
 import {
   buildChatSources,
-  buildRagContextText,
+  buildAnswerTaskGuidance,
+  buildRagContext,
+  buildVerificationSources,
   ChatSource,
   RagTraceStep,
   RagTraceSummary,
@@ -382,6 +384,7 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     let contextText = '';
     let assistantSources: ChatSource[] = [];
+    let verificationSources: ChatSource[] = [];
     let agenticRagRun: AgenticRagResponse | null = null;
     let traceSummary: RagTraceSummary | null = null;
     let insufficientEvidence = false;
@@ -416,9 +419,27 @@ export const sendMessage = async (req: Request, res: Response) => {
         answerGuidance = agenticRagRun.answer_guidance || '';
 
         if (documents && documents.length > 0) {
-          contextText = buildRagContextText(documents);
-
+          const contextBuild = buildRagContext(documents);
+          contextText = contextBuild.text;
           assistantSources = buildChatSources(documents);
+          verificationSources = buildVerificationSources(documents);
+          const contextStep: RagTraceStep = {
+            step_type: 'answer_context_pack',
+            status: contextBuild.allocations.some((item) => item.truncated) ? 'partial' : 'success',
+            duration_ms: 0,
+            input: {
+              document_count: documents.length,
+              context_budget: 12000,
+            },
+            output: {
+              context_length: contextBuild.text.length,
+              source_map: contextBuild.source_map,
+              allocations: contextBuild.allocations,
+            },
+          };
+          traceSummary = traceSummary
+            ? { ...traceSummary, trace_steps: [...traceSummary.trace_steps, contextStep] }
+            : traceSummary;
         }
         // This is JSON-encoded SSE under text/event-stream, never an HTML response.
         // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
@@ -454,10 +475,16 @@ export const sendMessage = async (req: Request, res: Response) => {
         const evidenceGuidance = answerGuidance
           ? `${answerGuidance}\n\n`
           : '';
-        messages[lastMsgIndex].content = `${evidenceGuidance}Based on the following context, please answer the user's question.
+        const taskGuidance = buildAnswerTaskGuidance(originalContent);
+        messages[lastMsgIndex].content = `${evidenceGuidance}${taskGuidance}\n\nBased on the following context, please answer the user's question.
 If the answer is not in the context, say that the retrieved source material is insufficient.
 Do not use general knowledge as document evidence, and do not attach citations to claims that are not supported by the context.
 Use source labels such as [Source 1] only when the claim is directly supported by that source.
+Answer every explicit part of the question instead of stopping after the first relevant fact.
+Answer in the same language as the user's question unless the user explicitly requests another language.
+Preserve material numbers, units, versions, dates, conditions, exceptions, and negation exactly as supported by the sources.
+Place a source label immediately after each substantive document-backed claim; do not use one citation group to cover unrelated claims.
+Distinguish current rules from deprecated or historical material, and do not turn a control measure into proof that every root cause is resolved.
 Inventory rows are context for document-list questions; do not treat them as document evidence citations.
 Do not mention "Based on the provided context" or similar phrases in your answer unless necessary to clarify source limits.
 
@@ -499,7 +526,7 @@ ${originalContent}`;
 
     if (fullContent) {
       let finalAssistantSources = assistantSources;
-      let finalTraceSteps = agenticRagRun?.trace_steps || [];
+      let finalTraceSteps = traceSummary?.trace_steps || agenticRagRun?.trace_steps || [];
       let finalQuality = agenticRagRun?.quality;
       let finalTraceSummary = traceSummary;
 
@@ -509,7 +536,8 @@ ${originalContent}`;
           fullContent,
           assistantSources,
           agenticRagRun.quality,
-          insufficientEvidence
+          insufficientEvidence,
+          verificationSources
         );
         finalAssistantSources = answerGrounding.verified_sources;
         const groundingStep: RagTraceStep = {

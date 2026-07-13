@@ -1,9 +1,13 @@
 import unittest
 
-from reranker import classify_source_role, query_requests_evaluation_guide, rerank_documents
+from reranker import classify_source_role, extract_exact_markers, query_requests_evaluation_guide, rerank_documents
 
 
 class RerankerTests(unittest.TestCase):
+    def test_exact_marker_preserves_full_dotted_version(self):
+        self.assertIn("FW-4.8.2", extract_exact_markers("FW-4.8.2 新增哪些诊断字段？"))
+        self.assertNotIn("FW-4", extract_exact_markers("FW-4.8.2 新增哪些诊断字段？"))
+
     def test_default_reranker_preserves_pre_rank_and_scores_overlap(self):
         documents = [
             {

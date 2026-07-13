@@ -4,7 +4,7 @@ import re
 EXACT_MARKER_RE = re.compile(
     r"T\+\d+"
     r"|\d{4}-\d{2}-\d{2}"
-    r"|[A-Za-z]+(?:-[A-Za-z0-9]+)+"
+    r"|[A-Za-z0-9]+(?:-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)+"
     r"|\d+(?:\.\d+)?\s?(?:MW|KW|MWH|KWH|%)",
     re.IGNORECASE,
 )

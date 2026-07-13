@@ -106,12 +106,16 @@ test('chat controller verifies generated answers before persisting RAG citations
   assert.match(chatSource, /answer_grounding_check/);
   assert.match(chatSource, /finalAssistantSources/);
   assert.match(chatSource, /verified_sources/);
+  assert.match(chatSource, /buildVerificationSources\(documents\)/);
+  assert.match(chatSource, /verificationSources/);
 });
 
 test('chat controller uses labeled RAG context and source-label citation rules', () => {
   const chatSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
 
-  assert.match(chatSource, /buildRagContextText\(documents\)/);
+  assert.match(chatSource, /buildRagContext\(documents\)/);
   assert.match(chatSource, /Use source labels such as \[Source 1\]/);
+  assert.match(chatSource, /Answer every explicit part/i);
+  assert.match(chatSource, /numbers, units, versions, dates, conditions, exceptions, and negation/i);
   assert.match(chatSource, /Inventory rows are context/);
 });
