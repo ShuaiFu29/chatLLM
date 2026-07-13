@@ -3,6 +3,7 @@ import urllib.error
 import urllib.request
 
 from config import settings
+from http_safety import validate_http_url
 
 
 def _batched(rows: list[dict], batch_size: int):
@@ -23,14 +24,20 @@ def _request(method: str, path: str, body: dict | str | None = None) -> dict:
         else:
             data = json.dumps(body).encode("utf-8")
 
-    request = urllib.request.Request(
+    url = validate_http_url(
         f"{settings.elasticsearch_url.rstrip('/')}/{path.lstrip('/')}",
+        "ELASTICSEARCH_URL",
+    )
+    request = urllib.request.Request(
+        url,
         data=data,
         headers=headers,
         method=method,
     )
     timeout_seconds = settings.elasticsearch_timeout_ms / 1000
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    # validate_http_url restricts the request to HTTP(S) before transport.
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:  # nosec B310
         raw = response.read().decode("utf-8")
         return json.loads(raw) if raw else {}
 

@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from typing import Any
 from urllib import error, request
 
+from http_safety import validate_http_url
+
 
 class CompatibleApiError(RuntimeError):
     def __init__(self, status_code: int, response_body: str):
@@ -12,7 +14,7 @@ class CompatibleApiError(RuntimeError):
 
 
 def post_json(base_url: str, api_key: str, path: str, payload: dict[str, Any], timeout: float = 60.0) -> dict[str, Any]:
-    url = f"{base_url.rstrip('/')}{path}"
+    url = validate_http_url(f"{base_url.rstrip('/')}{path}", "Compatible API URL")
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -21,7 +23,9 @@ def post_json(base_url: str, api_key: str, path: str, payload: dict[str, Any], t
     req = request.Request(url, data=body, headers=headers, method="POST")
 
     try:
-        with request.urlopen(req, timeout=timeout) as response:
+        # validate_http_url restricts the request to HTTP(S) before transport.
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        with request.urlopen(req, timeout=timeout) as response:  # nosec B310
             return json.loads(response.read().decode("utf-8"))
     except error.HTTPError as exc:
         response_body = exc.read().decode("utf-8", errors="replace")

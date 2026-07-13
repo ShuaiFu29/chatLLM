@@ -203,6 +203,22 @@ test('buildOpsTargets reads RAG credentials from injected server and RAG env map
   );
 });
 
+test('buildOpsTargets does not read env files when both operator tokens are explicit', () => {
+  const forbiddenEnvFiles = {};
+  Object.defineProperties(forbiddenEnvFiles, {
+    serverEnv: { get: () => { throw new Error('server env file was read'); } },
+    ragEnv: { get: () => { throw new Error('rag env file was read'); } },
+  });
+
+  assert.doesNotThrow(() => buildOpsTargets({
+    OPS_BACKEND_URL: 'http://localhost:3000',
+    OPS_RAG_URL: 'http://localhost:8000',
+    OPS_METRICS_TOKEN: 'explicit-metrics-token',
+    OPS_RAG_TOKEN: 'explicit-rag-token',
+    OPS_SKIP_INFRA: 'true',
+  }, forbiddenEnvFiles));
+});
+
 test('buildOpsTargets can skip external infrastructure checks for app-only smoke', () => {
   const targets = buildOpsTargets({
     ...testOpsEnv,

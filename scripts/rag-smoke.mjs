@@ -25,6 +25,7 @@ const smokeDocument = Buffer.from(
 );
 
 function parseEnv(filePath) {
+  if (!fs.existsSync(filePath)) return {};
   const env = {};
   const content = fs.readFileSync(filePath, 'utf8');
 
@@ -61,13 +62,13 @@ function findFreePort() {
   });
 }
 
-async function waitForJson(url, timeoutMs) {
+async function waitForJson(url, timeoutMs, init = {}) {
   const startedAt = Date.now();
   let lastError;
 
   while (Date.now() - startedAt < timeoutMs) {
     try {
-      const response = await fetch(url);
+      const response = await fetch(url, init);
       const body = await response.json();
       if (response.ok) return body;
       lastError = new Error(`${response.status} ${JSON.stringify(body)}`);
@@ -89,30 +90,44 @@ async function ensureBucket(s3, bucket) {
 }
 
 async function main() {
-  const serverEnv = parseEnv(path.join(rootDir, 'server', '.env'));
-  const ragEnv = parseEnv(path.join(rootDir, 'rag-service', '.env'));
+  const skipEnvFiles = process.env.RAG_SMOKE_SKIP_ENV_FILES === 'true';
+  const serverEnv = skipEnvFiles ? {} : parseEnv(path.join(rootDir, 'server', '.env'));
+  const ragEnv = skipEnvFiles ? {} : parseEnv(path.join(rootDir, 'rag-service', '.env'));
+  const configuredValue = (key, fallback = '') => (
+    process.env[key] || serverEnv[key] || ragEnv[key] || fallback
+  );
   const port = Number(process.env.RAG_SMOKE_PORT || await findFreePort());
   const ragUrl = `http://127.0.0.1:${port}`;
   const collection = process.env.RAG_SMOKE_COLLECTION
-    || `${ragEnv.MILVUS_COLLECTION || 'document_chunks'}_local_smoke`;
-  const bucket = serverEnv.S3_BUCKET || ragEnv.S3_BUCKET || 'documents';
+    || `${configuredValue('MILVUS_COLLECTION', 'document_chunks')}_local_smoke`;
+  const bucket = configuredValue('S3_BUCKET', 'documents');
+  const ragToken = configuredValue('RAG_SERVICE_TOKEN');
+  if (ragToken.length < 32) {
+    throw new Error('RAG_SERVICE_TOKEN must be configured with at least 32 characters for smoke tests');
+  }
+  const ragHeaders = {
+    'content-type': 'application/json',
+    'X-ChatLLM-RAG-Token': ragToken,
+  };
   const fileId = crypto.randomUUID();
   const userId = crypto.randomUUID();
   const projectSpaceId = crypto.randomUUID();
+  const attemptId = crypto.randomUUID();
+  const leaseToken = crypto.randomUUID();
   const objectKey = `e2e-smoke/${fileId}.md`;
   const githubId = Number(`${Date.now()}`.slice(-12));
 
   const s3 = new S3Client({
-    endpoint: serverEnv.S3_ENDPOINT || ragEnv.S3_ENDPOINT,
-    region: serverEnv.S3_REGION || ragEnv.S3_REGION || 'us-east-1',
-    forcePathStyle: ((serverEnv.S3_FORCE_PATH_STYLE || ragEnv.S3_FORCE_PATH_STYLE || 'true').toLowerCase() !== 'false'),
+    endpoint: configuredValue('S3_ENDPOINT'),
+    region: configuredValue('S3_REGION', 'us-east-1'),
+    forcePathStyle: (configuredValue('S3_FORCE_PATH_STYLE', 'true').toLowerCase() !== 'false'),
     credentials: {
-      accessKeyId: serverEnv.S3_ACCESS_KEY || ragEnv.S3_ACCESS_KEY,
-      secretAccessKey: serverEnv.S3_SECRET_KEY || ragEnv.S3_SECRET_KEY,
+      accessKeyId: configuredValue('S3_ACCESS_KEY'),
+      secretAccessKey: configuredValue('S3_SECRET_KEY'),
     },
   });
 
-  const db = new Client({ connectionString: serverEnv.DATABASE_URL || ragEnv.DATABASE_URL });
+  const db = new Client({ connectionString: configuredValue('DATABASE_URL') });
   let ragProcess;
   let stdout = '';
   let stderr = '';
@@ -121,8 +136,9 @@ async function main() {
     try {
       await fetch(`${ragUrl}/cleanup-file`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: ragHeaders,
         body: JSON.stringify({ file_id: fileId }),
+        signal: AbortSignal.timeout(10000),
       });
     } catch {}
 
@@ -143,17 +159,28 @@ async function main() {
 
   try {
     const env = {
-      ...process.env,
       ...ragEnv,
+      ...process.env,
       PORT: String(port),
-      DATABASE_URL: serverEnv.DATABASE_URL || ragEnv.DATABASE_URL,
-      S3_ENDPOINT: serverEnv.S3_ENDPOINT || ragEnv.S3_ENDPOINT,
-      S3_ACCESS_KEY: serverEnv.S3_ACCESS_KEY || ragEnv.S3_ACCESS_KEY,
-      S3_SECRET_KEY: serverEnv.S3_SECRET_KEY || ragEnv.S3_SECRET_KEY,
+      DATABASE_URL: configuredValue('DATABASE_URL'),
+      S3_ENDPOINT: configuredValue('S3_ENDPOINT'),
+      S3_ACCESS_KEY: configuredValue('S3_ACCESS_KEY'),
+      S3_SECRET_KEY: configuredValue('S3_SECRET_KEY'),
       S3_BUCKET: bucket,
+      S3_REGION: configuredValue('S3_REGION', 'us-east-1'),
+      S3_FORCE_PATH_STYLE: configuredValue('S3_FORCE_PATH_STYLE', 'true'),
+      MILVUS_URI: configuredValue('MILVUS_URI'),
       MILVUS_COLLECTION: collection,
+      ELASTICSEARCH_URL: configuredValue('ELASTICSEARCH_URL', 'http://127.0.0.1:9200'),
+      ELASTICSEARCH_ENABLED: configuredValue('ELASTICSEARCH_ENABLED', 'true'),
+      NEO4J_URL: configuredValue('NEO4J_URL', 'http://127.0.0.1:7474'),
+      NEO4J_USER: configuredValue('NEO4J_USER', 'neo4j'),
+      NEO4J_PASSWORD: configuredValue('NEO4J_PASSWORD'),
+      NEO4J_DATABASE: configuredValue('NEO4J_DATABASE', 'neo4j'),
+      NEO4J_ENABLED: configuredValue('NEO4J_ENABLED', 'true'),
       EMBEDDING_PROVIDER: 'local',
-      EMBEDDING_DIMENSION: ragEnv.EMBEDDING_DIMENSION || '1024',
+      EMBEDDING_DIMENSION: configuredValue('EMBEDDING_DIMENSION', '1024'),
+      RAG_SERVICE_TOKEN: ragToken,
       PYTHONUNBUFFERED: '1',
     };
 
@@ -170,7 +197,7 @@ async function main() {
     ragProcess.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
     ragProcess.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
-    await waitForJson(`${ragUrl}/health/ready`, 60000);
+    await waitForJson(`${ragUrl}/health/ready`, 60000, { headers: ragHeaders });
 
     await db.connect();
     await ensureBucket(s3, bucket);
@@ -195,43 +222,54 @@ async function main() {
     );
     await db.query(
       `insert into files (id, user_id, project_space_id, filename, file_hash, file_size, file_type, object_key, status, progress, max_attempts)
-       values ($1, $2, $3, 'rag-smoke.md', $4, $5, 'text/markdown', $6, 'pending', 0, 3)`,
+       values ($1, $2, $3, 'rag-smoke.md', $4, $5, 'text/markdown', $6, 'processing', 0, 3)`,
       [fileId, userId, projectSpaceId, smokeHash, smokeDocument.length, objectKey]
+    );
+    await db.query(
+      `insert into file_ingestion_jobs (
+         file_id, user_id, project_space_id, status, stage, progress,
+         attempt_id, lease_token, lease_expires_at
+       )
+       values ($1, $2, $3, 'processing', 'claimed', 0, $4, $5, now() + interval '10 minutes')`,
+      [fileId, userId, projectSpaceId, attemptId, leaseToken]
     );
     await db.query('commit');
 
     const ingestResponse = await fetch(`${ragUrl}/ingest-sync`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ file_id: fileId }),
+      headers: ragHeaders,
+      body: JSON.stringify({ file_id: fileId, attempt_id: attemptId, lease_token: leaseToken }),
     });
     const ingestBody = await ingestResponse.text();
     if (!ingestResponse.ok) {
       throw new Error(`ingest failed: ${ingestResponse.status} ${ingestBody}`);
     }
 
-    let fileRow = null;
+    let ingestionRow = null;
     let chunkCount = 0;
     for (let attempt = 0; attempt < 90; attempt += 1) {
-      const fileResult = await db.query('select status, progress, error_message from files where id = $1', [fileId]);
-      fileRow = fileResult.rows[0];
+      const ingestionResult = await db.query(
+        'select status, progress, error_message from file_ingestion_jobs where file_id = $1',
+        [fileId]
+      );
+      ingestionRow = ingestionResult.rows[0];
       const chunkResult = await db.query('select count(*)::int as count from file_chunks where file_id = $1', [fileId]);
       chunkCount = chunkResult.rows[0]?.count || 0;
 
-      if (fileRow?.status === 'completed') break;
-      if (fileRow?.status === 'failed') {
-        throw new Error(`ingest marked failed: ${fileRow.error_message}`);
+      if (ingestionRow?.status === 'completed') break;
+      if (ingestionRow?.status === 'failed') {
+        throw new Error(`ingest marked failed: ${ingestionRow.error_message}`);
       }
       await sleep(1000);
     }
 
-    if (fileRow?.status !== 'completed') {
-      throw new Error(`ingest did not complete, last status=${fileRow?.status}, progress=${fileRow?.progress}`);
+    if (ingestionRow?.status !== 'completed') {
+      throw new Error(`ingest did not complete, last status=${ingestionRow?.status}, progress=${ingestionRow?.progress}`);
     }
 
     const retrieveResponse = await fetch(`${ragUrl}/retrieve`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: ragHeaders,
       body: JSON.stringify({
         query: 'Where is the cobalt smoke marker documented?',
         user_id: userId,
@@ -253,8 +291,8 @@ async function main() {
       ragUrl,
       collection,
       fileId,
-      ingestStatus: fileRow.status,
-      progress: fileRow.progress,
+      ingestStatus: ingestionRow.status,
+      progress: ingestionRow.progress,
       chunkCount,
       retrieved: retrieveBody.results.length,
       firstResultPreview: retrieveBody.results[0].content.slice(0, 120),

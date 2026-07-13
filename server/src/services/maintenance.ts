@@ -34,7 +34,8 @@ export const cleanupUploadTempDirectory = async (
   const now = Date.now();
 
   await Promise.all(entries.map(async (entry) => {
-    const fullPath = path.join(uploadDir, entry);
+    // entry is a direct basename returned by fs.readdir, not request-controlled path input.
+    const fullPath = path.join(uploadDir, entry); // nosemgrep
     const stat = await fs.stat(fullPath).catch(() => null);
     if (!stat) return;
 

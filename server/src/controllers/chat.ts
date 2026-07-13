@@ -420,6 +420,8 @@ export const sendMessage = async (req: Request, res: Response) => {
 
           assistantSources = buildChatSources(documents);
         }
+        // This is JSON-encoded SSE under text/event-stream, never an HTML response.
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
         res.write(`data: ${JSON.stringify({
           ragRunId: agenticRagRun.run_id,
           sources: assistantSources,
@@ -480,6 +482,8 @@ ${originalContent}`;
 
     let fullContent = '';
 
+    // JSON-encoded SSE is parsed as event data, not rendered as HTML.
+    // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     res.write(`data: ${JSON.stringify({ userMessageId: userMessage.id })}\n\n`);
 
     for await (const chunk of stream) {
@@ -487,6 +491,8 @@ ${originalContent}`;
       const delta = chunk.choices[0]?.delta?.content || '';
       if (delta) {
         fullContent += delta;
+        // JSON.stringify safely frames model text inside the SSE data payload.
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
         res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
       }
     }
@@ -531,6 +537,8 @@ ${originalContent}`;
             }
           : null;
 
+        // This response remains JSON-encoded SSE under the stream content type.
+        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
         res.write(`data: ${JSON.stringify({
           sources: finalAssistantSources,
           traceSummary: finalTraceSummary,
@@ -557,6 +565,8 @@ ${originalContent}`;
           console.warn('[Chat] Failed to persist RAG trace:', toSafeError(error, res.locals.requestId));
         });
       }
+      // JSON-encoded identifiers are emitted as SSE event data, not HTML.
+      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
       res.write(`data: ${JSON.stringify({ assistantMessageId: assistantMessage.id })}\n\n`);
     }
 

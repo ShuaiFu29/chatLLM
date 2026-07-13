@@ -71,16 +71,20 @@ export function buildOpsTargets(env = process.env, envFiles = {}) {
   const backendUrl = env.OPS_BACKEND_URL || env.LOAD_TARGET_URL || 'http://localhost:3000';
   const ragUrl = env.OPS_RAG_URL || 'http://localhost:8000';
   const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-  const serverEnv = envFiles.serverEnv ?? parseEnvFile(path.join(rootDir, 'server', '.env'));
-  const ragEnv = envFiles.ragEnv ?? parseEnvFile(path.join(rootDir, 'rag-service', '.env'));
+  const explicitMetricsToken = firstNonBlank(env.OPS_METRICS_TOKEN, env.METRICS_TOKEN);
+  const explicitRagToken = firstNonBlank(env.OPS_RAG_TOKEN, env.RAG_SERVICE_TOKEN);
+  const serverEnv = explicitMetricsToken && explicitRagToken
+    ? {}
+    : (envFiles.serverEnv ?? parseEnvFile(path.join(rootDir, 'server', '.env')));
   const metricsToken = firstNonBlank(
-    env.OPS_METRICS_TOKEN,
-    env.METRICS_TOKEN,
+    explicitMetricsToken,
     serverEnv.METRICS_TOKEN,
   );
+  const ragEnv = explicitRagToken || serverEnv.RAG_SERVICE_TOKEN
+    ? {}
+    : (envFiles.ragEnv ?? parseEnvFile(path.join(rootDir, 'rag-service', '.env')));
   const ragToken = firstNonBlank(
-    env.OPS_RAG_TOKEN,
-    env.RAG_SERVICE_TOKEN,
+    explicitRagToken,
     serverEnv.RAG_SERVICE_TOKEN,
     ragEnv.RAG_SERVICE_TOKEN,
   );

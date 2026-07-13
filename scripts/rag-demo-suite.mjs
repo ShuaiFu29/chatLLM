@@ -409,7 +409,11 @@ async function fetchJsonWithRetry(
         throw error;
       }
       const delayMs = retryDelayMs * attempt;
-      console.error(`[rag-demo-suite] retry ${attempt}/${maxAttempts}:`, toSafeError(error));
+      console.error('[rag-demo-suite] retry:', {
+        attempt,
+        maxAttempts,
+        error: toSafeError(error),
+      });
       await sleep(delayMs);
     }
   }

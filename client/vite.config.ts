@@ -18,6 +18,8 @@ const inlineOptimization = () => {
       const loaderHtml = fs.readFileSync(path.resolve(__dirname, 'src/optimization/loader.html'), 'utf-8');
 
       return html
+        // themeScript is read from the fixed, tracked src/optimization/theme.js build input.
+        // nosemgrep: javascript.lang.security.audit.unknown-value-with-script-tag.unknown-value-with-script-tag
         .replace('<!-- INJECT_THEME_SCRIPT -->', `<script>${themeScript}</script>`)
         .replace('<!-- INJECT_LOADER -->', loaderHtml);
     }

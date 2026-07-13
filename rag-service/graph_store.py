@@ -5,6 +5,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 from config import settings
+from http_safety import validate_http_url
 
 
 STOP_TERMS = {
@@ -204,6 +205,7 @@ def _statement_payload(statement: str, parameters: dict | None = None) -> dict:
 
 
 def _neo4j_request(url: str, statements: list[dict] | None = None, method: str = "POST") -> dict:
+    url = validate_http_url(url, "NEO4J_URL")
     auth = base64.b64encode(f"{settings.neo4j_user}:{settings.neo4j_password}".encode("utf-8")).decode("ascii")
     request_data = None
     if method != "DELETE":
@@ -217,7 +219,9 @@ def _neo4j_request(url: str, statements: list[dict] | None = None, method: str =
         },
         method=method,
     )
-    with urllib.request.urlopen(request, timeout=settings.neo4j_timeout_ms / 1000) as response:
+    # validate_http_url restricts the request to HTTP(S) before transport.
+    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+    with urllib.request.urlopen(request, timeout=settings.neo4j_timeout_ms / 1000) as response:  # nosec B310
         raw = response.read().decode("utf-8")
         data = json.loads(raw) if raw else {}
 

@@ -1,4 +1,5 @@
 import re
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from fastapi import HTTPException, Request
@@ -13,6 +14,21 @@ _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 
 class StrictRequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def validate_http_url(value: str, field_name: str) -> str:
+    candidate = value.strip()
+    scheme = ""
+    try:
+        parsed = urlsplit(candidate)
+        scheme = parsed.scheme.lower()
+        hostname = parsed.hostname
+    except ValueError:
+        hostname = None
+
+    if candidate != value or scheme not in {"http", "https"} or not hostname:
+        raise ValueError(f"{field_name} must use http or https with a host")
+    return candidate
 
 
 class RequestBodyLimitMiddleware:

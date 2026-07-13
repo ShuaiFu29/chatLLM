@@ -8,6 +8,8 @@ const scriptRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 const RAG_DEPENDENCY_CHECK = 'import uvicorn, fastapi, psycopg';
 
 function defaultIsPythonUsable(command) {
+  // command is an operator-selected Python executable; argv is fixed and no shell is used.
+  // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const result = spawnSync(command, ['-c', RAG_DEPENDENCY_CHECK], {
     stdio: 'ignore',
     timeout: 5000,
@@ -100,6 +102,8 @@ export function buildRagTestSpawnConfig({
 }
 
 export function startRagService(config = buildRagServiceSpawnConfig()) {
+  // config is assembled locally by the operator-facing launcher; spawn does not use a shell.
+  // nosemgrep: javascript.lang.security.detect-child-process.detect-child-process
   const child = spawn(config.command, config.args, config.options);
 
   child.on('exit', (code, signal) => {

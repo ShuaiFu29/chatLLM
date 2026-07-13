@@ -41,6 +41,64 @@ def run_script(script, extra_env=None):
 
 
 class HttpSafetyTests(unittest.TestCase):
+    def test_http_transport_url_validation_accepts_only_http_and_https(self):
+        script = """
+from http_safety import validate_http_url
+
+assert validate_http_url("http://localhost:9200", "ELASTICSEARCH_URL") == "http://localhost:9200"
+assert validate_http_url("https://models.example.test/v1", "EMBEDDING_BASE_URL") == "https://models.example.test/v1"
+for value in (
+    "file:///etc/passwd",
+    "ftp://example.test/data",
+    "example.test/no-scheme",
+    "http:///missing-host",
+    "http://[invalid-host",
+):
+    try:
+        validate_http_url(value, "TEST_URL")
+    except ValueError as error:
+        assert str(error) == "TEST_URL must use http or https with a host"
+    else:
+        raise SystemExit(f"accepted unsafe URL: {value}")
+print("ok")
+"""
+        result = run_script(script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
+    def test_all_urllib_transports_reject_non_http_schemes_before_network_io(self):
+        script = """
+from unittest.mock import patch
+import compatible_api
+import graph_store
+import keyword_store
+
+checks = [
+    (patch("compatible_api.request.urlopen"), lambda: compatible_api.post_json("file:///tmp/model", "key", "/embeddings", {})),
+    (patch("graph_store.urllib.request.urlopen"), lambda: graph_store._neo4j_request("file:///tmp/neo4j")),
+    (patch("keyword_store.urllib.request.urlopen"), lambda: keyword_store._request("GET", "/")),
+]
+
+with patch.object(keyword_store.settings, "elasticsearch_enabled", True), patch.object(
+    keyword_store.settings, "elasticsearch_url", "file:///tmp/elasticsearch"
+):
+    for network_patch, call in checks:
+        with network_patch as urlopen:
+            try:
+                call()
+            except ValueError as error:
+                assert "must use http or https with a host" in str(error)
+            else:
+                raise SystemExit("unsafe URL reached transport")
+            urlopen.assert_not_called()
+print("ok")
+"""
+        result = run_script(script)
+
+        self.assertEqual(result.returncode, 0, result.stderr or result.stdout)
+        self.assertIn("ok", result.stdout)
+
     def test_safe_error_fields_allowlist_exception_metadata(self):
         safe_errors_path = ROOT / "safe_errors.py"
         self.assertTrue(safe_errors_path.exists(), "safe_errors.py must centralize Python error redaction")
