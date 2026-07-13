@@ -583,14 +583,14 @@ class AgenticRetrievalTests(unittest.TestCase):
         documents = [
             {
                 "id": "guide-1",
-                "content": "RAG 压力测试知识库索引与评测指南。建议评测问题：2026 年默认响应确认窗口是多少？期望来源文档 01、02、11。",
-                "metadata": {"filename": "00-corpus-index-and-test-guide.md", "file_id": "guide", "chunk_index": 1},
+                "content": "语料索引与测试指南。建议评测问题：2026 年默认响应确认窗口是多少？期望来源文档 01、02、11。",
+                "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 1},
                 "retrieval_score": 0.99,
             },
             {
                 "id": "guide-2",
                 "content": "评测时不要只看回答是否流畅，要检查引用是否命中正确文件。",
-                "metadata": {"filename": "00-corpus-index-and-test-guide.md", "file_id": "guide", "chunk_index": 2},
+                "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 2},
                 "retrieval_score": 0.98,
             },
             {
@@ -626,11 +626,49 @@ class AgenticRetrievalTests(unittest.TestCase):
         )
 
         selected_filenames = [document["metadata"]["filename"] for document in result["results"]]
-        self.assertNotIn("00-corpus-index-and-test-guide.md", selected_filenames[:3])
+        self.assertNotIn("00-语料索引与测试指南.md", selected_filenames[:3])
         self.assertIn("01-current.md", selected_filenames)
         self.assertIn("02-deprecated.md", selected_filenames)
         self.assertTrue(all(document.get("agentic_score", 0) > 0 for document in result["results"]))
         self.assertEqual(result["quality"]["evidence_label"], "strong")
+
+    def test_agentic_retrieve_keeps_chinese_guide_for_explicit_index_question(self):
+        documents = [
+            {
+                "id": "guide",
+                "content": "语料索引说明索引只能定位文件，正式答案应引用政策、报告、台账或纪要原文。",
+                "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 5},
+                "retrieval_score": 0.8,
+            },
+            {
+                "id": "firmware",
+                "content": "固件升级记录和客户通知需要保留。",
+                "metadata": {"filename": "06-FW-4.8.2固件变更说明.md", "file_id": "firmware", "chunk_index": 1},
+                "retrieval_score": 0.95,
+            },
+            {
+                "id": "policy",
+                "content": "当前政策要求按合同和证据处理索赔。",
+                "metadata": {"filename": "02-2026当前质保与客户索赔政策.md", "file_id": "policy", "chunk_index": 1},
+                "retrieval_score": 0.9,
+            },
+        ]
+
+        def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+            return documents
+
+        result = agentic_retrieve(
+            query="如果 RAG 只引用索引文件回答，应该如何评价？",
+            user_id="user-1",
+            project_space_id="space-1",
+            limit=3,
+            threshold=0,
+            retrieve_fn=fake_retrieve,
+        )
+
+        selected_filenames = [document["metadata"]["filename"] for document in result["results"]]
+        self.assertIn("00-语料索引与测试指南.md", selected_filenames[:3])
+        self.assertEqual(result["results"][0]["source_role"], "evaluation_guide")
 
     def test_agentic_retrieve_records_question_classification_and_route(self):
         def fake_retrieve(query, user_id, project_space_id, limit, threshold):
@@ -987,6 +1025,50 @@ class AgenticRetrievalTests(unittest.TestCase):
         self.assertEqual(inventory_calls, [])
         self.assertGreater(len(retrieve_calls), 0)
         self.assertEqual(result["results"][0]["metadata"]["filename"], "联调资料移交清单.md")
+
+    def test_agentic_retrieve_does_not_route_document_content_questions_to_inventory(self):
+        content_questions = (
+            "请基于知识库文档回答：旧政策截图有什么用？",
+            "请基于知识库文档回答：可赔停线和事实停线有什么区别？",
+            "请基于知识库文档回答：FW-4.7.9 的已知问题有哪些？",
+            "请基于知识库文档回答：审计证据链包含哪些项？",
+            "请基于知识库文档回答：FW-4.8.2 新增哪些诊断字段？",
+            "上传的文档有什么合规要求？",
+            "请列出上传文件，并总结当前政策。",
+        )
+
+        for question in content_questions:
+            with self.subTest(question=question):
+                retrieve_calls = []
+                inventory_calls = []
+
+                def fake_retrieve(query, user_id, project_space_id, limit, threshold):
+                    retrieve_calls.append(query)
+                    return [{
+                        "id": "content-chunk",
+                        "content": "这是问题对应的正式原文证据。",
+                        "metadata": {"filename": "正式证据.md", "file_id": "evidence", "chunk_index": 1},
+                        "similarity": 0.9,
+                        "retrieval_score": 0.9,
+                    }]
+
+                def fake_inventory(user_id, project_space_id, limit):
+                    inventory_calls.append(limit)
+                    return []
+
+                result = agentic_retrieve(
+                    query=question,
+                    user_id="user-1",
+                    project_space_id="space-1",
+                    limit=5,
+                    threshold=0.1,
+                    retrieve_fn=fake_retrieve,
+                    inventory_fn=fake_inventory,
+                )
+
+                self.assertEqual(result["mode"], "agentic")
+                self.assertEqual(inventory_calls, [])
+                self.assertGreater(len(retrieve_calls), 0)
 
     def test_evaluate_retrieval_quality_is_bounded_for_empty_results(self):
         quality = evaluate_retrieval_quality("missing deployment notes", [])

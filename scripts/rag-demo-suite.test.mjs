@@ -45,6 +45,13 @@ test('rag demo suite parser accepts Q-prefixed and domain-prefixed case ids', as
   assert.deepEqual(parseEvaluationCases(guideText).map((item) => item.id), ['Q01', 'SQ02']);
 });
 
+test('rag demo suite recognizes the real Chinese corpus guide filename', async () => {
+  const { isGuideFilename } = await import(pathToFileURL(scriptPath));
+
+  assert.equal(isGuideFilename('00-语料索引与测试指南.md'), true);
+  assert.equal(isGuideFilename('02-2026当前质保与客户索赔政策.md'), false);
+});
+
 test('rag demo suite creates filename fallback cases when a corpus has no guide table', async () => {
   const { buildFallbackEvaluationCases } = await import(pathToFileURL(scriptPath));
   const files = [

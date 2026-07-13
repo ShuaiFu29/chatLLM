@@ -300,8 +300,8 @@ function selectFilesForCases(files, guideFile, cases) {
   return [...selected.values()].sort((left, right) => path.basename(left).localeCompare(path.basename(right)));
 }
 
-function isGuideFilename(filename) {
-  return /guide|index|corpus-index|test-guide|evaluation-guide|评测/i.test(filename || '');
+export function isGuideFilename(filename) {
+  return /guide|index|corpus-index|test-guide|evaluation-guide|评测|语料索引|测试指南/i.test(filename || '');
 }
 
 function resultFilename(result) {

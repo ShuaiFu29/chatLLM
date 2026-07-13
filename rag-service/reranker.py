@@ -9,15 +9,31 @@ EXACT_MARKER_RE = re.compile(
     re.IGNORECASE,
 )
 
-EVALUATION_GUIDE_MARKERS = (
+EVALUATION_GUIDE_FILENAME_MARKERS = (
     "test-guide",
     "corpus-index",
     "eval-guide",
     "evaluation-guide",
     "评测指南",
+    "语料索引",
+    "测试指南",
+    "语料索引与测试指南",
+)
+
+EVALUATION_GUIDE_CONTENT_MARKERS = (
     "建议评测问题",
     "期望来源文档",
     "rag 压力测试知识库索引",
+)
+
+EXPLICIT_GUIDE_QUERY_MARKERS = (
+    "语料索引",
+    "索引文件",
+    "测试指南",
+    "评测指南",
+    "evaluation guide",
+    "test guide",
+    "corpus index",
 )
 
 BOILERPLATE_MARKERS = (
@@ -100,13 +116,20 @@ def classify_source_role(document: dict) -> str:
     content = str(document.get("content") or "").lower()
     combined = f"{filename}\n{content}"
 
-    if any(marker in combined for marker in EVALUATION_GUIDE_MARKERS):
+    if any(marker in filename for marker in EVALUATION_GUIDE_FILENAME_MARKERS):
+        return "evaluation_guide"
+    if any(marker in content for marker in EVALUATION_GUIDE_CONTENT_MARKERS):
         return "evaluation_guide"
     if "deprecated" in combined or "已废止" in combined:
         return "deprecated"
     if any(marker in filename for marker in INDEX_FILENAME_MARKERS) and _boilerplate_penalty(str(document.get("content") or "")) >= 0.1:
         return "index"
     return "primary"
+
+
+def query_requests_evaluation_guide(query: str) -> bool:
+    normalized = " ".join(str(query or "").lower().split())
+    return any(marker in normalized for marker in EXPLICIT_GUIDE_QUERY_MARKERS)
 
 
 def _source_quality(role: str) -> float:
@@ -202,6 +225,7 @@ def _classify_evidence_specificity(
 def rerank_documents(query: str, documents: list[dict], top_k: int | None = None) -> list[dict]:
     max_retrieval_score = max([_raw_retrieval_score(document) for document in documents] or [0.0])
     query_exact_markers = extract_exact_markers(query)
+    guide_requested = query_requests_evaluation_guide(query)
     ranked = []
     for index, document in enumerate(documents, start=1):
         raw_retrieval_score = _raw_retrieval_score(document)
@@ -221,7 +245,7 @@ def rerank_documents(query: str, documents: list[dict], top_k: int | None = None
             exact_score,
             filename_match_score,
         )
-        source_quality = _source_quality(role)
+        source_quality = 1.0 if role == "evaluation_guide" and guide_requested else _source_quality(role)
         base_score = (
             retrieval_confidence * 0.14
             + coverage_score * 0.30
@@ -231,8 +255,10 @@ def rerank_documents(query: str, documents: list[dict], top_k: int | None = None
             + source_quality * 0.05
             + _channel_bonus(document) * 0.03
         )
-        if role == "evaluation_guide":
+        if role == "evaluation_guide" and not guide_requested:
             base_score *= 0.45
+        elif role == "evaluation_guide" and guide_requested:
+            base_score += 0.08
         elif role == "primary" and (exact_score > 0 or filename_match_score >= 0.25):
             base_score += 0.05
         if filename_match_score >= 0.35 and evidence_specificity >= 0.45:

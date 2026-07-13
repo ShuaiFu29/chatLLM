@@ -7,7 +7,7 @@ from evaluation import evaluate_retrieval_quality
 from evidence_verifier import assess_query_risk, verify_evidence_support
 from query_planner import plan_queries
 from db import list_files_for_inventory
-from reranker import classify_source_role, rerank_documents
+from reranker import classify_source_role, query_requests_evaluation_guide, rerank_documents
 from retrieval import retrieve_documents
 from retrieval_cache import (
     CONVERSATION_EVIDENCE_THRESHOLD,
@@ -119,19 +119,20 @@ def _document_facet(document: dict) -> str:
     return "general"
 
 
-def _select_diverse_documents(ranked_documents: list[dict], limit: int) -> list[dict]:
+def _select_diverse_documents(ranked_documents: list[dict], limit: int, query: str = "") -> list[dict]:
     if limit <= 0:
         return []
 
     primary_documents = [document for document in ranked_documents if classify_source_role(document) != "evaluation_guide"]
     guide_documents = [document for document in ranked_documents if classify_source_role(document) == "evaluation_guide"]
-    ordered_documents = primary_documents + guide_documents
+    guide_requested = query_requests_evaluation_guide(query)
+    ordered_documents = ranked_documents if guide_requested else primary_documents + guide_documents
 
     selected: list[dict] = []
     selected_keys: set[str] = set()
     selected_document_keys: set[str] = set()
 
-    if limit >= 4:
+    if limit >= 4 and not guide_requested:
         selected_facets: set[str] = set()
         available_facets = {_document_facet(document) for document in primary_documents}
         target_facet_count = min(limit, len(available_facets), 6)
@@ -183,65 +184,46 @@ def _looks_like_inventory_query(query: str) -> bool:
     if re.search(r"《[^》]{2,}》", query) and any(term in normalized for term in ("原文", "概述", "总结", "分析", "核心内容")):
         return False
 
-    scope_terms = ("知识库", "文档", "文件", "资料", "knowledgebase", "knowledge", "document", "documents", "file", "files")
-    inventory_terms = (
-        "上传了些什么",
-        "上传了什么",
-        "上传了哪些",
-        "上传的内容",
-        "上传的文档",
-        "上传的文件",
-        "有哪些",
-        "有什么",
-        "什么内容",
-        "内容概览",
-        "列出",
-        "列表",
-        "文档清单",
-        "文件清单",
-        "资料清单",
-        "知识库清单",
-        "几篇文档",
-        "多少篇文档",
-        "几文档",
-        "多少文档",
-        "有几篇文档",
-        "有多少篇文档",
-        "有几个文档",
-        "有多少个文档",
-        "有多少文档",
-        "几篇资料",
-        "多少篇资料",
-        "多少资料",
-        "有多少资料",
-        "几个文档",
-        "多少个文档",
-        "几个文件",
-        "多少个文件",
-        "多少文件",
-        "有几个文件",
-        "有多少个文件",
-        "有多少文件",
-        "文档数量",
-        "文件数量",
-        "一共有几篇",
-        "一共几篇",
-        "一共有多少",
-        "一共多少",
-        "共有几篇",
-        "共有多少",
-        "总共有几篇",
-        "总共有多少",
-        "uploaded",
-        "whatfiles",
-        "whatdocuments",
-        "whichfiles",
-        "whichdocuments",
-        "listfiles",
-        "listdocuments",
+    scope_patterns = (
+        r"知识库",
+        r"工作区(?:文档|文件|资料)",
+        r"(?:上传的|已上传的|上传了|已上传)(?:文档|文件|资料|内容)?",
+        r"knowledge\s*base",
+        r"workspace\s*(?:documents|files)",
+        r"uploaded\s*(?:documents|files)",
     )
+    if not any(re.search(pattern, normalized) for pattern in scope_patterns):
+        return False
 
-    return any(term in normalized for term in scope_terms) and any(term in normalized for term in inventory_terms)
+    content_operation_terms = (
+        "总结",
+        "概述",
+        "分析",
+        "比较",
+        "区别",
+        "作用",
+        "要求",
+        "规定",
+        "字段",
+        "问题",
+        "原因",
+        "为什么",
+        "如何",
+        "是否",
+        "能否",
+    )
+    if any(term in normalized for term in content_operation_terms):
+        return False
+
+    collection_operation_patterns = (
+        r"(?:知识库|工作区)(?:里面|里|中|内)?(?:一共有|总共有|一共|总共|共有|有)?(?:多少|几)(?:篇|个)?(?:文档|文件|资料)?",
+        r"(?:列出|罗列|展示)(?:知识库|工作区|上传的|已上传的)?(?:全部|所有)?(?:文档|文件|资料)",
+        r"(?:上传了|已上传|上传的|已上传的)(?:哪些|什么|些什么|多少|几|全部|所有)(?:文档|文件|资料|内容)?",
+        r"(?:知识库|工作区)(?:里|中|内|里面)?(?:有哪些|有什么)(?:文档|文件|资料)",
+        r"(?:文档|文件|资料)(?:清单|列表|数量)",
+        r"(?:howmany|list|which|what)(?:uploaded|workspace)?(?:documents|files)",
+    )
+    return any(re.search(pattern, normalized) for pattern in collection_operation_patterns)
 
 
 def _format_file_size(size: object) -> str:
@@ -378,7 +360,7 @@ def _evaluate_cached_documents(
         return [], evaluate_retrieval_quality(query, [])
 
     ranked_documents = rerank_fn(query, documents)
-    selected_documents = _select_diverse_documents(ranked_documents, limit)
+    selected_documents = _select_diverse_documents(ranked_documents, limit, query)
     quality = evaluate_retrieval_quality(query, selected_documents)
     return selected_documents, quality
 
@@ -1019,7 +1001,7 @@ def agentic_retrieve(
     started_at = _now_ms()
     reranker_name = "local-evidence" if rerank_fn is default_rerank_documents else "custom"
     ranked_documents = rerank_fn(query, list(merged_by_key.values()))
-    selected_documents = _select_diverse_documents(ranked_documents, limit)
+    selected_documents = _select_diverse_documents(ranked_documents, limit, query)
     trace_steps.append(_trace_step(
         "rerank",
         "success",

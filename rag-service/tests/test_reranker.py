@@ -1,6 +1,6 @@
 import unittest
 
-from reranker import rerank_documents
+from reranker import classify_source_role, query_requests_evaluation_guide, rerank_documents
 
 
 class RerankerTests(unittest.TestCase):
@@ -56,6 +56,54 @@ class RerankerTests(unittest.TestCase):
         self.assertEqual(reranked[-1]["source_role"], "evaluation_guide")
         self.assertGreater(reranked[0]["agentic_score"], reranked[-1]["agentic_score"])
         self.assertIn("T+3", reranked[0]["matched_terms"])
+
+    def test_reranker_classifies_and_demotes_real_chinese_evaluation_guide(self):
+        guide = {
+            "id": "guide-cn",
+            "content": "语料索引与测试指南，包含建议问题和期望来源。",
+            "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 2},
+            "retrieval_score": 1.0,
+        }
+        primary = {
+            "id": "policy",
+            "content": "当前政策规定旧政策截图只能作为争议来源，不能作为当前承诺依据。",
+            "metadata": {"filename": "02-2026当前质保与客户索赔政策.md", "file_id": "policy", "chunk_index": 1},
+            "retrieval_score": 0.5,
+        }
+
+        self.assertEqual(classify_source_role(guide), "evaluation_guide")
+        reranked = rerank_documents("旧政策截图还能作为免费换机依据吗？", [guide, primary])
+        self.assertEqual(reranked[0]["id"], "policy")
+        self.assertEqual(reranked[-1]["source_role"], "evaluation_guide")
+
+    def test_reranker_does_not_classify_incidental_guide_reference_as_guide(self):
+        document = {
+            "id": "policy",
+            "content": "本政策另有测试指南用于操作培训，但当前条款本身是正式责任依据。",
+            "metadata": {"filename": "02-2026当前质保与客户索赔政策.md", "file_id": "policy", "chunk_index": 3},
+            "retrieval_score": 0.8,
+        }
+
+        self.assertEqual(classify_source_role(document), "primary")
+
+    def test_reranker_keeps_guide_relevant_for_explicit_guide_query(self):
+        guide = {
+            "id": "guide-cn",
+            "content": "语料索引说明索引只能定位文件，正式答案应引用政策、报告、台账或纪要原文。",
+            "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 5},
+            "retrieval_score": 0.8,
+        }
+        unrelated = {
+            "id": "unrelated",
+            "content": "固件升级记录和客户通知需要保留。",
+            "metadata": {"filename": "06-FW-4.8.2固件变更说明.md", "file_id": "firmware", "chunk_index": 1},
+            "retrieval_score": 0.9,
+        }
+        query = "如果 RAG 只引用索引文件回答，应该如何评价？"
+
+        self.assertTrue(query_requests_evaluation_guide(query))
+        reranked = rerank_documents(query, [unrelated, guide])
+        self.assertEqual(reranked[0]["id"], "guide-cn")
 
     def test_reranker_rewards_exact_domain_markers_over_generic_overlap(self):
         documents = [
