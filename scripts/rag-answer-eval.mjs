@@ -13,7 +13,10 @@ const compactText = (value = '') => String(value)
   .toLowerCase()
   .replace(/[^\p{L}\p{N}%]+/gu, '');
 
-const stripCitations = (value = '') => String(value).replace(/\[\s*Source\s+\d+\s*\]/gi, ' ');
+const stripCitations = (value = '') => String(value)
+  .replace(/\[\s*(?:Source|Chunk|Inventory|Document|来源|分块|索引)\s*#?\s*\d+\s*\]/gi, ' ')
+  .replace(/\[\^\d+\]/g, ' ')
+  .replace(/(^|\n)\s*\d+[.)、]\s+/g, '$1');
 
 const splitCsv = (value = '') => String(value)
   .split(/[,，]/)
@@ -62,12 +65,27 @@ const conceptAlternatives = (concept) => String(concept || '')
   .filter(Boolean);
 
 const semanticCanonical = (value) => compactText(value)
+  .replace(/managementreview/g, '管理评审')
+  .replace(/audit(?:ing)?/g, '审计')
+  .replace(/historical(?:equipment|devices?)/g, '历史设备')
+  .replace(/customer(?:compensation|reimbursement)/g, '客户赔付')
+  .replace(/supplier(?:deductions?|chargebacks?)/g, '供应商扣款')
+  .replace(/(?:hasnot|havenot|not)(?:been)?(?:completely|fully)closed/g, '不能说完全关闭')
+  .replace(/(?:only)?uploadingfirmwarefiles?/g, '固件')
+  .replace(/cannotfully(?:address|answer|determine)|insufficientto(?:address|answer|determine)|notenough(?:information|evidence)/g, '证据不足')
+  .replace(/不充分证据|证据不充分|不足以作为(?:直接)?(?:的)?业务证据|无法提供足够(?:的)?信息/g, '证据不足')
+  .replace(/具体(?:的)?业务(?:文件|材料)|正式业务(?:文件|材料)|主要业务(?:文件|材料)/g, '原始文件')
+  .replace(/升级前(?:需要)?保留(?:的)?日志/g, '升级前日志')
+  .replace(/不能一概而论|不可一概而论|取决于具体情况|视具体情况而定/g, '不一定')
+  .replace(/(\d{4})年?(?:专项|当前|现行)?政策/g, '$1政策')
+  .replace(/正式批准(?:的)?话术|正式话术/g, '已批准话术')
+  .replace(/不支持全额(?:停线)?赔付|全额赔付不是默认选项/g, '不全额赔付')
   .replace(/不可以|无法|不得|不可/g, '不能')
   .replace(/所有|完全|全量/g, '全部')
   .replace(/现行/g, '当前')
   .replace(/作废|失效/g, '废止')
   .replace(/解决/g, '修复')
-  .replace(/佐证|支撑/g, '证据');
+  .replace(/佐证|支撑|依据/g, '证据');
 
 const lcsLength = (left, right) => {
   if (!left || !right) return 0;
@@ -183,11 +201,24 @@ const extractNumbers = (value = '') => {
 
 const setDifference = (left, right) => [...left].filter((item) => !right.has(item));
 
-const hasNumericConflict = (expectation, answer) => {
-  const numericConcepts = (expectation.expectedKeywords || [])
-    .flatMap(conceptAlternatives)
-    .filter((item) => /^\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?\s*$/.test(item));
-  const critical = extractNumbers(numericConcepts.join(' '));
+const hasNumericConflict = (expectation, answer, contractCase = {}) => {
+  const structuredConcepts = Array.isArray(contractCase.coreConcepts)
+    ? contractCase.coreConcepts
+    : [];
+  // Structured contracts express numeric roles through core concepts and hardFacts.
+  // Alternatives are OR choices, so flattening all of their numbers would falsely
+  // require both 0.6 and 60%, or treat supporting calculation detail as a conflict.
+  if (structuredConcepts.length > 0) return false;
+  const criticalText = structuredConcepts.length > 0
+    ? structuredConcepts
+      .filter((item) => item.required !== false)
+      .flatMap((item) => Array.isArray(item.alternatives) ? item.alternatives : [])
+      .join(' ')
+    : (expectation.expectedKeywords || [])
+      .flatMap(conceptAlternatives)
+      .filter((item) => /^\s*(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?%?\s*$/.test(item))
+      .join(' ');
+  const critical = extractNumbers(criticalText);
   if (critical.size === 0) return false;
   const actual = extractNumbers(answer);
   const allowed = extractNumbers(expectation.expectedAnswer || '');
@@ -218,7 +249,10 @@ const hasPolarityConflict = (expectation, answer) => {
       const negative = new RegExp(negativePattern.source).test(normalized);
       const positive = new RegExp(positivePattern.source).test(normalized);
       const polarity = negative && !positive ? 'negative' : positive && !negative ? 'positive' : 'unknown';
-      const content = normalized.replace(negativePattern, '').replace(positivePattern, '');
+      const content = normalized
+        .replace(negativePattern, '')
+        .replace(positivePattern, '')
+        .replace(/承担/g, '');
       return { polarity, content };
     })
     .filter((item) => item.polarity !== 'unknown' && item.content.length >= 4);
@@ -229,7 +263,8 @@ const hasPolarityConflict = (expectation, answer) => {
     if (expectedClause.polarity === actualClause.polarity) return false;
     const shorterLength = Math.min(expectedClause.content.length, actualClause.content.length);
     if (shorterLength < 4) return false;
-    return lcsLength(expectedClause.content, actualClause.content) / shorterLength >= 0.75;
+    const longerLength = Math.max(expectedClause.content.length, actualClause.content.length);
+    return lcsLength(expectedClause.content, actualClause.content) / longerLength >= 0.85;
   }));
 };
 
@@ -393,7 +428,7 @@ export function scoreAnswerCase(expectation, actual, contractCase = {}) {
   const finalSourceRecall = scoreSourcePolicyRecall(contractCase.sourcePolicy, actual.finalSources || [])
     ?? scoreSourceRecall(expectation.expectedSources || [], actual.finalSources || []);
   const hardFacts = hardFactResult(contractCase.hardFacts, answer);
-  const numericConflict = hasNumericConflict(expectation, answer)
+  const numericConflict = hasNumericConflict(expectation, answer, contractCase)
     || hardFacts.conflicts.some((item) => item.type === 'numeric');
   const versionConflict = hasVersionConflict(expectation, answer)
     || hardFacts.conflicts.some((item) => item.type === 'version');

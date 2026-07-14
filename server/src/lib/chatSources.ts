@@ -10,6 +10,7 @@ export interface RagDocument {
   similarity?: number;
   agentic_score?: number;
   matched_queries?: string[];
+  source_role?: string;
 }
 
 export interface ChatSource {
@@ -19,6 +20,7 @@ export interface ChatSource {
   chunk_index?: number;
   similarity: number;
   content: string;
+  source_role?: string;
 }
 
 export type AnswerGroundingStatus = 'supported' | 'partial' | 'unsupported' | 'not_applicable';
@@ -32,6 +34,7 @@ export interface AnswerGroundingVerification {
   model_cited_labels?: number[];
   pre_verification_cited_sources?: ChatSource[];
   citation_decisions?: CitationDecision[];
+  auto_attributed_sources?: ChatSource[];
 }
 
 export interface CitationDecision {
@@ -39,6 +42,8 @@ export interface CitationDecision {
   supported: boolean;
   score: number;
   reasons: string[];
+  support_mode?: 'lexical' | 'bilingual_canonical';
+  auto_attributed?: boolean;
 }
 
 export interface RagContextAllocation {
@@ -140,6 +145,9 @@ export const buildAnswerTaskGuidance = (question: string) => {
   if (/(哪些文件|哪些材料|哪些来源|文件说明|材料共同|whichfiles|whichdocuments)/i.test(normalized)) {
     guidance.push('For source-set questions, name each directly relevant source and explain the unique role it plays in supporting the conclusion.');
   }
+  if (/(索引|指南|目录|index|guide|catalog)/i.test(normalized)) {
+    guidance.push('When the question explicitly concerns an index, guide, or catalog, preserve its authority boundary: navigation metadata can locate evidence but is not itself sufficient primary evidence. State which primary policy, report, ledger, record, or minutes must be consulted.');
+  }
   return guidance.join('\n');
 };
 
@@ -159,6 +167,7 @@ export const buildChatSources = (documents: RagDocument[]): ChatSource[] => {
       chunk_index: doc.metadata?.chunk_index,
       similarity: typeof doc.similarity === 'number' ? doc.similarity : 0,
       content: normalizeSnippet(doc.content),
+      ...(doc.source_role ? { source_role: doc.source_role } : {}),
     }));
 };
 
@@ -171,6 +180,7 @@ export const buildVerificationSources = (documents: RagDocument[]): ChatSource[]
     chunk_index: doc.metadata?.chunk_index,
     similarity: typeof doc.similarity === 'number' ? doc.similarity : 0,
     content: String(doc.content || '').trim(),
+    ...(doc.source_role ? { source_role: doc.source_role } : {}),
   }));
 
 export const buildRagContext = (
@@ -190,9 +200,14 @@ export const buildRagContext = (
       const score = !isInventory && typeof doc.similarity === 'number'
         ? `, similarity ${Math.round(doc.similarity * 100)}%`
         : '';
+      const authority = doc.source_role === 'evaluation_guide'
+        ? ' [role: evaluation guide; navigation only, not sufficient primary business evidence]'
+        : doc.source_role === 'index'
+          ? ' [role: index; navigation only, not sufficient primary business evidence]'
+          : '';
       const header = isInventory
         ? `[Inventory ${sourceNumber}] ${filename}`
-        : `[Source ${sourceNumber}] ${filename}${chunkNumber ? `, chunk #${chunkNumber}` : ''}${score}`;
+        : `[Source ${sourceNumber}] ${filename}${chunkNumber ? `, chunk #${chunkNumber}` : ''}${score}${authority}`;
       return { doc, content, sourceNumber, filename, header, included: 0 };
     });
 
@@ -320,6 +335,36 @@ const extractGroundingTerms = (value = '') => {
   return terms;
 };
 
+const BILINGUAL_GROUNDING_CONCEPTS: Array<[string, RegExp]> = [
+  ['audit', /审计|audit(?:ing)?/i],
+  ['management_review', /管理评审|management\s+review/i],
+  ['close', /关闭|结案|close[ds]?|closure|fully\s+closed|completely\s+closed/i],
+  ['complete', /完成|已完成|complete[ds]?|completion/i],
+  ['upgrade', /升级|更新|upgrad(?:e|ed|ing)|update[ds]?/i],
+  ['customer_compensation', /客户赔付|客户补偿|customer\s+(?:compensation|reimbursement)|compensat(?:e|ed|ion)/i],
+  ['supplier_deduction', /供应商扣款|supplier\s+deduction|supplier\s+chargeback/i],
+  ['notification', /通知|通报|notification|notify|notified/i],
+  ['approval', /审批|批准|approval|approved|authorization|authorized/i],
+  ['evidence', /证据|evidence|proof/i],
+  ['evidence_package', /证据包|evidence\s+package/i],
+  ['policy', /政策|policy|policies/i],
+  ['report', /报告|report/i],
+  ['ledger', /台账|ledger|register/i],
+  ['minutes', /纪要|minutes/i],
+  ['source', /来源|原文|source|primary\s+document/i],
+  ['insufficient', /不足|不充分|insufficient|inadequate|not\s+enough/i],
+  ['historical_equipment', /历史设备|历史所有设备|historical\s+(?:equipment|devices?)/i],
+  ['responsible_person', /责任人|responsible\s+person|owner/i],
+  ['measure_submitted', /提交措施|措施已提交|submitted?\s+(?:the\s+)?measures?/i],
+  ['system_live', /系统上线|systems?\s+(?:has\s+|have\s+)?gone\s+live|system\s+launch/i],
+];
+
+const extractCanonicalGroundingConcepts = (value = '') => new Set(
+  BILINGUAL_GROUNDING_CONCEPTS
+    .filter(([, pattern]) => pattern.test(value))
+    .map(([concept]) => concept)
+);
+
 const overlapRatio = (left: Set<string>, right: Set<string>) => {
   if (left.size === 0 || right.size === 0) return 0;
   let matches = 0;
@@ -345,6 +390,8 @@ const hasCautiousInsufficientAnswer = (answer: string) => {
     'source material is insufficient',
     'insufficient evidence',
     'cannot determine',
+    'cannot fully',
+    'insufficient to',
   ].some((marker) => normalized.includes(marker.replace(/\s+/g, '')));
 };
 
@@ -371,9 +418,9 @@ const citedClaims = (answer: string) => {
       .replace(/^\s*\d+[.)、]\s*/, '')
       .trim();
     const rawAfter = answer.slice((match.index || 0) + match[0].length);
-    const citationIntroducesFollowing = /^(?:中的(?:信息|表格|说明|内容)?|中|显示|指出|提到|也提到|明确指出|明确说明|也强调)/.test(rawAfter.trimStart());
+    const citationIntroducesFollowing = /^(?:中的(?:信息|表格|说明|内容)?|中|显示|指出|提到|也提到|明确指出|明确说明|也强调|states?\b|indicates?\b|shows?\b|notes?\b|explains?\b|says?\b|reports?\b|according\s+to\b)/i.test(rawAfter.trimStart());
     const after = rawAfter
-      .replace(/^(?:中的(?:信息|表格|说明|内容)?|中|显示|指出|提到|明确指出|明确说明|也强调)[\s，,:：]*/, '');
+      .replace(/^(?:中的(?:信息|表格|说明|内容)?|中|显示|指出|提到|明确指出|明确说明|也强调|states?\b|indicates?\b|shows?\b|notes?\b|explains?\b|says?\b|reports?\b|according\s+to\b)[\s，,:：]*/i, '');
     const followingBoundary = after.search(/[。！？!?；;\n]|\[\s*Source\s+\d+\s*\]/i);
     const followingClaim = after.slice(0, followingBoundary < 0 ? after.length : followingBoundary)
       .replace(/^[\s，,:：和及]+/, '')
@@ -394,10 +441,16 @@ const citedClaims = (answer: string) => {
   return claims;
 };
 
+const uncitedSubstantiveClaims = (answer: string) => String(answer || '')
+  .replace(/([。！？!?；;])\s*(\[\s*Source\s+\d+\s*\])/gi, '$2$1')
+  .split(/[。！？!?；;\n]+/)
+  .map((item) => item.replace(/^\s*\d+[.)、]\s*/, '').trim())
+  .filter((item) => item.length >= 12 && !/\[\s*Source\s+\d+\s*\]/i.test(item));
+
 const clausePolarity = (value: string) => {
   const normalized = value.toLowerCase().replace(/\s+/g, '');
-  const negative = /不一定|不自动|不等于|不代表|不证明|不说明|不构成|不建议|不是|不能|无法|不可以|不可|不得|不应|没有|不足|未曾|并未|未/.test(normalized);
-  const positive = /可以|能够|等于|已经|批准|必须|应当|需要|确认|承认|优先|是/.test(normalized);
+  const negative = /不一定|不自动|不等于|不代表|不证明|不说明|不构成|不建议|不是|不能|无法|不可以|不可|不得|不应|没有|不足|未曾|并未|未|not|cannot|can't|isn't|hasn't|haven't|insufficient|without/.test(normalized);
+  const positive = /可以|能够|等于|已经|批准|必须|应当|需要|确认|承认|优先|是|can|must|should|required|approved|confirmed|completed/.test(normalized);
   if (negative && !positive) return 'negative';
   if (positive && !negative) return 'positive';
   return 'unknown';
@@ -467,25 +520,76 @@ export const verifyAnswerGrounding = (
       const sourceEvidence = `${source.filename}\n${source.content}`;
       const sourceTerms = extractGroundingTerms(sourceEvidence);
       const termScore = overlapRatio(claimTerms, sourceTerms);
+      const claimConcepts = extractCanonicalGroundingConcepts(claim);
+      const sourceConcepts = extractCanonicalGroundingConcepts(sourceEvidence);
+      const canonicalScore = overlapRatio(claimConcepts, sourceConcepts);
       const claimMarkers = extractFactMarkers(claim);
       const sourceMarkers = extractFactMarkers(sourceEvidence);
       const markerCoverage = claimMarkers.size ? overlapRatio(claimMarkers, sourceMarkers) : 1;
       const polarityConflict = citationPolarityConflict(claim, sourceEvidence);
       const reasons: string[] = [];
       const minimumTermScore = claimMarkers.size > 0 ? 0.08 : 0.12;
-      if (termScore < minimumTermScore) reasons.push('citation_claim_not_supported');
+      const bilingualSupported = claimConcepts.size > 0 && canonicalScore >= 0.5;
+      if (termScore < minimumTermScore && !bilingualSupported) reasons.push('citation_claim_not_supported');
       if (markerCoverage < 1) reasons.push('missing_claim_markers_in_source');
       if (polarityConflict) reasons.push('citation_polarity_conflict');
-      const score = clampScore(termScore * 0.75 + markerCoverage * 0.25);
+      const semanticScore = Math.max(termScore, canonicalScore);
+      const score = clampScore(semanticScore * 0.75 + markerCoverage * 0.25);
       return {
         source_number: sourceNumber,
         supported: reasons.length === 0,
         score,
         reasons,
+        support_mode: bilingualSupported && termScore < minimumTermScore
+          ? 'bilingual_canonical'
+          : 'lexical',
       };
     });
     const supportedLabels = new Set(decisions.filter((item) => item.supported).map((item) => item.source_number));
-    const verifiedSources = sources.filter((_, index) => supportedLabels.has(index + 1));
+    const autoAttributedLabels = new Set<number>();
+    const autoAttributionDecisions: CitationDecision[] = [];
+    for (const claim of uncitedSubstantiveClaims(normalizedAnswer)) {
+      const claimTerms = extractGroundingTerms(claim);
+      const claimConcepts = extractCanonicalGroundingConcepts(claim);
+      const claimMarkers = extractFactMarkers(claim);
+      let best: { sourceNumber: number; score: number; mode: 'lexical' | 'bilingual_canonical' } | null = null;
+      for (let index = 0; index < completeSources.length; index += 1) {
+        const source = completeSources[index];
+        const sourceEvidence = `${source.filename}\n${source.content}`;
+        const termScore = overlapRatio(claimTerms, extractGroundingTerms(sourceEvidence));
+        const canonicalScore = overlapRatio(claimConcepts, extractCanonicalGroundingConcepts(sourceEvidence));
+        const markerCoverage = claimMarkers.size
+          ? overlapRatio(claimMarkers, extractFactMarkers(sourceEvidence))
+          : 1;
+        if (markerCoverage < 1 || citationPolarityConflict(claim, sourceEvidence)) continue;
+        const directSupported = termScore >= 0.18;
+        const bilingualSupported = claimConcepts.size > 0 && canonicalScore >= 0.6;
+        if (!directSupported && !bilingualSupported) continue;
+        const semanticScore = Math.max(termScore, canonicalScore);
+        const score = clampScore(semanticScore * 0.75 + markerCoverage * 0.25);
+        if (!best || score > best.score) {
+          best = {
+            sourceNumber: index + 1,
+            score,
+            mode: bilingualSupported && !directSupported ? 'bilingual_canonical' : 'lexical',
+          };
+        }
+      }
+      if (best) {
+        autoAttributedLabels.add(best.sourceNumber);
+        autoAttributionDecisions.push({
+          source_number: best.sourceNumber,
+          supported: true,
+          score: best.score,
+          reasons: [],
+          support_mode: best.mode,
+          auto_attributed: true,
+        });
+      }
+    }
+    const finalSupportedLabels = new Set([...supportedLabels, ...autoAttributedLabels]);
+    const verifiedSources = sources.filter((_, index) => finalSupportedLabels.has(index + 1));
+    const autoAttributedSources = sources.filter((_, index) => autoAttributedLabels.has(index + 1));
     const preVerificationSources = sources.filter((_, index) => modelCitedLabels.includes(index + 1));
     const supportRatio = decisions.length
       ? decisions.filter((item) => item.supported).length / decisions.length
@@ -520,7 +624,8 @@ export const verifyAnswerGrounding = (
       reasons: [...new Set(reasons)],
       model_cited_labels: modelCitedLabels,
       pre_verification_cited_sources: preVerificationSources,
-      citation_decisions: decisions,
+      citation_decisions: [...decisions, ...autoAttributionDecisions],
+      auto_attributed_sources: autoAttributedSources,
     };
   }
 

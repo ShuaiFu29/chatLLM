@@ -128,6 +128,7 @@ export interface RagTransport {
 
 interface RagClientMetrics {
   recordRagRetrieve(status: 'ok' | 'error', durationMs: number): void;
+  recordRagRetrieveRetry?(): void;
   recordRagCircuitOpen(): void;
 }
 
@@ -141,6 +142,9 @@ export interface CreateRagClientOptions {
   ingestTimeoutMs?: number;
   cleanupTimeoutMs?: number;
   healthTimeoutMs?: number;
+  retrieveMaxAttempts?: number;
+  retrieveTotalTimeoutMs?: number;
+  retrieveRetryDelayMs?: number;
   failureThreshold?: number;
   resetMs?: number;
 }
@@ -157,6 +161,12 @@ export const isRagServiceFailure = (error: unknown) => {
   return error.response.status === 429 || error.response.status >= 500;
 };
 
+const isRetryableRagFailure = (error: unknown) => isRagServiceFailure(error);
+
+const waitForRetry = (delayMs: number) => new Promise<void>((resolve) => {
+  setTimeout(resolve, delayMs);
+});
+
 const buildHeaders = (token: string): Record<string, string> => (
   token ? { 'X-ChatLLM-RAG-Token': token } : {}
 );
@@ -170,6 +180,9 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
   const serviceUrl = (options.serviceUrl || serverEnv.RAG_SERVICE_URL).replace(/\/+$/, '');
   const serviceToken = options.serviceToken ?? serverEnv.RAG_SERVICE_TOKEN;
   const retrieveTimeoutMs = options.retrieveTimeoutMs ?? serverEnv.RAG_RETRIEVE_TIMEOUT_MS;
+  const retrieveMaxAttempts = options.retrieveMaxAttempts ?? serverEnv.RAG_RETRIEVE_MAX_ATTEMPTS;
+  const retrieveTotalTimeoutMs = options.retrieveTotalTimeoutMs ?? serverEnv.RAG_RETRIEVE_TOTAL_TIMEOUT_MS;
+  const retrieveRetryDelayMs = options.retrieveRetryDelayMs ?? serverEnv.RAG_RETRIEVE_RETRY_DELAY_MS;
   const ingestTimeoutMs = options.ingestTimeoutMs ?? serverEnv.FILE_QUEUE_INGEST_TIMEOUT_MS;
   const cleanupTimeoutMs = options.cleanupTimeoutMs ?? serverEnv.RAG_CLEANUP_TIMEOUT_MS;
   const healthTimeoutMs = options.healthTimeoutMs ?? serverEnv.RAG_HEALTH_TIMEOUT_MS;
@@ -182,7 +195,8 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
 
   const requestRagService = async <T>(
     operation: RagOperation,
-    request: () => Promise<RagTransportResponse<T>>,
+    request: (attempt: number, remainingTimeoutMs: number) => Promise<RagTransportResponse<T>>,
+    retry: { maxAttempts?: number; totalTimeoutMs?: number; retryDelayMs?: number } = {},
   ): Promise<T> => {
     let permit;
     try {
@@ -193,16 +207,38 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     }
 
     const startedAt = now();
-    try {
-      const response = await request();
-      breaker.recordSuccess(operation);
-      clientMetrics.recordRagRetrieve('ok', now() - startedAt);
-      return response.data;
-    } catch (error) {
-      breaker.recordFailure(operation, permit, error);
-      clientMetrics.recordRagRetrieve('error', now() - startedAt);
-      throw error;
+    const maxAttempts = Math.max(1, retry.maxAttempts ?? 1);
+    const totalTimeoutMs = Math.max(1, retry.totalTimeoutMs ?? Number.MAX_SAFE_INTEGER);
+    const retryDelayMs = Math.max(0, retry.retryDelayMs ?? 0);
+    let attempt = 0;
+    while (attempt < maxAttempts) {
+      attempt += 1;
+      const elapsedMs = Math.max(0, now() - startedAt);
+      const remainingTimeoutMs = Math.max(1, Math.min(
+        Number.MAX_SAFE_INTEGER,
+        totalTimeoutMs - elapsedMs,
+      ));
+      try {
+        const response = await request(attempt, remainingTimeoutMs);
+        breaker.recordSuccess(operation);
+        clientMetrics.recordRagRetrieve('ok', now() - startedAt);
+        return response.data;
+      } catch (error) {
+        const elapsedAfterFailureMs = Math.max(0, now() - startedAt);
+        const remainingAfterFailureMs = totalTimeoutMs - elapsedAfterFailureMs;
+        const canRetry = attempt < maxAttempts
+          && remainingAfterFailureMs > retryDelayMs
+          && isRetryableRagFailure(error);
+        if (!canRetry) {
+          breaker.recordFailure(operation, permit, error);
+          clientMetrics.recordRagRetrieve('error', now() - startedAt);
+          throw error;
+        }
+        clientMetrics.recordRagRetrieveRetry?.();
+        if (retryDelayMs > 0) await waitForRetry(Math.min(retryDelayMs, remainingAfterFailureMs));
+      }
     }
+    throw new Error(`RAG ${operation} request exhausted retry budget`);
   };
 
   const postRagService = <T>(
@@ -211,15 +247,22 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     payload: unknown,
     timeout: number,
     signal?: AbortSignal,
-  ) => requestRagService<T>(operation, () => transport.post<T>(
+    retry: { maxAttempts?: number; totalTimeoutMs?: number; retryDelayMs?: number } = {},
+  ) => requestRagService<T>(operation, (_attempt, remainingTimeoutMs) => transport.post<T>(
     `${serviceUrl}${path}`,
     payload,
     {
-      timeout,
+      timeout: Math.min(timeout, remainingTimeoutMs),
       headers: buildHeaders(serviceToken),
       ...(signal ? { signal } : {}),
     },
-  ));
+  ), retry);
+
+  const retrieveRetry = {
+    maxAttempts: retrieveMaxAttempts,
+    totalTimeoutMs: retrieveTotalTimeoutMs,
+    retryDelayMs: retrieveRetryDelayMs,
+  };
 
   const retrieveRagDocuments = async (input: RetrieveRagDocumentsInput): Promise<RagDocument[]> => {
     const response = await postRagService<{ results?: RagDocument[] }>(
@@ -227,6 +270,8 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
       '/retrieve',
       input,
       retrieveTimeoutMs,
+      undefined,
+      retrieveRetry,
     );
     return response.results || [];
   };
@@ -237,6 +282,8 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
       '/agentic-retrieve',
       input,
       retrieveTimeoutMs,
+      undefined,
+      retrieveRetry,
     )
   );
 
@@ -246,6 +293,8 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
       '/graph/search',
       input,
       retrieveTimeoutMs,
+      undefined,
+      retrieveRetry,
     );
     return response.results || [];
   };
@@ -256,6 +305,8 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
       '/graph/list',
       input,
       retrieveTimeoutMs,
+      undefined,
+      retrieveRetry,
     );
     return response.results || [];
   };

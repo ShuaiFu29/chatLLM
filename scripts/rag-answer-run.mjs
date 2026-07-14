@@ -64,6 +64,7 @@ export function summarizeSseEvents(events) {
   let traceSummary = null;
   let qualitySummary = null;
   let answerGrounding = null;
+  let ragError = null;
   const warnings = [];
 
   for (const event of events || []) {
@@ -81,6 +82,13 @@ export function summarizeSseEvents(events) {
       qualitySummary = event.qualitySummary || qualitySummary;
     }
     if (event.rag_warning) warnings.push(String(event.rag_warning));
+    if (event.ragError) {
+      ragError = {
+        code: String(event.ragError.code || 'rag_retrieval_unavailable'),
+        retryable: event.ragError.retryable !== false,
+      };
+      warnings.push(ragError.code);
+    }
     if (event.ragSkipped) warnings.push('rag_skipped');
     if (event.error) warnings.push(String(event.error));
     if (event.parseError) warnings.push('invalid_sse_json');
@@ -97,6 +105,7 @@ export function summarizeSseEvents(events) {
     traceSummary,
     qualitySummary,
     answerGrounding,
+    ragError,
     promptSourceMap,
     modelCitedLabels: answerGrounding?.model_cited_labels || [],
     preVerificationCitedSources: answerGrounding?.pre_verification_cited_sources || [],

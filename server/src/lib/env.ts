@@ -40,8 +40,11 @@ const MIN_FILE_QUEUE_INGEST_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_FILE_QUEUE_MAX_ATTEMPTS = 3;
 const DEFAULT_FILE_QUEUE_RETRY_BASE_DELAY_MS = 60000;
 const DEFAULT_FILE_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
-const DEFAULT_RAG_HEALTH_TIMEOUT_MS = 2000;
-const DEFAULT_RAG_RETRIEVE_TIMEOUT_MS = 10000;
+const DEFAULT_RAG_HEALTH_TIMEOUT_MS = 10000;
+const DEFAULT_RAG_RETRIEVE_TIMEOUT_MS = 30000;
+const DEFAULT_RAG_RETRIEVE_MAX_ATTEMPTS = 2;
+const DEFAULT_RAG_RETRIEVE_TOTAL_TIMEOUT_MS = 60000;
+const DEFAULT_RAG_RETRIEVE_RETRY_DELAY_MS = 250;
 const DEFAULT_RAG_CLEANUP_TIMEOUT_MS = 10000;
 const DEFAULT_RAG_CIRCUIT_FAILURE_THRESHOLD = 5;
 const DEFAULT_RAG_CIRCUIT_RESET_MS = 30000;
@@ -116,6 +119,9 @@ export interface ServerEnv {
   FILE_QUEUE_STALE_AFTER_MS: number;
   RAG_HEALTH_TIMEOUT_MS: number;
   RAG_RETRIEVE_TIMEOUT_MS: number;
+  RAG_RETRIEVE_MAX_ATTEMPTS: number;
+  RAG_RETRIEVE_TOTAL_TIMEOUT_MS: number;
+  RAG_RETRIEVE_RETRY_DELAY_MS: number;
   RAG_CLEANUP_TIMEOUT_MS: number;
   RAG_CIRCUIT_FAILURE_THRESHOLD: number;
   RAG_CIRCUIT_RESET_MS: number;
@@ -302,6 +308,9 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const fileQueueStaleAfterMs = getPositiveInteger(env, 'FILE_QUEUE_STALE_AFTER_MS', DEFAULT_FILE_QUEUE_STALE_AFTER_MS, errors);
   const ragHealthTimeoutMs = getPositiveInteger(env, 'RAG_HEALTH_TIMEOUT_MS', DEFAULT_RAG_HEALTH_TIMEOUT_MS, errors);
   const ragRetrieveTimeoutMs = getPositiveInteger(env, 'RAG_RETRIEVE_TIMEOUT_MS', DEFAULT_RAG_RETRIEVE_TIMEOUT_MS, errors);
+  const ragRetrieveMaxAttempts = getPositiveInteger(env, 'RAG_RETRIEVE_MAX_ATTEMPTS', DEFAULT_RAG_RETRIEVE_MAX_ATTEMPTS, errors);
+  const ragRetrieveTotalTimeoutMs = getPositiveInteger(env, 'RAG_RETRIEVE_TOTAL_TIMEOUT_MS', DEFAULT_RAG_RETRIEVE_TOTAL_TIMEOUT_MS, errors);
+  const ragRetrieveRetryDelayMs = getPositiveInteger(env, 'RAG_RETRIEVE_RETRY_DELAY_MS', DEFAULT_RAG_RETRIEVE_RETRY_DELAY_MS, errors);
   const ragCleanupTimeoutMs = getPositiveInteger(env, 'RAG_CLEANUP_TIMEOUT_MS', DEFAULT_RAG_CLEANUP_TIMEOUT_MS, errors);
   const ragCircuitFailureThreshold = getPositiveInteger(env, 'RAG_CIRCUIT_FAILURE_THRESHOLD', DEFAULT_RAG_CIRCUIT_FAILURE_THRESHOLD, errors);
   const ragCircuitResetMs = getPositiveInteger(env, 'RAG_CIRCUIT_RESET_MS', DEFAULT_RAG_CIRCUIT_RESET_MS, errors);
@@ -324,6 +333,10 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
 
   if (fileQueueIngestTimeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
     errors.push(`FILE_QUEUE_INGEST_TIMEOUT_MS must be at least ${MIN_FILE_QUEUE_INGEST_TIMEOUT_MS}`);
+  }
+
+  if (ragRetrieveTotalTimeoutMs < ragRetrieveTimeoutMs) {
+    errors.push('RAG_RETRIEVE_TOTAL_TIMEOUT_MS must be at least RAG_RETRIEVE_TIMEOUT_MS');
   }
 
   if (errors.length > 0) {
@@ -393,6 +406,9 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     FILE_QUEUE_STALE_AFTER_MS: fileQueueStaleAfterMs,
     RAG_HEALTH_TIMEOUT_MS: ragHealthTimeoutMs,
     RAG_RETRIEVE_TIMEOUT_MS: ragRetrieveTimeoutMs,
+    RAG_RETRIEVE_MAX_ATTEMPTS: ragRetrieveMaxAttempts,
+    RAG_RETRIEVE_TOTAL_TIMEOUT_MS: ragRetrieveTotalTimeoutMs,
+    RAG_RETRIEVE_RETRY_DELAY_MS: ragRetrieveRetryDelayMs,
     RAG_CLEANUP_TIMEOUT_MS: ragCleanupTimeoutMs,
     RAG_CIRCUIT_FAILURE_THRESHOLD: ragCircuitFailureThreshold,
     RAG_CIRCUIT_RESET_MS: ragCircuitResetMs,

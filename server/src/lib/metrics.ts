@@ -53,6 +53,7 @@ class MetricsRegistry {
   private fileQueueFailedTotal = 0;
   private ragRetrieveTotal = 0;
   private ragRetrieveFailuresTotal = 0;
+  private ragRetrieveRetriesTotal = 0;
   private ragRetrieveDurationMsTotal = 0;
   private ragCircuitOpenTotal = 0;
   private ragEvalRunsStartedTotal = 0;
@@ -124,6 +125,10 @@ class MetricsRegistry {
     this.ragRetrieveTotal += 1;
     this.ragRetrieveDurationMsTotal += durationMs;
     if (status === 'error') this.ragRetrieveFailuresTotal += 1;
+  }
+
+  recordRagRetrieveRetry() {
+    this.ragRetrieveRetriesTotal += 1;
   }
 
   recordRagCircuitOpen() {
@@ -246,6 +251,9 @@ class MetricsRegistry {
       '# HELP chatllm_rag_retrieve_failures_total Failed RAG retrieve attempts.',
       '# TYPE chatllm_rag_retrieve_failures_total counter',
       `chatllm_rag_retrieve_failures_total ${this.ragRetrieveFailuresTotal}`,
+      '# HELP chatllm_rag_retrieve_retries_total RAG retrieve retry attempts.',
+      '# TYPE chatllm_rag_retrieve_retries_total counter',
+      `chatllm_rag_retrieve_retries_total ${this.ragRetrieveRetriesTotal}`,
       '# HELP chatllm_rag_retrieve_duration_ms_total Total RAG retrieve duration in milliseconds.',
       '# TYPE chatllm_rag_retrieve_duration_ms_total counter',
       `chatllm_rag_retrieve_duration_ms_total ${this.ragRetrieveDurationMsTotal}`,

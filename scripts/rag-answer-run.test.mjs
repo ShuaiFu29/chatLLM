@@ -69,3 +69,16 @@ test('prepareResumeResults keeps successes and retries prior transport failures'
     { id: 'E02', answer: '', error: 'HTTP 429' },
   ]), [{ id: 'E01', answer: 'ok', error: '' }]);
 });
+
+test('summarizeSseEvents records fail-closed RAG errors without fabricated answer text', () => {
+  const result = summarizeSseEvents(parseSseEvents([
+    'data: {"ragError":{"code":"rag_retrieval_unavailable","retryable":true}}',
+    '',
+    'data: [DONE]',
+    '',
+  ].join('\n')));
+
+  assert.equal(result.answer, '');
+  assert.deepEqual(result.ragError, { code: 'rag_retrieval_unavailable', retryable: true });
+  assert.deepEqual(result.warnings, ['rag_retrieval_unavailable']);
+});

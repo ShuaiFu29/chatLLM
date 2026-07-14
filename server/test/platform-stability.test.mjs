@@ -306,6 +306,16 @@ test('RAG retrieval uses a circuit-breaker client instead of inline axios calls'
   assert.match(ragClientSource, /recordRagCircuitOpen/);
 });
 
+test('RAG-routed retrieval failure stops generation instead of falling back to an ungrounded answer', () => {
+  const chatSource = readSource('src/controllers/chat.ts');
+
+  assert.match(chatSource, /rag_retrieval_unavailable/);
+  assert.match(chatSource, /answer generation stopped/);
+  assert.doesNotMatch(chatSource, /continuing without context/);
+  assert.doesNotMatch(chatSource, /answering without retrieved context/);
+  assert.match(chatSource, /ragError[\s\S]*?res\.write\('data: \[DONE\]/);
+});
+
 test('server protects internal RAG calls with a shared service token when configured', () => {
   const envSource = readSource('src/lib/env.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');

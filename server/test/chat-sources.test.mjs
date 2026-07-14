@@ -192,6 +192,18 @@ test('buildRagContextText labels source chunks and keeps inventory context out o
   assert.match(context, /inventory\.md/);
 });
 
+test('buildRagContext marks guide sources as navigation rather than primary evidence', () => {
+  const context = buildRagContextText([{
+    id: 'guide',
+    content: '索引只能定位文件，正式答案应引用政策、报告、台账或纪要原文。',
+    metadata: { filename: '00-语料索引与测试指南.md', file_id: 'guide', chunk_index: 0 },
+    source_role: 'evaluation_guide',
+  }]);
+
+  assert.match(context, /evaluation guide/);
+  assert.match(context, /not sufficient primary business evidence/);
+});
+
 test('buildRagContext fairly reserves body space for every non-empty source', () => {
   const documents = [
     { id: 'a', content: 'A'.repeat(500), metadata: { filename: 'a.md', chunk_index: 0 } },
@@ -258,6 +270,105 @@ test('verifyAnswerGrounding validates each cited claim against its local source'
   assert.equal(result.verified_sources.length, 2);
   assert.deepEqual(result.model_cited_labels, [1, 2]);
   assert.ok(result.citation_decisions.every((item) => item.supported));
+});
+
+test('verifyAnswerGrounding accepts faithful English paraphrases of Chinese workflow evidence', () => {
+  const documents = [{
+    id: 'closure-evidence',
+    content: '措施显示已完成只代表责任人提交措施或系统上线，不代表历史所有设备已升级、客户赔付已结案或供应商扣款完成。管理评审保留例外审批，审计仍需检查证据包。',
+    metadata: { filename: 'closure.md', file_id: 'closure', chunk_index: 0 },
+  }];
+  const result = verifyAnswerGrounding(
+    '[Source 1] states that completed actions only mean the responsible person submitted measures or the system has gone live. Historical equipment upgrades, customer compensation, supplier deductions, management review, audit, and evidence packages remain relevant.',
+    buildChatSources(documents),
+    { support_label: 'supported', evidence_label: 'strong' },
+    false,
+    buildVerificationSources(documents)
+  );
+
+  assert.equal(result.status, 'supported');
+  assert.equal(result.verified_sources.length, 1);
+  assert.equal(result.citation_decisions[0].support_mode, 'bilingual_canonical');
+});
+
+test('verifyAnswerGrounding treats an English source-introducing citation as applying to the following claim', () => {
+  const documents = [{
+    id: 'closure-evidence-following',
+    content: '已完成只表示责任人提交措施或系统上线，不表示历史设备升级、客户赔付或供应商扣款完成。管理评审保留例外，审计检查证据包。',
+    metadata: { filename: 'closure.md', file_id: 'closure-following', chunk_index: 0 },
+  }];
+  const result = verifyAnswerGrounding(
+    'The case is not fully closed. [Source 1] states that completed actions only mean the responsible person submitted measures or systems went live; historical equipment upgrades, customer compensation, supplier deductions, management review, audit, and evidence packages remain.',
+    buildChatSources(documents),
+    { support_label: 'supported', evidence_label: 'strong' },
+    false,
+    buildVerificationSources(documents)
+  );
+
+  assert.equal(result.status, 'supported');
+  assert.equal(result.citation_decisions[0].support_mode, 'bilingual_canonical');
+});
+
+test('verifyAnswerGrounding recognizes cautious English answers under insufficient evidence', () => {
+  const documents = [{
+    id: 'firmware-only',
+    content: '仅有固件材料不足以确定供应商责任，还需要合同、器件和批次证据。',
+    metadata: { filename: 'firmware.md', file_id: 'firmware-only', chunk_index: 0 },
+  }];
+  const result = verifyAnswerGrounding(
+    'Firmware files alone cannot fully address supplier responsibility. [Source 1]',
+    buildChatSources(documents),
+    { support_label: 'unsupported', evidence_label: 'weak' },
+    true,
+    buildVerificationSources(documents)
+  );
+
+  assert.equal(result.status, 'partial');
+  assert.doesNotMatch(result.reasons.join(' '), /answer_not_cautious/);
+});
+
+test('cross-language grounding still rejects conflicting exact markers', () => {
+  const documents = [{
+    id: 'version-evidence',
+    content: '当前批准固件版本为 FW-4.8.2，升级需要审批。',
+    metadata: { filename: 'firmware.md', file_id: 'firmware', chunk_index: 0 },
+  }];
+  const result = verifyAnswerGrounding(
+    'The approved upgrade version is FW-4.8.1. [Source 1]',
+    buildChatSources(documents),
+    { support_label: 'supported', evidence_label: 'strong' },
+    false,
+    buildVerificationSources(documents)
+  );
+
+  assert.equal(result.status, 'unsupported');
+  assert.match(result.reasons.join(' '), /missing_claim_markers_in_source/);
+});
+
+test('verifyAnswerGrounding conservatively attributes strong uncited claims to final source metadata', () => {
+  const documents = [
+    {
+      id: 'policy',
+      content: '当前政策要求按合同和证据审批赔付。',
+      metadata: { filename: 'policy.md', file_id: 'policy', chunk_index: 0 },
+    },
+    {
+      id: 'audit',
+      content: '审计要求补齐原始日志和客户授权后才能关闭。',
+      metadata: { filename: 'audit.md', file_id: 'audit', chunk_index: 0 },
+    },
+  ];
+  const result = verifyAnswerGrounding(
+    '赔付必须按合同和证据审批。[Source 1]\n审计要求补齐原始日志和客户授权后才能关闭。',
+    buildChatSources(documents),
+    { support_label: 'supported', evidence_label: 'strong' },
+    false,
+    buildVerificationSources(documents)
+  );
+
+  assert.deepEqual(result.verified_sources.map((source) => source.filename), ['policy.md', 'audit.md']);
+  assert.deepEqual(result.auto_attributed_sources.map((source) => source.filename), ['audit.md']);
+  assert.ok(result.citation_decisions.some((item) => item.auto_attributed && item.source_number === 2));
 });
 
 test('verifyAnswerGrounding supports citations placed before the local claim', () => {

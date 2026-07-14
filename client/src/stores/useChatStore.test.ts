@@ -220,6 +220,35 @@ describe('conversation request isolation', () => {
     expect(state.messagesCache['conversation-a'].at(-1)?.content).toBe('answer A');
   });
 
+  test('fail-closed RAG SSE leaves an explicit retryable error and no generated answer', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"ragError":{"code":"rag_retrieval_unavailable","retryable":true}}\n\ndata: [DONE]\n\n'
+        ));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      statusText: 'OK',
+      body: stream,
+    } as Response)));
+    apiMock.get.mockResolvedValue({ data: [], headers: {} });
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [],
+      messagesCache: { 'conversation-a': [] },
+    });
+
+    await useChatStore.getState().sendMessage('knowledge question');
+
+    const assistant = useChatStore.getState().messagesCache['conversation-a'].at(-1);
+    expect(assistant?.content).toBe('');
+    expect(assistant?.ragWarning).toBe(true);
+    expect(assistant?.ragError).toEqual({ code: 'rag_retrieval_unavailable', retryable: true });
+  });
+
   test('switching back to an active stream keeps its live cache instead of fetching stale history', async () => {
     const partial = [message('partial', 'live partial answer')];
     const activeController = chatRequestState.beginStream('conversation-a');

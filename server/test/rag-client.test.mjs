@@ -77,6 +77,9 @@ const createClient = ({
   now = () => 0,
   failureThreshold = 2,
   resetMs = 1000,
+  retrieveMaxAttempts = 1,
+  retrieveTotalTimeoutMs = 100,
+  retrieveRetryDelayMs = 0,
 } = {}) => {
   assert.equal(
     typeof ragClientModule.createRagClient,
@@ -94,10 +97,61 @@ const createClient = ({
     ingestTimeoutMs: 300,
     cleanupTimeoutMs: 200,
     healthTimeoutMs: 50,
+    retrieveMaxAttempts,
+    retrieveTotalTimeoutMs,
+    retrieveRetryDelayMs,
     failureThreshold,
     resetMs,
   });
 };
+
+test('transient retrieval failure retries once inside the total deadline', async () => {
+  const outcomes = [axiosTimeoutError(), ok({ results: [{ id: 'recovered' }] })];
+  const transport = createTransport(() => {
+    const outcome = outcomes.shift();
+    if (outcome instanceof Error) throw outcome;
+    return outcome;
+  });
+  const client = createClient({ transport, retrieveMaxAttempts: 2 });
+
+  const results = await client.retrieveRagDocuments(retrieveInput);
+
+  assert.deepEqual(results, [{ id: 'recovered' }]);
+  assert.equal(transport.calls.length, 2);
+  assert.deepEqual(transport.calls.map((call) => call.config.timeout), [100, 100]);
+});
+
+test('retrieval retry never repeats caller-caused 4xx responses', async () => {
+  const transport = createTransport(() => { throw axiosStatusError(400); });
+  const client = createClient({ transport, retrieveMaxAttempts: 2 });
+
+  await assert.rejects(client.retrieveRagDocuments(retrieveInput), (error) => error.response?.status === 400);
+
+  assert.equal(transport.calls.length, 1);
+});
+
+test('retry attempt timeout is capped by the remaining total budget', async () => {
+  let currentTime = 0;
+  let calls = 0;
+  const transport = createTransport(() => {
+    calls += 1;
+    if (calls === 1) {
+      currentTime = 80;
+      throw axiosTimeoutError();
+    }
+    return ok({ results: [] });
+  });
+  const client = createClient({
+    transport,
+    now: () => currentTime,
+    retrieveMaxAttempts: 2,
+    retrieveTotalTimeoutMs: 100,
+  });
+
+  await client.retrieveRagDocuments(retrieveInput);
+
+  assert.deepEqual(transport.calls.map((call) => call.config.timeout), [100, 20]);
+});
 
 test('caller-caused 400 responses never open the retrieve circuit', async () => {
   const outcomes = [axiosStatusError(400), axiosStatusError(400), ok({ results: [] })];

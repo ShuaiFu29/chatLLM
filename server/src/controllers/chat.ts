@@ -452,8 +452,18 @@ export const sendMessage = async (req: Request, res: Response) => {
           answer_guidance: answerGuidance,
         })}\n\n`);
       } catch (error) {
-        console.warn('[Chat] RAG retrieval failed; continuing without context:', toSafeError(error, res.locals.requestId));
-        res.write(`data: ${JSON.stringify({ rag_warning: 'Knowledge retrieval failed; answering without retrieved context.' })}\n\n`);
+        failed = true;
+        console.warn('[Chat] RAG retrieval failed; answer generation stopped:', toSafeError(error, res.locals.requestId));
+        res.write(`data: ${JSON.stringify({
+          ragError: {
+            code: 'rag_retrieval_unavailable',
+            retryable: true,
+            message: 'Workspace document retrieval failed. Retry before relying on an answer.',
+          },
+        })}\n\n`);
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
       }
     }
 

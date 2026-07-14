@@ -106,7 +106,7 @@
     "uploadFail": "Failed to upload file.",
     "searchingWorkspaceDocuments": "Searching workspace documents...",
     "loadingContent": "Loading content...",
-    "ragRetrievalFailed": "Workspace document retrieval failed, so this reply fell back to the base model.",
+    "ragRetrievalFailed": "Workspace document retrieval failed. No answer was generated without evidence; please retry.",
     "sources": "Sources & References",
     "viewOriginalDocument": "View original",
     "ragQuality": "RAG quality",

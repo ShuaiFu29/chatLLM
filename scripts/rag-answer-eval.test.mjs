@@ -309,6 +309,31 @@ test('scoreAnswerCase does not penalize optional context that the question did n
   assert.deepEqual(result.missingConcepts, []);
 });
 
+test('scoreAnswerCase ignores structural labels and optional numeric tiers', () => {
+  const result = scoreAnswerCase(
+    expectation({
+      expectedAnswer: '低于 70% 不建议关闭，90%以上可作为关闭依据。',
+      expectedKeywords: ['70%', '90%', '审计', '关闭依据'],
+      expectedSources: ['audit.md'],
+    }),
+    actual({
+      answer: '1. 根据[Chunk 3]，低于 70% 不建议关闭，需要补齐证据。[Source 1]',
+      retrievedSources: [{ filename: 'audit.md' }],
+      finalSources: [{ filename: 'audit.md' }],
+    }),
+    {
+      coreConcepts: [
+        { id: 'below', alternatives: ['低于 70% 不建议关闭'], required: true },
+        { id: 'remediation', alternatives: ['补齐证据'], required: true },
+        { id: 'above', alternatives: ['90%以上可作为关闭依据'], required: false },
+      ],
+    }
+  );
+
+  assert.equal(result.numericConflict, false);
+  assert.equal(result.grade, 'pass');
+});
+
 test('scoreAnswerCase never passes while a required concept is missing', () => {
   const result = scoreAnswerCase(
     expectation({ expectedSources: ['policy.md'] }),

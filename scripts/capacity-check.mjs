@@ -38,7 +38,10 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   const fileQueueMaxAttempts = asInt(serverEnv, 'FILE_QUEUE_MAX_ATTEMPTS', 3);
   const chatMaxConcurrent = asInt(serverEnv, 'CHAT_STREAM_MAX_CONCURRENT', 20);
   const ragEvalConcurrency = asInt(serverEnv, 'RAG_EVAL_QUEUE_CONCURRENCY', 1);
-  const ragRetrieveTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TIMEOUT_MS', 10000);
+  const ragHealthTimeoutMs = asInt(serverEnv, 'RAG_HEALTH_TIMEOUT_MS', 10000);
+  const ragRetrieveTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TIMEOUT_MS', 30000);
+  const ragRetrieveMaxAttempts = asInt(serverEnv, 'RAG_RETRIEVE_MAX_ATTEMPTS', 2);
+  const ragRetrieveTotalTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TOTAL_TIMEOUT_MS', 60000);
   const ragCircuitThreshold = asInt(serverEnv, 'RAG_CIRCUIT_FAILURE_THRESHOLD', 5);
   const maxDocumentBytes = asInt(serverEnv, 'MAX_DOCUMENT_BYTES', 100 * 1024 * 1024);
   const maxUserStorageBytes = asInt(serverEnv, 'MAX_USER_STORAGE_BYTES', 10 * 1024 * 1024 * 1024);
@@ -125,6 +128,18 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
     checks.push({ label: 'RAG_INGEST_EMBEDDING_BATCH_SIZE', status: 'ok', detail: `RAG_INGEST_EMBEDDING_BATCH_SIZE=${ragEmbeddingBatchSize}` });
   }
   checks.push({ label: 'RAG_RETRIEVE_TIMEOUT_MS', status: 'ok', detail: `RAG_RETRIEVE_TIMEOUT_MS=${ragRetrieveTimeoutMs}` });
+  checks.push({ label: 'RAG_HEALTH_TIMEOUT_MS', status: 'ok', detail: `RAG_HEALTH_TIMEOUT_MS=${ragHealthTimeoutMs}` });
+  checks.push({ label: 'RAG_RETRIEVE_MAX_ATTEMPTS', status: 'ok', detail: `RAG_RETRIEVE_MAX_ATTEMPTS=${ragRetrieveMaxAttempts}` });
+  checks.push({ label: 'RAG_RETRIEVE_TOTAL_TIMEOUT_MS', status: ragRetrieveTotalTimeoutMs >= ragRetrieveTimeoutMs ? 'ok' : 'warn', detail: `RAG_RETRIEVE_TOTAL_TIMEOUT_MS=${ragRetrieveTotalTimeoutMs}` });
+  if (ragRetrieveTotalTimeoutMs < ragRetrieveTimeoutMs) {
+    warnings.push(`RAG_RETRIEVE_TOTAL_TIMEOUT_MS should be >= RAG_RETRIEVE_TIMEOUT_MS (${ragRetrieveTotalTimeoutMs} < ${ragRetrieveTimeoutMs})`);
+  }
+  if (enterprise && ragHealthTimeoutMs < 5000) {
+    warnings.push(`RAG_HEALTH_TIMEOUT_MS should be >= 5000 for enterprise profile (RAG_HEALTH_TIMEOUT_MS=${ragHealthTimeoutMs})`);
+  }
+  if (enterprise && ragRetrieveTimeoutMs < 30000) {
+    warnings.push(`RAG_RETRIEVE_TIMEOUT_MS should be >= 30000 for enterprise profile (RAG_RETRIEVE_TIMEOUT_MS=${ragRetrieveTimeoutMs})`);
+  }
   checks.push({ label: 'RAG_CIRCUIT_FAILURE_THRESHOLD', status: 'ok', detail: `RAG_CIRCUIT_FAILURE_THRESHOLD=${ragCircuitThreshold}` });
   checks.push({ label: 'MAX_DOCUMENT_BYTES', status: 'ok', detail: `MAX_DOCUMENT_BYTES=${maxDocumentBytes}` });
   checks.push({ label: 'MAX_USER_STORAGE_BYTES', status: 'ok', detail: `MAX_USER_STORAGE_BYTES=${maxUserStorageBytes}` });

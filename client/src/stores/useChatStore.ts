@@ -37,6 +37,10 @@ export interface Message {
   traceSummary?: RagTraceSummary | null;
   qualitySummary?: RagQualitySummary | null;
   ragWarning?: boolean;
+  ragError?: {
+    code: string;
+    retryable: boolean;
+  };
   ragSkipped?: boolean;
   sources?: {
     chunk_id?: string;
@@ -946,7 +950,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 }
               }
 
-              if (data.rag_warning) {
+              if (data.ragError || data.rag_warning) {
                 const currentMsgs = getConversationMessages(get(), currentConversationId);
                 const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
                 if (lastMsgIndex !== -1) {
@@ -954,6 +958,10 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     ragWarning: true,
+                    ragError: data.ragError ? {
+                      code: String(data.ragError.code || 'rag_retrieval_unavailable'),
+                      retryable: data.ragError.retryable !== false,
+                    } : undefined,
                     sources: [],
                     ragRunId: null,
                     traceSummary: null,
