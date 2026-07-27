@@ -1,7 +1,13 @@
 import multer from 'multer';
+import {
+  AVATAR_UPLOAD_LIMIT_BYTES,
+  DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES,
+} from './uploadLimits';
 
-export const DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES = 2 * 1024 * 1024;
-export const AVATAR_UPLOAD_LIMIT_BYTES = 5 * 1024 * 1024;
+export {
+  AVATAR_UPLOAD_LIMIT_BYTES,
+  DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES,
+} from './uploadLimits';
 
 const memoryStorage = multer.memoryStorage();
 

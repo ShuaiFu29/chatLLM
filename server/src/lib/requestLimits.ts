@@ -1,2 +1,5 @@
 export const JSON_REQUEST_LIMIT = '1mb';
 export const URLENCODED_REQUEST_LIMIT = '100kb';
+
+export const JSON_REQUEST_LIMIT_BYTES = 1024 * 1024;
+export const URLENCODED_REQUEST_LIMIT_BYTES = 100 * 1024;
