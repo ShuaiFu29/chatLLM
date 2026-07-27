@@ -39,7 +39,7 @@ import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
 } from '../repositories/projectSpaces';
-import { findUserById, replaceUserAvatar, updateUser } from '../repositories/users';
+import { findUserById, replaceUserAvatar } from '../repositories/users';
 import {
   type MultipartUploadSessionRow,
   claimMultipartUploadAbort,

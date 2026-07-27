@@ -44,6 +44,9 @@ jobs:
       - name: Install locked RAG dependencies
         run: python -m pip install --require-hashes -r rag-service/requirements.txt
 
+      - name: Run JavaScript and TypeScript lint gates
+        run: npm run lint
+
       - name: Run unit, contract, and answer-quality gates
         run: npm test
 

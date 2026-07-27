@@ -183,15 +183,17 @@ test('unknown API routes return structured JSON 404 responses', async () => {
       requestId: 'test-request-404',
     });
 
-    assert.equal(errorLogs.length, 1);
-    const logEntry = JSON.parse(errorLogs[0]);
+    assert.equal(errorLogs.length, 0);
+    const parsedInfoLogs = infoLogs.map((entry) => JSON.parse(entry));
+    const logEntry = parsedInfoLogs.find((entry) => entry.event === 'http_client_error');
     assert.equal(logEntry.status_code, 404);
     assert.equal('stack' in logEntry, false);
 
     await new Promise((resolve) => setImmediate(resolve));
-    assert.equal(infoLogs.length, 1);
-    assert.equal(JSON.parse(infoLogs[0]).path, 'unmatched');
-    assert.doesNotMatch(infoLogs[0], /secret-path-value|query-secret-value|access_token/);
+    const requestLog = infoLogs.map((entry) => JSON.parse(entry))
+      .find((entry) => entry.event === 'http_request');
+    assert.equal(requestLog.path, 'unmatched');
+    assert.doesNotMatch(JSON.stringify(infoLogs), /secret-path-value|query-secret-value|access_token/);
   } finally {
     console.error = originalConsoleError;
     console.info = originalConsoleInfo;

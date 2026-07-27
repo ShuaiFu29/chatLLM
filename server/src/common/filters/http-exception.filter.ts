@@ -50,6 +50,27 @@ const getDefaultMessage = (error: unknown, statusCode: number) => {
   return 'Request failed';
 };
 
+const logHttpException = (
+  error: unknown,
+  statusCode: number,
+  requestId?: string,
+) => {
+  const entry = JSON.stringify({
+    event: statusCode >= 500 ? 'http_error' : 'http_client_error',
+    request_id: requestId,
+    status_code: statusCode,
+    error: toSafeError(error, requestId),
+  });
+
+  if (statusCode >= 500) {
+    console.error(entry);
+  } else if (statusCode === 429) {
+    console.warn(entry);
+  } else {
+    console.info(entry);
+  }
+};
+
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
   catch(error: unknown, host: ArgumentsHost) {
@@ -76,12 +97,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       ? httpResponse as Record<string, unknown>
       : null;
 
-    console.error(JSON.stringify({
-      event: 'http_error',
-      request_id: requestId,
-      status_code: statusCode,
-      error: toSafeError(error, requestId),
-    }));
+    logHttpException(error, statusCode, requestId);
 
     const isExplicitPublicBody = explicitBody?.error
       && typeof explicitBody.error === 'string'

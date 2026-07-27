@@ -3,12 +3,13 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import formbody from '@fastify/formbody';
 import multipart from '@fastify/multipart';
-import { RequestMethod } from '@nestjs/common';
+import { NestApplicationOptions, RequestMethod } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import {
   FastifyAdapter,
   NestFastifyApplication,
 } from '@nestjs/platform-fastify';
+import { LogController } from 'fastify';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { registerHttpHooks } from './common/http/http-hooks';
@@ -32,15 +33,34 @@ const operationalRoutes = [
   'metrics',
 ].map((path) => ({ path, method: RequestMethod.GET }));
 
-export const createApplication = async () => {
+interface CreateApplicationOptions {
+  createNestApplication?: (
+    adapter: FastifyAdapter,
+    options: NestApplicationOptions,
+  ) => NestFastifyApplication | Promise<NestFastifyApplication>;
+}
+
+const nestApplicationOptions: NestApplicationOptions = {
+  bodyParser: false,
+};
+
+export const createApplication = async (options: CreateApplicationOptions = {}) => {
   const adapter = new FastifyAdapter({
     bodyLimit: JSON_REQUEST_LIMIT_BYTES,
     trustProxy: serverEnv.TRUST_PROXY_HOPS,
-    disableRequestLogging: true,
-    ignoreTrailingSlash: true,
-    caseSensitive: false,
+    logController: new LogController({ disableRequestLogging: true }),
+    routerOptions: {
+      ignoreTrailingSlash: true,
+      caseSensitive: false,
+    },
   });
-  const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter);
+  const app = options.createNestApplication
+    ? await options.createNestApplication(adapter, nestApplicationOptions)
+    : await NestFactory.create<NestFastifyApplication>(
+      AppModule,
+      adapter,
+      nestApplicationOptions,
+    );
   try {
     const fastify = app.getHttpAdapter().getInstance();
 

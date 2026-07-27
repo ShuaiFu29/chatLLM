@@ -67,7 +67,7 @@ npm run dev
 cd D:\project\chatLLM
 npm run dev:rag
 
-说明：dev:rag 会优先使用项目根目录 .venv 里且能导入 RAG 依赖的 Python；如果没有可用 .venv，才回退到系统 python。
+说明：dev:rag 会优先使用项目根目录 .venv，并校验关键 RAG 依赖是否与 requirements.txt 锁定版本一致；不匹配的虚拟环境或系统 Python 不会被启动。
 
 
 启动前端 React：

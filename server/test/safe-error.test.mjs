@@ -153,10 +153,13 @@ test('HttpExceptionFilter logs and returns a sanitized Fastify 500 response', ()
 });
 
 
-test('HttpExceptionFilter never echoes untrusted 4xx exception messages', () => {
+test('HttpExceptionFilter keeps expected 4xx responses out of error logs', () => {
   const originalConsoleError = console.error;
+  const originalConsoleInfo = console.info;
   const logs = [];
-  console.error = (message) => logs.push(message);
+  const errorLogs = [];
+  console.info = (message) => logs.push(message);
+  console.error = (message) => errorLogs.push(message);
   const { host, reply } = createFilterHarness('request-id-400');
   const error = Object.assign(new Error('exception-secret-value'), { statusCode: 400 });
 
@@ -164,6 +167,7 @@ test('HttpExceptionFilter never echoes untrusted 4xx exception messages', () => 
     new HttpExceptionFilter().catch(error, host);
   } finally {
     console.error = originalConsoleError;
+    console.info = originalConsoleInfo;
   }
 
   assert.equal(reply.statusCode, 400);
@@ -171,6 +175,8 @@ test('HttpExceptionFilter never echoes untrusted 4xx exception messages', () => 
     error: 'Bad request',
     requestId: 'request-id-400',
   });
+  assert.equal(errorLogs.length, 0);
+  assert.equal(JSON.parse(logs[0]).event, 'http_client_error');
   assert.doesNotMatch(JSON.stringify([reply.body, logs]), /exception-secret-value/);
 });
 

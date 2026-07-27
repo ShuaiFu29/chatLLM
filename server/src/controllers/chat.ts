@@ -569,7 +569,13 @@ export const sendMessage = async (req: AppRequest, res: AppReply) => {
     }
     console.error('[Chat] Failed to generate response:', toSafeError(error, req.requestId));
     if (streamStarted) {
-      await sse.send({ error: 'Failed to generate response' });
+      await sse.send({
+        error: {
+          code: 'chat_stream_failed',
+          message: 'Failed to generate response',
+          retryable: true,
+        },
+      });
       sse.close();
     } else {
       const statusCode = error instanceof ModelProviderConfigurationError || error instanceof UnsupportedOfficialModelError

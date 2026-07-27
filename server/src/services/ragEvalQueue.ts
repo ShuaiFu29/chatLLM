@@ -94,7 +94,7 @@ export const prepareRagEvalCases = async (
           token_usage: generated.tokenUsage,
         },
       });
-    } catch (_error) {
+    } catch {
       if (signal.aborted) throw new Error('RAG evaluation answer generation aborted');
       generatedCases.push({
         ...testCase,

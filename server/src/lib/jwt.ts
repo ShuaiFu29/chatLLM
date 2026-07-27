@@ -53,7 +53,7 @@ export const verifyAccessToken = (token: string): User | null => {
       avatar_url: decoded.avatar_url || '',
       display_name: decoded.display_name || ''
     };
-  } catch (error) {
+  } catch {
     return null;
   }
 };

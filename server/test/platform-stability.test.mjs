@@ -180,7 +180,13 @@ test('server entrypoint exports app construction separately from process startup
   const appModuleSource = readSource('src/app.module.ts');
 
   assert.match(mainSource, /export const createApplication = async/);
-  assert.match(mainSource, /NestFactory\.create<NestFastifyApplication>\(AppModule, adapter\)/);
+  assert.match(mainSource, /const nestApplicationOptions:[\s\S]*bodyParser:\s*false/);
+  assert.match(
+    mainSource,
+    /NestFactory\.create<NestFastifyApplication>\([\s\S]*AppModule,[\s\S]*adapter,[\s\S]*nestApplicationOptions/,
+  );
+  assert.match(mainSource, /logController:\s*new LogController\(\{\s*disableRequestLogging:\s*true\s*\}\)/);
+  assert.match(mainSource, /routerOptions:\s*\{[\s\S]*ignoreTrailingSlash:\s*true,[\s\S]*caseSensitive:\s*false/);
   assert.match(mainSource, /export const bootstrap = async/);
   assert.match(mainSource, /return app/);
   assert.match(mainSource, /require\.main === module/);
@@ -388,10 +394,15 @@ test('RAG-routed retrieval failure stops generation instead of falling back to a
   const chatSource = readSource('src/controllers/chat.ts');
 
   assert.match(chatSource, /rag_retrieval_unavailable/);
+  assert.match(chatSource, /ragError:[\s\S]*?retryable: true,[\s\S]*?message: 'Workspace document retrieval failed\. Retry before relying on an answer\.'/);
   assert.match(chatSource, /answer generation stopped/);
   assert.doesNotMatch(chatSource, /continuing without context/);
   assert.doesNotMatch(chatSource, /answering without retrieved context/);
   assert.match(chatSource, /ragError[\s\S]*?await sse\.done\(\)[\s\S]*?sse\.close\(\)/);
+  assert.match(
+    chatSource,
+    /error: \{\s*code: 'chat_stream_failed',\s*message: 'Failed to generate response',\s*retryable: true,\s*\}/,
+  );
 });
 
 test('server protects internal RAG calls with a shared service token when configured', () => {

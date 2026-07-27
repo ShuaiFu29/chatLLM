@@ -5,16 +5,32 @@ import { test } from 'node:test';
 import {
   buildRagServiceSpawnConfig,
   buildRagTestSpawnConfig,
+  parseLockedRagVersions,
   resolvePythonExecutable,
 } from './run-rag-service.mjs';
 
-const rootDir = path.resolve('D:/project/chatLLM');
+const rootDir = path.resolve('.');
+
+test('parseLockedRagVersions reads the critical runtime versions from the hash lock', () => {
+  assert.deepEqual(parseLockedRagVersions([
+    'fastapi==0.139.0 \\',
+    'uvicorn==0.51.0 \\',
+    'pydantic==2.13.4 \\',
+    'psycopg==3.3.4 \\',
+  ].join('\n')), {
+    fastapi: '0.139.0',
+    uvicorn: '0.51.0',
+    pydantic: '2.13.4',
+    psycopg: '3.3.4',
+  });
+});
 
 test('resolvePythonExecutable honors an explicit RAG_PYTHON override', () => {
   const python = resolvePythonExecutable({
     rootDir,
     env: { RAG_PYTHON: 'D:/Python/python.exe' },
     existsSync: () => false,
+    isPythonUsable: () => true,
   });
 
   assert.equal(python, 'D:/Python/python.exe');
@@ -39,9 +55,20 @@ test('resolvePythonExecutable falls back to python when no virtualenv exists on 
     platform: 'win32',
     env: {},
     existsSync: () => false,
+    isPythonUsable: () => true,
   });
 
   assert.equal(python, 'python');
+});
+
+test('resolvePythonExecutable rejects interpreters that drift from the dependency lock', () => {
+  assert.throws(() => resolvePythonExecutable({
+    rootDir,
+    platform: 'win32',
+    env: { RAG_PYTHON: 'D:/Python/python.exe' },
+    existsSync: () => true,
+    isPythonUsable: () => false,
+  }), /does not match rag-service\/requirements\.txt/);
 });
 
 test('resolvePythonExecutable skips a virtualenv that cannot import RAG dependencies', () => {
@@ -64,6 +91,7 @@ test('buildRagServiceSpawnConfig runs uvicorn from the rag-service directory', (
     env: { RAG_PORT: '8100' },
     platform: 'win32',
     existsSync: () => false,
+    isPythonUsable: () => true,
   });
 
   assert.equal(config.command, 'python');
@@ -102,6 +130,7 @@ test('buildRagServiceSpawnConfig honors an explicit RAG bind host', () => {
     env: { RAG_BIND_HOST: '10.20.30.40' },
     platform: 'win32',
     existsSync: () => false,
+    isPythonUsable: () => true,
   });
 
   const hostIndex = config.args.indexOf('--host');

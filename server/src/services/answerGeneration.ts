@@ -25,7 +25,7 @@ export const MAX_RETRIEVAL_CONVERSATION_CONTEXT = 6;
 const DEFAULT_INSUFFICIENT_EVIDENCE_GUIDANCE =
   'No usable workspace evidence was retrieved. Do not answer from general knowledge or invent citations; state that the workspace source material is insufficient.';
 
-export interface AnswerMessage extends RagConversationContextItem {}
+export type AnswerMessage = RagConversationContextItem;
 
 type ChatClient = ReturnType<typeof createChatClientForModel>['client'];
 

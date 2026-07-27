@@ -214,7 +214,7 @@ RAG 回答默认 fail-closed：检索已触发但没有任何可用证据时，�
 
 Graph LLM 抽取默认关闭。启用时必须显式配置 `GRAPH_EXTRACTION_ENABLED=true` 及兼容 API 的 key、base URL 和 model，推荐成套使用 `GRAPH_EXTRACTION_*`，避免隐式复用 Judge 配置造成供应商错配。当前只支持 `GRAPH_ONTOLOGY_VERSION=core-v1`。系统保留来源中的开放实体类型标签和关系谓词，但存储与遍历仍映射到受控安全大类；未配置或单个 Chunk 抽取失败时使用降权的规则 fallback，因此这不是自动生成无限本体的知识图谱。
 
-`npm run check:env` 会对所有显式启用的高级能力执行成套配置校验：Query Rewrite、Reranker、Graph 抽取、LLM Judge 缺少任一 provider 字段都会失败；`REDIS_CACHE_ENABLED=true` 时必须提供与队列 `REDIS_URL` 分离的 `CACHE_REDIS_URL`。没有真实凭证时应保持这些开关关闭，不能用占位值“硬启用”。启用前后应在同一数据集上各运行一次评测，使用自动绑定的 paired baseline 判断收益，并结合 95% CI 与切片结果检查回归。
+`npm run check:config` 会对所有显式启用的高级能力执行成套配置校验：Query Rewrite、Reranker、Graph 抽取、LLM Judge 缺少任一 provider 字段都会失败；`REDIS_CACHE_ENABLED=true` 时必须提供与队列 `REDIS_URL` 分离的 `CACHE_REDIS_URL`。没有真实凭证时应保持这些开关关闭，不能用占位值“硬启用”。启用前后应在同一数据集上各运行一次评测，使用自动绑定的 paired baseline 判断收益，并结合 95% CI 与切片结果检查回归。
 
 上传配额按用户串行核算：`MAX_DOCUMENT_BYTES` 限制单文件声明大小，`MAX_USER_STORAGE_BYTES` 限制已落盘总量，`MAX_USER_ACTIVE_UPLOAD_BYTES` 限制进行中上传预留量。初始化上传时先写入 `reserved_bytes`；对象大小与元数据校验成功后，预留量才转换为实测 `storage_bytes`；取消或删除时必须在外部对象确认不存在后才释放 `reserved_bytes`，避免并发上传绕过配额。
 
@@ -275,7 +275,7 @@ npm run dev
 
 前端默认通过 Vite proxy 访问 `/api`，会优先读取 `server/.env` 里的 `BACKEND_URL` / `PORT`。
 
-`npm run dev:rag` 会优先使用项目根目录 `.venv` 里且能导入 RAG 依赖的 Python，避免系统全局 Python 依赖污染影响 RAG 服务；如需强制指定解释器，可以设置 `RAG_PYTHON`。
+`npm run dev:rag` 会优先使用项目根目录 `.venv`，并校验 FastAPI、Uvicorn、Pydantic 与 psycopg 是否和 `rag-service/requirements.txt` 的锁定版本完全一致；不匹配时会拒绝启动并提示同步环境。如需强制指定解释器，可以设置 `RAG_PYTHON`，该解释器同样必须通过版本校验。
 
 ## 主要功能
 
