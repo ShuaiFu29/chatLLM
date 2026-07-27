@@ -1,5 +1,6 @@
 import {
   CallHandler,
+  createParamDecorator,
   ExecutionContext,
   HttpException,
   Injectable,
@@ -21,6 +22,15 @@ interface MultipartUploadOptions {
 export const MultipartUpload = (options: MultipartUploadOptions) => (
   SetMetadata(MULTIPART_UPLOAD, options)
 );
+
+export const readBufferedUploadFile = (
+  _data: unknown,
+  context: ExecutionContext,
+): BufferedUpload | undefined => (
+  context.switchToHttp().getRequest<AppRequest>().uploadFile
+);
+
+export const BufferedUploadFile = createParamDecorator(readBufferedUploadFile);
 
 const toBufferedUpload = async (part: MultipartFile): Promise<BufferedUpload> => {
   const buffer = await part.toBuffer();

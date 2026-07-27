@@ -12,11 +12,14 @@ test('usage tracking exposes authenticated user-scoped routes', () => {
 
   assert.match(nestControllerSource, /@Controller\('usage'\)/);
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
-  assert.match(nestControllerSource, /@Get\(\)[\s\S]*?return getUsageOverview\(request, reply\)/);
+  assert.match(nestControllerSource, /@Get\(\)[\s\S]*?this\.usageService\.getOverview\(user\.id/);
   assert.match(
     nestControllerSource,
-    /@Get\('conversations\/:conversationId'\)[\s\S]*?return getUsageConversation\(request, reply\)/,
+    /@Get\('conversations\/:conversationId'\)[\s\S]*?this\.usageService\.getConversation\(/,
   );
+  assert.match(nestControllerSource, /@CurrentUser\(\) user: User/);
+  assert.match(nestControllerSource, /@RequestId\(\) requestId\?: string/);
+  assert.doesNotMatch(nestControllerSource, /@(?:Req|Res)\(|App(?:Request|Reply)|controllers\/usage/);
 });
 
 test('usage repository aggregates conversations, messages, documents, citations, and rag runs by current user only', () => {
@@ -35,34 +38,31 @@ test('usage repository aggregates conversations, messages, documents, citations,
 });
 
 test('usage controller returns overview lists and protects missing conversations', () => {
-  const controllerSource = readFileSync(path.join(serverRoot, 'src/controllers/usage.ts'), 'utf8');
+  const serviceSource = readFileSync(path.join(serverRoot, 'src/modules/usage/usage.service.ts'), 'utf8');
 
-  assert.match(controllerSource, /getUsageSummaryForUser\(req\.user\.id\)/);
-  assert.match(controllerSource, /listUsageConversationsForUser\(req\.user\.id, conversationLimit\)/);
-  assert.match(controllerSource, /findUsageConversationForUser\(conversationId, req\.user\.id\)/);
-  assert.match(controllerSource, /listUsageConversationMessagesForUser\(conversationId, req\.user\.id, messageLimit\)/);
-  assert.match(controllerSource, /listUsageRagRunsForConversation\(conversationId, req\.user\.id, ragRunLimit\)/);
-  assert.match(controllerSource, /res\.send\(\{ conversation, messages, ragRuns \}\)/);
-  assert.match(controllerSource, /return res\.code\(404\)\.send\(\{ error: 'Conversation not found' \}\)/);
+  assert.match(serviceSource, /getUsageSummaryForUser\(userId\)/);
+  assert.match(serviceSource, /listUsageConversationsForUser\(userId, conversationLimit\)/);
+  assert.match(serviceSource, /findUsageConversationForUser\([\s\S]*?conversationId,[\s\S]*?userId/);
+  assert.match(serviceSource, /listUsageConversationMessagesForUser\([\s\S]*?conversationId,[\s\S]*?userId,[\s\S]*?messageLimit/);
+  assert.match(serviceSource, /listUsageRagRunsForConversation\(conversationId, userId, ragRunLimit\)/);
+  assert.match(serviceSource, /return \{ conversation, messages, ragRuns \}/);
+  assert.match(serviceSource, /\{ error: 'Conversation not found' \}[\s\S]*?HttpStatus\.NOT_FOUND/);
 });
 
 test('usage tracking applies bounded list limits for large histories', () => {
-  const controllerSource = readFileSync(path.join(serverRoot, 'src/controllers/usage.ts'), 'utf8');
+  const serviceSource = readFileSync(path.join(serverRoot, 'src/modules/usage/usage.service.ts'), 'utf8');
   const repositorySource = readFileSync(path.join(serverRoot, 'src/repositories/usage.ts'), 'utf8');
 
-  assert.match(controllerSource, /DEFAULT_USAGE_CONVERSATION_LIMIT = 100/);
-  assert.match(controllerSource, /MAX_USAGE_CONVERSATION_LIMIT = 500/);
-  assert.match(controllerSource, /DEFAULT_USAGE_MESSAGE_LIMIT = 500/);
-  assert.match(controllerSource, /MAX_USAGE_MESSAGE_LIMIT = 1000/);
-  assert.match(controllerSource, /DEFAULT_USAGE_RAG_RUN_LIMIT = 50/);
-  assert.match(controllerSource, /MAX_USAGE_RAG_RUN_LIMIT = 200/);
-  assert.match(controllerSource, /parseBoundedLimit/);
-  assert.match(controllerSource, /req\.query\.limit/);
-  assert.match(controllerSource, /req\.query\.messageLimit/);
-  assert.match(controllerSource, /req\.query\.ragRunLimit/);
-  assert.match(controllerSource, /listUsageConversationsForUser\(req\.user\.id, conversationLimit\)/);
-  assert.match(controllerSource, /listUsageConversationMessagesForUser\(conversationId, req\.user\.id, messageLimit\)/);
-  assert.match(controllerSource, /listUsageRagRunsForConversation\(conversationId, req\.user\.id, ragRunLimit\)/);
+  assert.match(serviceSource, /DEFAULT_USAGE_CONVERSATION_LIMIT = 100/);
+  assert.match(serviceSource, /MAX_USAGE_CONVERSATION_LIMIT = 500/);
+  assert.match(serviceSource, /DEFAULT_USAGE_MESSAGE_LIMIT = 500/);
+  assert.match(serviceSource, /MAX_USAGE_MESSAGE_LIMIT = 1000/);
+  assert.match(serviceSource, /DEFAULT_USAGE_RAG_RUN_LIMIT = 50/);
+  assert.match(serviceSource, /MAX_USAGE_RAG_RUN_LIMIT = 200/);
+  assert.match(serviceSource, /parseBoundedLimit/);
+  assert.match(serviceSource, /listUsageConversationsForUser\(userId, conversationLimit\)/);
+  assert.match(serviceSource, /listUsageConversationMessagesForUser\([\s\S]*?conversationId,[\s\S]*?userId,[\s\S]*?messageLimit/);
+  assert.match(serviceSource, /listUsageRagRunsForConversation\(conversationId, userId, ragRunLimit\)/);
 
   assert.match(repositorySource, /listUsageConversationsForUser = async \(userId: string, limit = 100\)/);
   assert.match(repositorySource, /listUsageConversationMessagesForUser = async \(\s*conversationId: string,\s*userId: string,\s*limit = 500\s*\)/);

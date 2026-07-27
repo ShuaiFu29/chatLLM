@@ -1,40 +1,29 @@
-import type { ServerResponse } from 'http';
-import type { AppReply } from './app-request';
+import type { Writable } from 'stream';
 
-const SSE_HEADERS = {
+export const SSE_HEADERS = {
   'Content-Type': 'text/event-stream',
   'Cache-Control': 'no-cache',
   Connection: 'keep-alive',
+  'X-Accel-Buffering': 'no',
 };
 
 export class SseWriter {
-  private readonly response: ServerResponse;
   private opened = false;
   private closed = false;
 
-  constructor(private readonly reply: AppReply) {
-    this.response = reply.raw;
-    this.response.once('close', () => {
+  constructor(private readonly stream: Writable) {
+    this.stream.once('close', () => {
       this.closed = true;
     });
   }
 
   get isClosed(): boolean {
-    return this.closed || this.response.destroyed || this.response.writableEnded;
+    return this.closed || this.stream.destroyed || this.stream.writableEnded;
   }
 
   open(): boolean {
     if (this.opened) return !this.isClosed;
     if (this.isClosed) return false;
-
-    this.reply.hijack();
-    for (const [name, value] of Object.entries(this.reply.getHeaders())) {
-      if (value !== undefined) this.response.setHeader(name, value);
-    }
-    for (const [name, value] of Object.entries(SSE_HEADERS)) {
-      this.response.setHeader(name, value);
-    }
-    this.response.writeHead(200);
     this.opened = true;
     return true;
   }
@@ -50,20 +39,20 @@ export class SseWriter {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    if (!this.response.destroyed && !this.response.writableEnded) {
-      this.response.end();
+    if (!this.stream.destroyed && !this.stream.writableEnded) {
+      this.stream.end();
     }
   }
 
   private write(frame: string): Promise<boolean> {
     if (!this.opened || this.isClosed) return Promise.resolve(false);
-    if (this.response.write(frame, 'utf8')) return Promise.resolve(true);
+    if (this.stream.write(frame, 'utf8')) return Promise.resolve(true);
 
     return new Promise<boolean>((resolve, reject) => {
       const cleanup = () => {
-        this.response.off('drain', onDrain);
-        this.response.off('close', onClose);
-        this.response.off('error', onError);
+        this.stream.off('drain', onDrain);
+        this.stream.off('close', onClose);
+        this.stream.off('error', onError);
       };
       const onDrain = () => {
         cleanup();
@@ -78,9 +67,9 @@ export class SseWriter {
         reject(error);
       };
 
-      this.response.once('drain', onDrain);
-      this.response.once('close', onClose);
-      this.response.once('error', onError);
+      this.stream.once('drain', onDrain);
+      this.stream.once('close', onClose);
+      this.stream.once('error', onError);
       if (this.isClosed) onClose();
     });
   }

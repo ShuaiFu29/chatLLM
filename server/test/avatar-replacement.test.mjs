@@ -56,7 +56,7 @@ test('avatar object keys remain unique for concurrent requests in the same milli
 });
 
 function withMockedUploadController(overrides = {}) {
-  const controllerPath = path.join(serverRoot, 'dist', 'controllers', 'upload.js');
+  const controllerPath = path.join(serverRoot, 'dist', 'modules', 'upload', 'upload.service.js');
   const previousEntries = new Map();
 
   const mockModule = (relativePath, exports) => {
@@ -138,7 +138,29 @@ function withMockedUploadController(overrides = {}) {
     ...(overrides.cleanupQueue || {}),
   });
 
-  const controller = require(controllerPath);
+  const { isHttpResponse } = require(path.join(
+    serverRoot,
+    'dist',
+    'common',
+    'http',
+    'http-response.js',
+  ));
+  const { UploadService } = require(controllerPath);
+  const service = new UploadService();
+  const controller = {
+    async uploadAvatar(request, response) {
+      const result = await service.uploadAvatar(
+        request.user.id,
+        request.uploadFile,
+        request.requestId,
+      );
+      if (isHttpResponse(result)) {
+        if (result.options.statusCode !== undefined) response.code(result.options.statusCode);
+        return response.send(result.body);
+      }
+      return response.send(result);
+    },
+  };
   return {
     controller,
     restore() {

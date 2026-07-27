@@ -1,40 +1,38 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   HttpCode,
+  Param,
   Post,
-  Req,
-  Res,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RateLimitScope } from '../../common/guards/rate-limit.guard';
-import { AppReply, AppRequest } from '../../common/http/app-request';
-import { MultipartUpload } from '../../common/interceptors/multipart-upload.interceptor';
-import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
+import type { BufferedUpload } from '../../common/http/app-request';
 import {
-  abortMultipartUpload,
-  checkFile,
-  completeMultipartUpload,
-  deleteFile,
-  getAvatar,
-  getFileContent,
-  initMultipartUpload,
-  initUpload,
-  listFiles,
-  mergeChunks,
-  presignMultipartParts,
-  retryFileProcessing,
-  uploadAvatar,
-  uploadChunk,
-} from '../../controllers/upload';
+  CurrentUser,
+  RequestId,
+} from '../../common/http/request-context.decorator';
+import {
+  BufferedUploadFile,
+  MultipartUpload,
+} from '../../common/interceptors/multipart-upload.interceptor';
+import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
 import { serverEnv } from '../../lib/env';
 import { mutationSchemas } from '../../lib/mutationSchemas';
 import {
   AVATAR_UPLOAD_LIMIT_BYTES,
   DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES,
 } from '../../lib/uploadLimits';
+import { User } from '../../types';
+import {
+  UploadBody,
+  UploadQuery,
+  UploadService,
+} from './upload.service';
 
 @Controller('upload')
 @UseGuards(AuthGuard)
@@ -45,46 +43,72 @@ import {
   skipMethods: ['GET'],
 })
 export class UploadController {
+  constructor(private readonly uploadService: UploadService) {}
+
   @Post('check')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadCheck)
-  check(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return checkFile(request, reply);
+  check(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.checkFile(user.id, body, requestId);
   }
 
   @Post('init')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadInit)
-  init(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return initUpload(request, reply);
+  init(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.initUpload(user.id, body, requestId);
   }
 
   @Post('multipart/init')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadMultipartInit)
-  initMultipart(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return initMultipartUpload(request, reply);
+  initMultipart(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.initMultipartUpload(user.id, body, requestId);
   }
 
   @Post('multipart/parts')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadMultipartParts)
-  multipartParts(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return presignMultipartParts(request, reply);
+  multipartParts(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.presignMultipartParts(user.id, body, requestId);
   }
 
   @Post('multipart/complete')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadMultipartComplete)
-  completeMultipart(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return completeMultipartUpload(request, reply);
+  completeMultipart(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.completeMultipartUpload(user.id, body, requestId);
   }
 
   @Post('multipart/abort')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadMultipartAbort)
-  abortMultipart(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return abortMultipartUpload(request, reply);
+  abortMultipart(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.abortMultipartUpload(user.id, body, requestId);
   }
 
   @Post('chunk')
@@ -94,15 +118,29 @@ export class UploadController {
     maxBytes: DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES,
   })
   @ValidateMutation(mutationSchemas.uploadChunk)
-  chunk(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return uploadChunk(request, reply);
+  chunk(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @BufferedUploadFile() file: BufferedUpload | undefined,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.uploadChunk(
+      user.id,
+      body,
+      file,
+      requestId,
+    );
   }
 
   @Post('merge')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadMerge)
-  merge(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return mergeChunks(request, reply);
+  merge(
+    @CurrentUser() user: User,
+    @Body() body: UploadBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.mergeChunks(user.id, body, requestId);
   }
 
   @Post('avatar')
@@ -112,35 +150,63 @@ export class UploadController {
     maxBytes: AVATAR_UPLOAD_LIMIT_BYTES,
   })
   @ValidateMutation(mutationSchemas.uploadAvatar)
-  avatar(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return uploadAvatar(request, reply);
+  avatar(
+    @CurrentUser() user: User,
+    @BufferedUploadFile() file: BufferedUpload | undefined,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.uploadAvatar(
+      user.id,
+      file,
+      requestId,
+    );
   }
 
   @Get('avatar/:userId')
-  getAvatar(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getAvatar(request, reply);
+  getAvatar(
+    @CurrentUser() user: User,
+    @Param('userId') userId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.getAvatar(user.id, userId, requestId);
   }
 
   @Get('files')
-  files(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return listFiles(request, reply);
+  files(
+    @CurrentUser() user: User,
+    @Query() query: UploadQuery,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.listFiles(user.id, query, requestId);
   }
 
   @Get('files/:id/content')
-  fileContent(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getFileContent(request, reply);
+  fileContent(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.getFileContent(user.id, id, requestId);
   }
 
   @Post('files/:id/retry')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadRetryFile)
-  retryFile(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return retryFileProcessing(request, reply);
+  retryFile(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.retryFileProcessing(user.id, id, requestId);
   }
 
   @Delete('files/:id')
   @ValidateMutation(mutationSchemas.uploadDeleteFile)
-  deleteFile(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return deleteFile(request, reply);
+  deleteFile(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.deleteFile(user.id, id, requestId);
   }
 }

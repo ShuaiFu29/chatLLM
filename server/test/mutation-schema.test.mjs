@@ -489,11 +489,11 @@ test('MutationValidationInterceptor throws a non-reflective validation error and
 
 test('controllers consume validated values without secondary coercion or truncation', () => {
   const readSource = (relativePath) => readFileSync(path.join(serverRoot, relativePath), 'utf8');
-  const chatSource = readSource('src/controllers/chat.ts');
-  const projectSpaceSource = readSource('src/controllers/projectSpaces.ts');
-  const promptTemplateSource = readSource('src/controllers/promptTemplates.ts');
-  const ragEvalSource = readSource('src/controllers/ragEval.ts');
-  const ragWorkbenchSource = readSource('src/controllers/ragWorkbench.ts');
+  const chatSource = readSource('src/modules/chat/chat.service.ts');
+  const projectSpaceSource = readSource('src/modules/project-spaces/project-spaces.service.ts');
+  const promptTemplateSource = readSource('src/modules/prompt-templates/prompt-templates.service.ts');
+  const ragEvalSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
+  const ragWorkbenchSource = readSource('src/modules/rag-workbench/rag-workbench.service.ts');
   const personaRepositorySource = readSource('src/repositories/persona.ts');
 
   assert.doesNotMatch(chatSource, /Boolean\(is_(?:pinned|favorite)\)/);

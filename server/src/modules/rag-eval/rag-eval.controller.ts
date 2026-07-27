@@ -1,33 +1,27 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   HttpCode,
+  Param,
   Patch,
   Post,
-  Req,
-  Res,
+  Query,
   UseGuards,
 } from '@nestjs/common';
-import {
-  cancelRagEvalRun,
-  createRagEvalCase,
-  createRagEvalDataset,
-  deleteRagEvalCase,
-  deleteRagEvalDataset,
-  getRagEvalQualitySummary,
-  getRagEvalRun,
-  listRagEvalDatasets,
-  listRagEvalHistory,
-  runRagEvalDataset,
-  updateRagEvalDataset,
-} from '../../controllers/ragEval';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RateLimitScope } from '../../common/guards/rate-limit.guard';
-import { AppReply, AppRequest } from '../../common/http/app-request';
+import { CurrentUser, RequestId } from '../../common/http/request-context.decorator';
 import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
 import { serverEnv } from '../../lib/env';
 import { mutationSchemas } from '../../lib/mutationSchemas';
+import { User } from '../../types';
+import {
+  RagEvalCaseBody,
+  RagEvalDatasetBody,
+  RagEvalService,
+} from './rag-eval.service';
 
 @Controller('rag-eval')
 @UseGuards(AuthGuard)
@@ -37,66 +31,111 @@ import { mutationSchemas } from '../../lib/mutationSchemas';
   message: 'Too many RAG evaluation requests',
 })
 export class RagEvalController {
+  constructor(private readonly ragEvalService: RagEvalService) {}
+
   @Get('history')
-  history(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return listRagEvalHistory(request, reply);
+  history(
+    @CurrentUser() user: User,
+    @Query('limit') limit: unknown,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.history(user.id, limit, requestId);
   }
 
   @Get('datasets')
-  listDatasets(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return listRagEvalDatasets(request, reply);
+  listDatasets(@CurrentUser() user: User, @RequestId() requestId?: string) {
+    return this.ragEvalService.listDatasets(user.id, requestId);
   }
 
   @Post('datasets')
   @ValidateMutation(mutationSchemas.ragEvalDatasetCreate)
-  createDataset(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return createRagEvalDataset(request, reply);
+  createDataset(
+    @CurrentUser() user: User,
+    @Body() body: RagEvalDatasetBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.createDataset(user.id, body, requestId);
   }
 
   @Patch('datasets/:datasetId')
   @ValidateMutation(mutationSchemas.ragEvalDatasetUpdate)
-  updateDataset(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return updateRagEvalDataset(request, reply);
+  updateDataset(
+    @CurrentUser() user: User,
+    @Param('datasetId') datasetId: string,
+    @Body() body: RagEvalDatasetBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.updateDataset(user.id, datasetId, body, requestId);
   }
 
   @Delete('datasets/:datasetId')
   @ValidateMutation(mutationSchemas.ragEvalDatasetDelete)
-  deleteDataset(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return deleteRagEvalDataset(request, reply);
+  deleteDataset(
+    @CurrentUser() user: User,
+    @Param('datasetId') datasetId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.deleteDataset(user.id, datasetId, requestId);
   }
 
   @Get('datasets/:datasetId/quality')
-  qualitySummary(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getRagEvalQualitySummary(request, reply);
+  qualitySummary(
+    @CurrentUser() user: User,
+    @Param('datasetId') datasetId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.qualitySummary(user.id, datasetId, requestId);
   }
 
   @Post('datasets/:datasetId/cases')
   @ValidateMutation(mutationSchemas.ragEvalCaseCreate)
-  createCase(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return createRagEvalCase(request, reply);
+  createCase(
+    @CurrentUser() user: User,
+    @Param('datasetId') datasetId: string,
+    @Body() body: RagEvalCaseBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.createCase(user.id, datasetId, body, requestId);
   }
 
   @Post('datasets/:datasetId/runs')
+  @HttpCode(202)
   @ValidateMutation(mutationSchemas.ragEvalDatasetRun)
-  runDataset(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return runRagEvalDataset(request, reply);
+  runDataset(
+    @CurrentUser() user: User,
+    @Param('datasetId') datasetId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.runDataset(user.id, datasetId, requestId);
   }
 
   @Get('runs/:runId')
-  getRun(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getRagEvalRun(request, reply);
+  getRun(
+    @CurrentUser() user: User,
+    @Param('runId') runId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.getRun(user.id, runId, requestId);
   }
 
   @Post('runs/:runId/cancel')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.ragEvalRunCancel)
-  cancelRun(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return cancelRagEvalRun(request, reply);
+  cancelRun(
+    @CurrentUser() user: User,
+    @Param('runId') runId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.cancelRun(user.id, runId, requestId);
   }
 
   @Delete('cases/:caseId')
   @ValidateMutation(mutationSchemas.ragEvalCaseDelete)
-  deleteCase(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return deleteRagEvalCase(request, reply);
+  deleteCase(
+    @CurrentUser() user: User,
+    @Param('caseId') caseId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.ragEvalService.deleteCase(user.id, caseId, requestId);
   }
 }

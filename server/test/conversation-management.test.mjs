@@ -12,7 +12,8 @@ const initMigration = readFileSync(path.join(serverRoot, 'migrations', '0001_ini
 const managementMigration = readFileSync(path.join(serverRoot, 'migrations', '0003_conversation_management.sql'), 'utf8');
 const repositorySource = readFileSync(path.join(serverRoot, 'src/repositories/conversations.ts'), 'utf8');
 const messageRepositorySource = readFileSync(path.join(serverRoot, 'src/repositories/messages.ts'), 'utf8');
-const controllerSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
+const chatServiceSource = readFileSync(path.join(serverRoot, 'src/modules/chat/chat.service.ts'), 'utf8');
+const chatStreamServiceSource = readFileSync(path.join(serverRoot, 'src/modules/chat/chat-stream.service.ts'), 'utf8');
 const nestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/chat/chat.controller.ts'), 'utf8');
 
 test('conversation schema supports pinning and archiving for new and existing databases', () => {
@@ -31,9 +32,9 @@ test('conversation listing defaults to active conversations and sorts pinned con
 
 test('conversation updates allow pin and archive state changes for the current user only', () => {
   assert.match(repositorySource, /'is_pinned' \| 'archived_at'/);
-  assert.match(controllerSource, /is_pinned/);
-  assert.match(controllerSource, /archived/);
-  assert.match(controllerSource, /updates\.archived_at = archived \? new Date\(\)\.toISOString\(\) : null/);
+  assert.match(chatServiceSource, /is_pinned/);
+  assert.match(chatServiceSource, /archived/);
+  assert.match(chatServiceSource, /updates\.archived_at = archived \? new Date\(\)\.toISOString\(\) : null/);
 });
 
 test('regeneration truncates one owned conversation from a selected user message atomically', async () => {
@@ -98,10 +99,10 @@ test('regeneration endpoint is authenticated, validated, and delegates to the at
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
   assert.match(
     nestControllerSource,
-    /@Delete\('conversations\/:conversationId\/messages\/:messageId\/truncate'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.chatTruncateConversation\)[\s\S]*?return truncateConversation\(request, reply\)/,
+    /@Delete\('conversations\/:conversationId\/messages\/:messageId\/truncate'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.chatTruncateConversation\)[\s\S]*?this\.chatService\.truncateConversation\(user, conversationId, messageId\)/,
   );
-  assert.match(controllerSource, /truncateConversationFromUserMessage\(conversationId, messageId, req\.user\.id\)/);
-  assert.match(controllerSource, /if \(!result\) return res\.code\(404\)\.send/);
+  assert.match(chatServiceSource, /truncateConversationFromUserMessage\(\s*conversationId,\s*messageId,\s*user\.id/);
+  assert.match(chatServiceSource, /if \(!result\) throw publicError\(404/);
   assert.match(messageRepositorySource, /export const truncateConversationFromUserMessage/);
 });
 
@@ -121,5 +122,5 @@ test('delayed automatic titles update only the untouched New Chat placeholder', 
   assert.equal(updated, false);
   assert.match(capturedQuery.sql, /where id = \$2 and title = 'new chat'/);
   assert.deepEqual(capturedQuery.params, ['Generated title', 'conversation-id']);
-  assert.match(controllerSource, /updateConversationTitleIfPlaceholder\(conversationId, title\)/);
+  assert.match(chatStreamServiceSource, /updateConversationTitleIfPlaceholder\(conversationId, title\)/);
 });

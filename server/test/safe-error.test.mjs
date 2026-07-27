@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 
 const require = createRequire(import.meta.url);
+const { HttpException } = require('@nestjs/common');
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 Object.assign(process.env, {
@@ -180,6 +181,28 @@ test('HttpExceptionFilter keeps expected 4xx responses out of error logs', () =>
   assert.doesNotMatch(JSON.stringify([reply.body, logs]), /exception-secret-value/);
 });
 
+test('HttpExceptionFilter logs the safe cause classification for wrapped service failures', () => {
+  const originalConsoleError = console.error;
+  const logs = [];
+  console.error = (message) => logs.push(message);
+  const { host } = createFilterHarness('request-id-wrapped');
+  const cause = Object.assign(new Error('database-secret-value'), { code: 'ETIMEDOUT' });
+
+  try {
+    new HttpExceptionFilter().catch(
+      new HttpException({ error: 'Public failure' }, 500, { cause }),
+      host,
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  const entry = JSON.parse(logs[0]);
+  assert.equal(entry.error.name, 'Error');
+  assert.equal(entry.error.code, 'ETIMEDOUT');
+  assert.doesNotMatch(JSON.stringify(entry), /database-secret-value/);
+});
+
 
 test('readReadyHealth never logs downstream Axios request configuration or payloads', async () => {
   assert.equal(typeof safeErrorModule.toSafeError, 'function');
@@ -216,7 +239,10 @@ test('readReadyHealth never logs downstream Axios request configuration or paylo
 
 
 test('upload API responses do not derive public details from exception serialization', () => {
-  const uploadSource = fs.readFileSync(path.join(serverRoot, 'src', 'controllers', 'upload.ts'), 'utf8');
+  const uploadSource = fs.readFileSync(
+    path.join(serverRoot, 'src', 'modules', 'upload', 'upload.service.ts'),
+    'utf8',
+  );
 
   assert.doesNotMatch(uploadSource, /stringifyError/);
   assert.doesNotMatch(uploadSource, /details:\s*message\b/);

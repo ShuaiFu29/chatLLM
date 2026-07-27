@@ -1,5 +1,14 @@
-import { Controller, Get, HttpCode, Req, Res } from '@nestjs/common';
-import { AppReply, AppRequest } from '../../common/http/app-request';
+import {
+  Controller,
+  Get,
+  Headers,
+  HttpCode,
+} from '@nestjs/common';
+import {
+  HttpResponse,
+  httpResponse,
+} from '../../common/http/http-response';
+import { RequestId } from '../../common/http/request-context.decorator';
 import { SkipRateLimit } from '../../common/guards/rate-limit.guard';
 import { serverEnv } from '../../lib/env';
 import { readReadyHealth } from '../../lib/health';
@@ -7,25 +16,30 @@ import { metrics } from '../../lib/metrics';
 import { classifyQueueHealth, readQueueHealthCounts } from '../../lib/queueHealth';
 import { toSafeError } from '../../lib/safeError';
 
-const readMetricsToken = (request: AppRequest) => {
-  const authorization = request.headers.authorization;
+const readMetricsToken = (
+  authorization?: unknown,
+  headerToken?: unknown,
+) => {
   const bearer = typeof authorization === 'string'
     ? /^Bearer\s+(.+)$/i.exec(authorization.trim())?.[1]?.trim()
     : '';
-  const headerToken = request.headers['x-chatllm-metrics-token'];
   return bearer || (typeof headerToken === 'string' ? headerToken : '');
 };
 
-const authorizeMetrics = (request: AppRequest, reply: AppReply) => {
+const authorizeMetrics = (
+  authorization?: unknown,
+  headerToken?: unknown,
+): HttpResponse<{ error: string }> | null => {
   if (!serverEnv.METRICS_TOKEN) {
-    reply.code(503).send({ error: 'Metrics token is not configured' });
-    return false;
+    return httpResponse(
+      { error: 'Metrics token is not configured' },
+      { statusCode: 503 },
+    );
   }
-  if (readMetricsToken(request) !== serverEnv.METRICS_TOKEN) {
-    reply.code(401).send({ error: 'Unauthorized' });
-    return false;
+  if (readMetricsToken(authorization, headerToken) !== serverEnv.METRICS_TOKEN) {
+    return httpResponse({ error: 'Unauthorized' }, { statusCode: 401 });
   }
-  return true;
+  return null;
 };
 
 @Controller()
@@ -44,35 +58,48 @@ export class OperationsController {
   }
 
   @Get('health/ready')
-  async ready(@Req() request: AppRequest, @Res() reply: AppReply) {
-    const result = await readReadyHealth({}, request.requestId);
-    reply.code(result.statusCode).send(result.body);
+  async ready(@RequestId() requestId?: string) {
+    const result = await readReadyHealth({}, requestId);
+    return httpResponse(result.body, { statusCode: result.statusCode });
   }
 
   @Get('health/queues')
-  async queues(@Req() request: AppRequest, @Res() reply: AppReply) {
-    if (!authorizeMetrics(request, reply)) return;
+  async queues(
+    @Headers('authorization') authorization?: unknown,
+    @Headers('x-chatllm-metrics-token') headerToken?: unknown,
+    @RequestId() requestId?: string,
+  ) {
+    const authorizationError = authorizeMetrics(authorization, headerToken);
+    if (authorizationError) return authorizationError;
 
     try {
       const result = classifyQueueHealth(await readQueueHealthCounts());
-      reply.code(result.status === 'ok' ? 200 : 503).send(result);
+      return httpResponse(result, {
+        statusCode: result.status === 'ok' ? 200 : 503,
+      });
     } catch (error) {
-      console.warn('[Health] Queue health check failed:', toSafeError(error, request.requestId));
-      reply.code(503).send({
+      console.warn('[Health] Queue health check failed:', toSafeError(error, requestId));
+      return httpResponse({
         status: 'unavailable',
         checks: {
           cleanup: { status: 'error' },
           ingestion_leases: { status: 'error' },
           eval_leases: { status: 'error' },
         },
-        ...(request.requestId ? { requestId: request.requestId } : {}),
-      });
+        ...(requestId ? { requestId } : {}),
+      }, { statusCode: 503 });
     }
   }
 
   @Get('metrics')
-  metrics(@Req() request: AppRequest, @Res() reply: AppReply) {
-    if (!authorizeMetrics(request, reply)) return;
-    reply.type('text/plain').send(metrics.renderPrometheus());
+  metrics(
+    @Headers('authorization') authorization?: unknown,
+    @Headers('x-chatllm-metrics-token') headerToken?: unknown,
+  ) {
+    const authorizationError = authorizeMetrics(authorization, headerToken);
+    if (authorizationError) return authorizationError;
+    return httpResponse(metrics.renderPrometheus(), {
+      headers: { 'content-type': 'text/plain; charset=utf-8' },
+    });
   }
 }

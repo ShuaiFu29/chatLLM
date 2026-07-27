@@ -64,7 +64,7 @@ test('message cursors round-trip created time and id without exposing raw SQL fr
 
 test('chat message listing uses cursor pagination and exposes page metadata headers', () => {
   const repositorySource = readSource('src/repositories/messages.ts');
-  const controllerSource = readSource('src/controllers/chat.ts');
+  const serviceSource = readSource('src/modules/chat/chat.service.ts');
   const nestControllerSource = readSource('src/modules/chat/chat.controller.ts');
   const mainSource = readSource('src/main.ts');
   const storeSource = readSource('../client/src/stores/useChatStore.ts');
@@ -76,17 +76,16 @@ test('chat message listing uses cursor pagination and exposes page metadata head
   assert.match(repositorySource, /hasMore/);
   assert.match(repositorySource, /\.reverse\(\)/);
 
-  assert.match(controllerSource, /normalizeMessagePageQuery\(req\.query\)/);
-  assert.match(controllerSource, /x-chatllm-has-more/);
-  assert.match(controllerSource, /x-chatllm-next-cursor/);
-  assert.match(controllerSource, /x-chatllm-page-limit/);
-  assert.match(controllerSource, /listMessagesForConversationPage/);
-  assert.match(controllerSource, /res\.header\('x-chatllm-has-more'/);
-  assert.match(controllerSource, /res\.header\('x-chatllm-next-cursor'/);
-  assert.match(controllerSource, /res\.send\(page\.messages\)/);
+  assert.match(serviceSource, /normalizeMessagePageQuery\(query\)/);
+  assert.match(serviceSource, /x-chatllm-has-more/);
+  assert.match(serviceSource, /x-chatllm-next-cursor/);
+  assert.match(serviceSource, /x-chatllm-page-limit/);
+  assert.match(serviceSource, /listMessagesForConversationPage/);
+  assert.match(serviceSource, /httpResponse\(page\.messages/);
 
   assert.match(nestControllerSource, /@Get\('conversations\/:conversationId\/messages'\)/);
-  assert.match(nestControllerSource, /return getMessages\(request, reply\)/);
+  assert.match(nestControllerSource, /this\.chatService\.getMessages\(user, conversationId, query\)/);
+  assert.doesNotMatch(nestControllerSource, /@Res\(|AppReply/);
   assert.match(mainSource, /exposedHeaders/);
   assert.match(mainSource, /x-chatllm-next-cursor/);
 

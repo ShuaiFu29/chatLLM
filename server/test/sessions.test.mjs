@@ -11,7 +11,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 const sessionsModule = require(path.join(serverRoot, 'dist', 'repositories', 'sessions.js'));
 const sessionsSource = readFileSync(path.join(serverRoot, 'src', 'repositories', 'sessions.ts'), 'utf8');
-const authSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'auth.ts'), 'utf8');
+const authSource = readFileSync(path.join(serverRoot, 'src', 'modules', 'auth', 'auth.service.ts'), 'utf8');
 
 
 test('hashRefreshToken returns the stable 64-character SHA-256 digest', () => {
@@ -36,10 +36,10 @@ test('session repository persists and queries token hashes instead of raw refres
 });
 
 
-test('auth controller generates random 32-byte refresh tokens and rotates them atomically', () => {
+test('AuthService generates random 32-byte refresh tokens and rotates them atomically', () => {
   const refreshBody = authSource
-    .split('export const refreshToken', 2)[1]
-    .split('export const getMe', 1)[0];
+    .split('async refresh(', 2)[1]
+    .split('async getMe(', 1)[0];
 
   assert.match(authSource, /randomBytes\(32\)\.toString\('base64url'\)/);
   assert.doesNotMatch(authSource, /randomUUID\(\)/);

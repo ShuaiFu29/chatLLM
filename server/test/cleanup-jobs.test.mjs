@@ -220,10 +220,10 @@ test('cleanup failures persist a fixed safe message instead of downstream except
   assert.doesNotMatch(persisted[0], new RegExp(secret));
 });
 
-test('controllers accept durable deletion before external cleanup and queue starts with the server', () => {
-  const upload = readSource('src/controllers/upload.ts');
-  const projects = readSource('src/controllers/projectSpaces.ts');
-  const auth = readSource('src/controllers/auth.ts');
+test('Nest services accept durable deletion before external cleanup and queue starts with the server', () => {
+  const upload = readSource('src/modules/upload/upload.service.ts');
+  const projects = readSource('src/modules/project-spaces/project-spaces.service.ts');
+  const auth = readSource('src/modules/auth/auth.service.ts');
   const uploadController = readSource('src/modules/upload/upload.controller.ts');
   const projectController = readSource('src/modules/project-spaces/project-spaces.controller.ts');
   const authController = readSource('src/modules/auth/auth.controller.ts');
@@ -232,15 +232,15 @@ test('controllers accept durable deletion before external cleanup and queue star
   assert.match(upload, /enqueueFileCleanup/);
   assert.match(projects, /enqueueProjectSpaceCleanup/);
   assert.match(auth, /enqueueAccountCleanup/);
-  assert.match(upload, /code\(202\)\.send/);
-  assert.match(projects, /code\(202\)\.send/);
-  assert.match(auth, /code\(202\)\.send/);
+  assert.match(upload, /statusCode:\s*202/);
+  assert.match(projectController, /@HttpCode\(HttpStatus\.ACCEPTED\)/);
+  assert.match(auth, /statusCode:\s*202/);
   assert.doesNotMatch(upload, /cleanupRagFileVectors/);
   assert.doesNotMatch(projects, /cleanupRagFileVectors/);
   assert.doesNotMatch(auth, /cleanupUserExternalArtifacts/);
-  assert.match(uploadController, /@Delete\('files\/:id'\)[\s\S]*return deleteFile\(request, reply\)/);
-  assert.match(projectController, /@Delete\(':projectSpaceId'\)[\s\S]*return deleteProjectSpace\(request, reply\)/);
-  assert.match(authController, /@Delete\('me'\)[\s\S]*return deleteAccount\(request, reply\)/);
+  assert.match(uploadController, /@Delete\('files\/:id'\)[\s\S]*return this\.uploadService\.deleteFile\(user\.id, id, requestId\)/);
+  assert.match(projectController, /@Delete\(':projectSpaceId'\)[\s\S]*return this\.projectSpacesService\.delete\(user\.id, projectSpaceId, requestId\)/);
+  assert.match(authController, /@Delete\('me'\)[\s\S]*return this\.authService\.deleteAccount\(user, requestId\)/);
   assert.match(lifecycle, /const queues = \[fileQueue, ragEvalQueue, artifactCleanupQueue\]/);
   assert.match(lifecycle, /async onApplicationBootstrap\(\)[\s\S]*queues\.map\(\(queue\) => queue\.start\(\)\)/);
   assert.match(lifecycle, /shutdownRuntime\(\)[\s\S]*queues\.map\(\(queue\) => queue\.stop\(\)\)/);

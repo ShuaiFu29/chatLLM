@@ -7,8 +7,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 const repositorySource = readFileSync(path.join(serverRoot, 'src/repositories/projectSpaces.ts'), 'utf8');
-const handlerSource = readFileSync(path.join(serverRoot, 'src/controllers/projectSpaces.ts'), 'utf8');
 const nestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/project-spaces/project-spaces.controller.ts'), 'utf8');
+const serviceSource = readFileSync(path.join(serverRoot, 'src/modules/project-spaces/project-spaces.service.ts'), 'utf8');
 
 test('deleting a workspace is finalized only after durable child cleanup', () => {
   const cleanupRepositoryPath = path.join(serverRoot, 'src/repositories/cleanupJobs.ts');
@@ -29,12 +29,13 @@ test('workspace deletion controller enqueues cleanup without inline external cal
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
   assert.match(
     nestControllerSource,
-    /@Delete\(':projectSpaceId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.projectSpaceDelete\)[\s\S]*?return deleteProjectSpace\(request, reply\)/,
+    /@Delete\(':projectSpaceId'\)[\s\S]*?@HttpCode\(HttpStatus\.ACCEPTED\)[\s\S]*?@ValidateMutation\(mutationSchemas\.projectSpaceDelete\)[\s\S]*?this\.projectSpacesService\.delete\(user\.id, projectSpaceId, requestId\)/,
   );
-  assert.match(handlerSource, /enqueueProjectSpaceCleanup/);
-  assert.match(handlerSource, /code\(202\)\.send/);
-  assert.doesNotMatch(handlerSource, /cleanupRagFileVectors/);
-  assert.doesNotMatch(handlerSource, /deleteObject/);
+  assert.match(serviceSource, /enqueueProjectSpaceCleanup/);
+  assert.match(nestControllerSource, /@CurrentUser\(\) user: User/);
+  assert.doesNotMatch(nestControllerSource, /@(?:Req|Res)\(|App(?:Request|Reply)|controllers\/projectSpaces/);
+  assert.doesNotMatch(serviceSource, /cleanupRagFileVectors/);
+  assert.doesNotMatch(serviceSource, /deleteObject/);
 });
 
 test('normal workspace lookups hide deleting rows while deletion remains idempotent', () => {
@@ -43,7 +44,7 @@ test('normal workspace lookups hide deleting rows while deletion remains idempot
 
   assert.match(activeLookup, /status = 'active'/i);
   assert.match(repositorySource, /export const findProjectSpaceForUserIncludingDeleting/);
-  assert.match(handlerSource, /findProjectSpaceForUserIncludingDeleting/);
-  const deleteController = handlerSource.split('export const deleteProjectSpace', 2)[1] || '';
+  assert.match(serviceSource, /findProjectSpaceForUserIncludingDeleting/);
+  const deleteController = serviceSource.split('async delete', 2)[1] || '';
   assert.match(deleteController, /findProjectSpaceForUserIncludingDeleting/);
 });

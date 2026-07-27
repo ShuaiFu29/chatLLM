@@ -1,39 +1,61 @@
 import {
   Controller,
   Get,
-  Req,
-  Res,
+  Param,
+  Query,
   UseGuards,
 } from '@nestjs/common';
-import {
-  getProviderHealth,
-  getUsageConversation,
-  getUsageFileQueue,
-  getUsageOverview,
-} from '../../controllers/usage';
 import { AuthGuard } from '../../common/guards/auth.guard';
-import { AppReply, AppRequest } from '../../common/http/app-request';
+import {
+  CurrentUser,
+  RequestId,
+} from '../../common/http/request-context.decorator';
+import { User } from '../../types';
+import { UsageService } from './usage.service';
+
+type UsageQuery = Record<string, unknown>;
 
 @Controller('usage')
 @UseGuards(AuthGuard)
 export class UsageController {
+  constructor(private readonly usageService: UsageService) {}
+
   @Get()
-  overview(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getUsageOverview(request, reply);
+  overview(
+    @CurrentUser() user: User,
+    @Query() query: UsageQuery,
+    @RequestId() requestId?: string,
+  ) {
+    return this.usageService.getOverview(user.id, query.limit, requestId);
   }
 
   @Get('provider-health')
-  providerHealth(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getProviderHealth(request, reply);
+  providerHealth() {
+    return this.usageService.getProviderHealth();
   }
 
   @Get('file-queue')
-  fileQueue(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getUsageFileQueue(request, reply);
+  fileQueue(
+    @CurrentUser() user: User,
+    @Query() query: UsageQuery,
+    @RequestId() requestId?: string,
+  ) {
+    return this.usageService.getFileQueue(user.id, query.limit, requestId);
   }
 
   @Get('conversations/:conversationId')
-  conversation(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getUsageConversation(request, reply);
+  conversation(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Query() query: UsageQuery,
+    @RequestId() requestId?: string,
+  ) {
+    return this.usageService.getConversation(
+      user.id,
+      conversationId,
+      query.messageLimit,
+      query.ragRunLimit,
+      requestId,
+    );
   }
 }

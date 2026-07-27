@@ -13,6 +13,7 @@ import { LogController } from 'fastify';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { registerHttpHooks } from './common/http/http-hooks';
+import { HttpResponseInterceptor } from './common/interceptors/http-response.interceptor';
 import { registerGlobalRateLimitHook } from './common/http/global-rate-limit-hook';
 import { RuntimeLifecycleService } from './infrastructure/runtime-lifecycle.service';
 import { serverEnv } from './lib/env';
@@ -96,6 +97,7 @@ export const createApplication = async (options: CreateApplicationOptions = {}) 
 
     app.setGlobalPrefix('api', { exclude: operationalRoutes });
     app.useGlobalFilters(new HttpExceptionFilter());
+    app.useGlobalInterceptors(new HttpResponseInterceptor());
     return app;
   } catch (error) {
     await app.close().catch((closeError) => {

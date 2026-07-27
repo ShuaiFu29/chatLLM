@@ -153,8 +153,9 @@ test('server applies baseline security headers and structured error responses', 
   assert.match(mainSource, /registerHttpHooks\(fastify\)/);
   assert.match(mainSource, /app\.useGlobalFilters\(new HttpExceptionFilter\(\)\)/);
   assert.doesNotMatch(mainSource, /platform-express|from ['"]express['"]|require\(['"]express['"]\)/);
-  assert.match(operationsSource, /if \(!serverEnv\.METRICS_TOKEN\)[\s\S]*reply\.code\(503\)\.send/);
+  assert.match(operationsSource, /if \(!serverEnv\.METRICS_TOKEN\)[\s\S]*statusCode:\s*503/);
   assert.doesNotMatch(operationsSource, /if \(!serverEnv\.METRICS_TOKEN\) \{\s*return true/);
+  assert.doesNotMatch(operationsSource, /@(Req|Res)\s*\(/);
 
   assert.match(securityHeadersSource, /X-Content-Type-Options/);
   assert.match(securityHeadersSource, /nosniff/);
@@ -169,7 +170,7 @@ test('server applies baseline security headers and structured error responses', 
   assert.match(errorHandlerSource, /Not allowed by CORS/);
   assert.match(errorHandlerSource, /statusCode/);
   assert.match(errorHandlerSource, /if \(statusCode >= 500\) return 'Internal server error'/);
-  assert.match(errorHandlerSource, /toSafeError\(error, requestId\)/);
+  assert.match(errorHandlerSource, /toSafeError\(diagnosticError, requestId\)/);
   assert.doesNotMatch(errorHandlerSource, /stack:/);
   assert.match(errorHandlerSource, /requestId/);
   assert.match(errorHandlerSource, /reply\.code\(statusCode\)\.send/);
@@ -248,8 +249,9 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
   const metricsSource = readOptionalSource('src/lib/metrics.ts');
 
   assert.match(operationsSource, /@Get\('metrics'\)/);
-  assert.match(operationsSource, /authorizeMetrics\(request, reply\)/);
-  assert.match(operationsSource, /reply\.type\('text\/plain'\)\.send\(metrics\.renderPrometheus\(\)\)/);
+  assert.match(operationsSource, /authorizeMetrics\(authorization, headerToken\)/);
+  assert.match(operationsSource, /httpResponse\(metrics\.renderPrometheus\(\)/);
+  assert.match(operationsSource, /'content-type':\s*'text\/plain; charset=utf-8'/);
   assert.match(requestContextSource, /recordHttpRequestStart/);
   assert.match(requestContextSource, /recordHttpRequestComplete/);
   assert.match(requestContextSource, /reply\.raw\.once\('finish'/);
@@ -287,48 +289,54 @@ test('server exposes lightweight metrics for high-concurrency operations', () =>
 });
 
 test('chat streaming is protected by explicit concurrency limits', () => {
-  const chatSource = readSource('src/controllers/chat.ts');
+  const chatSource = readSource('src/modules/chat/chat-stream.service.ts');
   const gateSource = readOptionalSource('src/lib/concurrencyGate.ts');
 
   assert.match(gateSource, /tryAcquireChatStreamSlot/);
   assert.match(gateSource, /CHAT_STREAM_MAX_CONCURRENT/);
   assert.match(gateSource, /CHAT_STREAM_MAX_CONCURRENT_PER_USER/);
-  assert.match(chatSource, /tryAcquireChatStreamSlot\(req\.user\.id\)/);
+  assert.match(chatSource, /findConversationForUser[\s\S]*?if \(isChatRequestClosed\(request\)\) return;[\s\S]*?tryAcquireChatStreamSlot/);
+  assert.match(chatSource, /tryAcquireChatStreamSlot\(user\.id\)/);
   assert.match(chatSource, /Too many active chat streams/);
   assert.match(chatSource, /chatSlot\.release\(failed\)/);
 });
 
 test('chat streaming aborts upstream model requests when the client disconnects', () => {
-  const chatSource = readSource('src/controllers/chat.ts');
+  const chatSource = readSource('src/modules/chat/chat-stream.service.ts');
+  const chatControllerSource = readSource('src/modules/chat/chat.controller.ts');
   const sseWriterSource = readSource('src/common/http/sse-writer.ts');
   const providerSource = readSource('src/lib/llmProviders.ts');
 
   assert.match(chatSource, /new AbortController\(\)/);
-  assert.match(chatSource, /new SseWriter\(res\)/);
-  assert.match(chatSource, /req\.raw\.once\('aborted'/);
-  assert.match(chatSource, /res\.raw\.once\('close'/);
+  assert.match(chatSource, /new SseWriter\(responseStream\)/);
+  assert.match(chatSource, /request\.connection\.once\('aborted'/);
+  assert.match(chatSource, /responseStream\.once\('close'/);
   assert.match(chatSource, /streamAbortController\.abort\(\)/);
   assert.match(chatSource, /signal:\s*streamAbortController\.signal/);
   assert.match(chatSource, /sse\.isClosed/);
   assert.match(
     chatSource,
-    /const isChatConnectionClosed[\s\S]*?req\.raw\.aborted[\s\S]*?req\.raw\.destroyed[\s\S]*?res\.raw\.destroyed[\s\S]*?res\.raw\.writableEnded/,
+    /const isChatRequestClosed[\s\S]*?request\.connection\.aborted[\s\S]*?request\.connection\.destroyed/,
   );
   assert.match(
     chatSource,
-    /findConversationForUser[\s\S]*?if \(isChatConnectionClosed\(req, res\)\) return;[\s\S]*?tryAcquireChatStreamSlot/,
+    /const isChatConnectionClosed[\s\S]*?isChatRequestClosed\(request\)[\s\S]*?stream\.destroyed[\s\S]*?stream\.writableEnded/,
   );
   assert.match(
     chatSource,
-    /res\.raw\.once\('close', abortUpstreamStream\);[\s\S]*?if \(isChatConnectionClosed\(req, res\)\) abortUpstreamStream\(\)/,
+    /responseStream\.once\('close', abortUpstreamStream\);[\s\S]*?if \(isChatConnectionClosed\(request, responseStream\)\) abortUpstreamStream\(\)/,
   );
   assert.match(chatSource, /if \(!sse\.open\(\)\) return;/);
   assert.match(
     chatSource,
-    /catch \(error\) \{\s*if \(streamAbortController\.signal\.aborted \|\| sse\.isClosed\) \{\s*sse\.close\(\);\s*return;\s*\}[\s\S]*?failed = true;/,
+    /catch \(error\) \{[\s\S]*?failed = !streamAbortController\.signal\.aborted;[\s\S]*?if \(streamAbortController\.signal\.aborted\)/,
   );
-  assert.match(sseWriterSource, /response\.destroyed/);
-  assert.match(sseWriterSource, /response\.writableEnded/);
+  assert.match(chatSource, /new StreamableFile\(responseStream\)/);
+  assert.match(chatSource, /headers:\s*SSE_HEADERS/);
+  assert.doesNotMatch(chatControllerSource, /@(Req|Res)\s*\(|AppReply|AppRequest/);
+  assert.equal(existsSync(path.join(serverRoot, 'src/common/http/raw-stream.ts')), false);
+  assert.match(sseWriterSource, /stream\.destroyed/);
+  assert.match(sseWriterSource, /stream\.writableEnded/);
   assert.match(providerSource, /signal\?:\s*AbortSignal/);
   assert.match(providerSource, /signal:\s*params\.signal/);
 });
@@ -368,11 +376,7 @@ test('SSE writer resolves false when a synchronous close races a backpressured w
   }
 
   const raw = new SynchronousCloseResponse();
-  const writer = new SseWriter({
-    raw,
-    hijack: () => undefined,
-    getHeaders: () => ({ 'x-request-id': 'sse-race-test' }),
-  });
+  const writer = new SseWriter(raw);
 
   assert.equal(writer.open(), true);
   let timeout;
@@ -391,7 +395,7 @@ test('SSE writer resolves false when a synchronous close races a backpressured w
 });
 
 test('RAG-routed retrieval failure stops generation instead of falling back to an ungrounded answer', () => {
-  const chatSource = readSource('src/controllers/chat.ts');
+  const chatSource = readSource('src/modules/chat/chat-stream.service.ts');
 
   assert.match(chatSource, /rag_retrieval_unavailable/);
   assert.match(chatSource, /ragError:[\s\S]*?retryable: true,[\s\S]*?message: 'Workspace document retrieval failed\. Retry before relying on an answer\.'/);
@@ -419,7 +423,7 @@ test('server protects internal RAG calls with a shared service token when config
 });
 
 test('RAG evaluation uses an operation-isolated circuit breaker and metrics', () => {
-  const ragEvalControllerSource = readSource('src/controllers/ragEval.ts');
+  const ragEvalControllerSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
   const circuitBreakerSource = readOptionalSource('src/lib/circuitBreaker.ts');
   const ragEvalQueueSource = readOptionalSource('src/services/ragEvalQueue.ts');
@@ -442,9 +446,9 @@ test('RAG evaluation uses an operation-isolated circuit breaker and metrics', ()
 });
 
 test('RAG cleanup uses the shared client and configurable timeout', () => {
-  const authSource = readSource('src/controllers/auth.ts');
-  const uploadSource = readSource('src/controllers/upload.ts');
-  const projectSpacesSource = readSource('src/controllers/projectSpaces.ts');
+  const authSource = readSource('src/modules/auth/auth.service.ts');
+  const uploadSource = readSource('src/modules/upload/upload.service.ts');
+  const projectSpacesSource = readSource('src/modules/project-spaces/project-spaces.service.ts');
   const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
   const cleanupQueueSource = readOptionalSource('src/services/cleanupQueue.ts');
 
@@ -464,13 +468,13 @@ test('RAG cleanup uses the shared client and configurable timeout', () => {
 });
 
 test('account deletion durably queues external cleanup before returning acceptance', () => {
-  const authSource = readSource('src/controllers/auth.ts');
+  const authSource = readSource('src/modules/auth/auth.service.ts');
   const cleanupRepositorySource = readOptionalSource('src/repositories/cleanupJobs.ts');
   const cleanupQueueSource = readOptionalSource('src/services/cleanupQueue.ts');
 
   assert.doesNotMatch(authSource, /Promise\.allSettled\(files\.map/);
   assert.match(authSource, /enqueueAccountCleanup/);
-  assert.match(authSource, /code\(202\)\.send/);
+  assert.match(authSource, /statusCode:\s*202/);
   assert.match(cleanupRepositorySource, /set deletion_status = 'pending'/i);
   assert.match(cleanupRepositorySource, /delete from sessions[\s\S]*where user_id/i);
   assert.match(cleanupRepositorySource, /resourceType: 'account'/);
@@ -480,7 +484,7 @@ test('account deletion durably queues external cleanup before returning acceptan
 });
 
 test('upload merge verifies server-side hash and final file size before ingestion', () => {
-  const uploadSource = readSource('src/controllers/upload.ts');
+  const uploadSource = readSource('src/modules/upload/upload.service.ts');
   const integritySource = readOptionalSource('src/lib/uploadIntegrity.ts');
 
   assert.match(integritySource, /computeFileSha256/);
@@ -504,8 +508,8 @@ test('model provider health exposes configured chat providers without leaking ke
   const envSource = readSource('src/lib/env.ts');
   const llmProviderSource = readSource('src/lib/llmProviders.ts');
   const usageControllerModuleSource = readSource('src/modules/usage/usage.controller.ts');
-  const usageControllerSource = readSource('src/controllers/usage.ts');
-  const chatSource = readSource('src/controllers/chat.ts');
+  const usageServiceSource = readSource('src/modules/usage/usage.service.ts');
+  const chatSource = readSource('src/modules/chat/chat-stream.service.ts');
 
   assert.match(envSource, /MOONSHOT_BASE_URL/);
   assert.match(envSource, /QWEN_API_KEY/);
@@ -526,8 +530,8 @@ test('model provider health exposes configured chat providers without leaking ke
   assert.doesNotMatch(llmProviderSource, /gpt-4o/);
 
   assert.match(usageControllerModuleSource, /@Get\('provider-health'\)/);
-  assert.match(usageControllerModuleSource, /return getProviderHealth\(request, reply\)/);
-  assert.match(usageControllerSource, /getProviderHealth/);
+  assert.match(usageControllerModuleSource, /return this\.usageService\.getProviderHealth\(\)/);
+  assert.match(usageServiceSource, /getModelProviderHealth/);
   assert.match(chatSource, /getDefaultChatModel\(\)/);
   assert.match(chatSource, /createChatClientForModel\(model\)/);
   assert.match(chatSource, /resolvedModel/);

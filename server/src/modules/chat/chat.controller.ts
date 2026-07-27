@@ -1,33 +1,29 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
   HttpCode,
+  Param,
   Patch,
   Post,
-  Req,
-  Res,
+  Query,
   UseGuards,
 } from '@nestjs/common';
+import type { IncomingMessage } from 'node:http';
 import { AuthGuard } from '../../common/guards/auth.guard';
 import { RateLimitScope } from '../../common/guards/rate-limit.guard';
-import type { AppReply, AppRequest } from '../../common/http/app-request';
-import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
 import {
-  branchConversation,
-  compareConversations,
-  createConversation,
-  deleteConversation,
-  deleteMessage,
-  getConversations,
-  getMessages,
-  searchMessages,
-  sendMessage,
-  truncateConversation,
-  updateConversation,
-} from '../../controllers/chat';
+  CurrentUser,
+  RequestConnection,
+  RequestId,
+} from '../../common/http/request-context.decorator';
+import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
 import { serverEnv } from '../../lib/env';
 import { mutationSchemas } from '../../lib/mutationSchemas';
+import { User } from '../../types';
+import { ChatStreamService } from './chat-stream.service';
+import { ChatService } from './chat.service';
 
 @Controller('chat')
 @UseGuards(AuthGuard)
@@ -37,68 +33,124 @@ import { mutationSchemas } from '../../lib/mutationSchemas';
   message: 'Too many chat requests',
 })
 export class ChatController {
+  constructor(
+    private readonly chatService: ChatService,
+    private readonly chatStreamService: ChatStreamService,
+  ) {}
+
   @Get('search')
-  search(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return searchMessages(request, reply);
+  search(
+    @CurrentUser() user: User,
+    @Query() query: Record<string, any>,
+  ) {
+    return this.chatService.searchMessages(user, query);
   }
 
   @Get('conversations')
-  listConversations(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getConversations(request, reply);
+  listConversations(
+    @CurrentUser() user: User,
+    @Query() query: Record<string, any>,
+  ) {
+    return this.chatService.listConversations(user, query);
   }
 
   @Post('conversations')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.chatCreateConversation)
-  createConversation(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return createConversation(request, reply);
+  createConversation(
+    @CurrentUser() user: User,
+    @Body() body: Record<string, any>,
+  ) {
+    return this.chatService.createConversation(user, body);
   }
 
   @Post('conversations/:conversationId/branches')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.chatBranchConversation)
-  branchConversation(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return branchConversation(request, reply);
+  branchConversation(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Body() body: Record<string, any>,
+  ) {
+    return this.chatService.branchConversation(user, conversationId, body);
   }
 
   @Get('conversations/:conversationId/compare/:otherConversationId')
-  compareConversations(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return compareConversations(request, reply);
+  compareConversations(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Param('otherConversationId') otherConversationId: string,
+  ) {
+    return this.chatService.compareConversations(
+      user,
+      conversationId,
+      otherConversationId,
+    );
   }
 
   @Patch('conversations/:conversationId')
   @ValidateMutation(mutationSchemas.chatUpdateConversation)
-  updateConversation(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return updateConversation(request, reply);
+  updateConversation(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Body() body: Record<string, any>,
+  ) {
+    return this.chatService.updateConversation(user, conversationId, body);
   }
 
   @Delete('conversations/:conversationId')
   @ValidateMutation(mutationSchemas.chatDeleteConversation)
-  deleteConversation(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return deleteConversation(request, reply);
+  deleteConversation(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+  ) {
+    return this.chatService.deleteConversation(user, conversationId);
   }
 
   @Delete('messages/:messageId')
   @ValidateMutation(mutationSchemas.chatDeleteMessage)
-  deleteMessage(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return deleteMessage(request, reply);
+  deleteMessage(
+    @CurrentUser() user: User,
+    @Param('messageId') messageId: string,
+  ) {
+    return this.chatService.deleteMessage(user, messageId);
   }
 
   @Delete('conversations/:conversationId/messages/:messageId/truncate')
   @ValidateMutation(mutationSchemas.chatTruncateConversation)
-  truncateConversation(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return truncateConversation(request, reply);
+  truncateConversation(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Param('messageId') messageId: string,
+  ) {
+    return this.chatService.truncateConversation(user, conversationId, messageId);
   }
 
   @Get('conversations/:conversationId/messages')
-  getMessages(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return getMessages(request, reply);
+  getMessages(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Query() query: Record<string, any>,
+  ) {
+    return this.chatService.getMessages(user, conversationId, query);
   }
 
   @Post('conversations/:conversationId/messages')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.chatSendMessage)
-  sendMessage(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return sendMessage(request, reply);
+  sendMessage(
+    @CurrentUser() user: User,
+    @Param('conversationId') conversationId: string,
+    @Body() body: Record<string, unknown>,
+    @RequestConnection() connection: IncomingMessage,
+    @RequestId() requestId?: string,
+  ) {
+    return this.chatStreamService.sendMessage({
+      user,
+      conversationId,
+      content: body.content,
+      connection,
+      requestId,
+    });
   }
 }

@@ -55,11 +55,14 @@ const logHttpException = (
   statusCode: number,
   requestId?: string,
 ) => {
+  const diagnosticError = error instanceof HttpException && error.cause !== undefined
+    ? error.cause
+    : error;
   const entry = JSON.stringify({
     event: statusCode >= 500 ? 'http_error' : 'http_client_error',
     request_id: requestId,
     status_code: statusCode,
-    error: toSafeError(error, requestId),
+    error: toSafeError(diagnosticError, requestId),
   });
 
   if (statusCode >= 500) {

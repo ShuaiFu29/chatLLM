@@ -72,8 +72,9 @@ test('RAG eval migration creates datasets cases runs and results', () => {
 
 test('RAG eval API exposes authenticated dataset case and run endpoints', () => {
   const nestControllerSource = readSource('src/modules/rag-eval/rag-eval.controller.ts');
+  const moduleSource = readSource('src/modules/rag-eval/rag-eval.module.ts');
   const lifecycleSource = readSource('src/infrastructure/runtime-lifecycle.service.ts');
-  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+  const serviceSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
   const ragClientSource = readSource('src/lib/ragClient.ts');
 
@@ -84,32 +85,36 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(lifecycleSource, /queues\.map\(\(queue\) => queue\.start\(\)\)/);
   assert.match(lifecycleSource, /queues\.map\(\(queue\) => queue\.stop\(\)\)/);
 
-  assert.match(nestControllerSource, /@Get\('datasets'\)[\s\S]*?return listRagEvalDatasets\(request, reply\)/);
-  assert.match(nestControllerSource, /@Post\('datasets'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalDatasetCreate\)[\s\S]*?return createRagEvalDataset\(request, reply\)/);
-  assert.match(nestControllerSource, /@Patch\('datasets\/:datasetId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalDatasetUpdate\)[\s\S]*?return updateRagEvalDataset\(request, reply\)/);
-  assert.match(nestControllerSource, /@Delete\('datasets\/:datasetId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalDatasetDelete\)[\s\S]*?return deleteRagEvalDataset\(request, reply\)/);
-  assert.match(nestControllerSource, /@Get\('datasets\/:datasetId\/quality'\)[\s\S]*?return getRagEvalQualitySummary\(request, reply\)/);
-  assert.match(nestControllerSource, /@Post\('datasets\/:datasetId\/cases'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalCaseCreate\)[\s\S]*?return createRagEvalCase\(request, reply\)/);
-  assert.match(nestControllerSource, /@Post\('datasets\/:datasetId\/runs'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalDatasetRun\)[\s\S]*?return runRagEvalDataset\(request, reply\)/);
-  assert.match(nestControllerSource, /@Get\('runs\/:runId'\)[\s\S]*?return getRagEvalRun\(request, reply\)/);
-  assert.match(nestControllerSource, /@Post\('runs\/:runId\/cancel'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalRunCancel\)[\s\S]*?return cancelRagEvalRun\(request, reply\)/);
+  assert.match(nestControllerSource, /constructor\(private readonly ragEvalService: RagEvalService\)/);
+  assert.match(nestControllerSource, /@Get\('datasets'\)[\s\S]*?@CurrentUser\(\)[\s\S]*?this\.ragEvalService\.listDatasets\(user\.id, requestId\)/);
+  assert.match(nestControllerSource, /@Post\('datasets'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalDatasetCreate\)[\s\S]*?@Body\(\)[\s\S]*?this\.ragEvalService\.createDataset\(user\.id, body, requestId\)/);
+  assert.match(nestControllerSource, /@Patch\('datasets\/:datasetId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragEvalDatasetUpdate\)[\s\S]*?@Param\('datasetId'\)[\s\S]*?this\.ragEvalService\.updateDataset\(user\.id, datasetId, body, requestId\)/);
+  assert.match(nestControllerSource, /@Delete\('datasets\/:datasetId'\)[\s\S]*?this\.ragEvalService\.deleteDataset\(user\.id, datasetId, requestId\)/);
+  assert.match(nestControllerSource, /@Get\('datasets\/:datasetId\/quality'\)[\s\S]*?this\.ragEvalService\.qualitySummary\(user\.id, datasetId, requestId\)/);
+  assert.match(nestControllerSource, /@Post\('datasets\/:datasetId\/cases'\)[\s\S]*?this\.ragEvalService\.createCase\(user\.id, datasetId, body, requestId\)/);
+  assert.match(nestControllerSource, /@Post\('datasets\/:datasetId\/runs'\)[\s\S]*?@HttpCode\(202\)[\s\S]*?this\.ragEvalService\.runDataset\(user\.id, datasetId, requestId\)/);
+  assert.match(nestControllerSource, /@Get\('runs\/:runId'\)[\s\S]*?this\.ragEvalService\.getRun\(user\.id, runId, requestId\)/);
+  assert.match(nestControllerSource, /@Post\('runs\/:runId\/cancel'\)[\s\S]*?@HttpCode\(200\)[\s\S]*?this\.ragEvalService\.cancelRun\(user\.id, runId, requestId\)/);
+  assert.doesNotMatch(nestControllerSource, /@Res\(|@Req\(|AppReply|AppRequest/);
+  assert.match(moduleSource, /providers:\s*\[AuthGuard, RagEvalService\]/);
+  assert.equal(existsSync(path.join(serverRoot, 'src/controllers/ragEval.ts')), false);
 
-  assert.match(controllerSource, /listRagEvalDatasets/);
-  assert.match(controllerSource, /updateRagEvalDataset/);
-  assert.match(controllerSource, /deleteRagEvalDataset/);
-  assert.match(controllerSource, /getRagEvalQualitySummary/);
-  assert.match(controllerSource, /getRagEvalRun/);
-  assert.match(controllerSource, /createRunningRagEvalRunForUser/);
-  assert.match(controllerSource, /cancelRagEvalRunForUser/);
-  assert.match(controllerSource, /cancelRagEvalRun/);
-  assert.match(controllerSource, /if \(run\.created\) \{/);
-  assert.match(controllerSource, /recordRagEvalRunStarted/);
-  assert.match(controllerSource, /recordRagEvalRunReused/);
-  assert.match(controllerSource, /recordRagEvalRunCompleted/);
-  assert.doesNotMatch(controllerSource, /executeRagEvalRunInBackground/);
-  assert.doesNotMatch(controllerSource, /void\s+executeRagEvalRunInBackground/);
-  assert.doesNotMatch(controllerSource, /runRagEvaluation/);
-  assert.match(controllerSource, /res\.code\(202\)\.send\(run\)/);
+  assert.match(serviceSource, /@Injectable\(\)/);
+  assert.match(serviceSource, /listRagEvalDatasetsForUser/);
+  assert.match(serviceSource, /updateRagEvalDatasetForUser/);
+  assert.match(serviceSource, /deleteRagEvalDatasetForUser/);
+  assert.match(serviceSource, /getRagEvalQualitySummaryForUser/);
+  assert.match(serviceSource, /getRagEvalRunForUser/);
+  assert.match(serviceSource, /createRunningRagEvalRunForUser/);
+  assert.match(serviceSource, /cancelRagEvalRunForUser/);
+  assert.match(serviceSource, /if \(run\.created\) \{/);
+  assert.match(serviceSource, /recordRagEvalRunStarted/);
+  assert.match(serviceSource, /recordRagEvalRunReused/);
+  assert.match(serviceSource, /recordRagEvalRunCompleted/);
+  assert.doesNotMatch(serviceSource, /executeRagEvalRunInBackground/);
+  assert.doesNotMatch(serviceSource, /void\s+executeRagEvalRunInBackground/);
+  assert.doesNotMatch(serviceSource, /runRagEvaluation/);
+  assert.doesNotMatch(serviceSource, /AppReply|AppRequest|res\.code|res\.send/);
 
   assert.match(repositorySource, /listRagEvalDatasetsForUser/);
   assert.match(repositorySource, /createRagEvalDatasetForUser/);
@@ -163,9 +168,45 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(ragClientSource, /expected_answer_support_label/);
 });
 
+test('RAG eval native Nest controller preserves async run status and forwards route values', async () => {
+  require('reflect-metadata');
+  const { HTTP_CODE_METADATA } = require('@nestjs/common/constants');
+  const { RagEvalController } = require(path.join(
+    serverRoot,
+    'dist',
+    'modules',
+    'rag-eval',
+    'rag-eval.controller.js',
+  ));
+  const expected = { id: 'run-one', created: true };
+  const calls = [];
+  const controller = new RagEvalController({
+    runDataset: async (...args) => {
+      calls.push(args);
+      return expected;
+    },
+  });
+
+  const result = await controller.runDataset(
+    { id: 'user-one' },
+    'dataset-one',
+    'request-one',
+  );
+  assert.equal(result, expected);
+  assert.deepEqual(calls, [['user-one', 'dataset-one', 'request-one']]);
+  assert.equal(
+    Reflect.getMetadata(HTTP_CODE_METADATA, RagEvalController.prototype.runDataset),
+    202,
+  );
+  assert.equal(
+    Reflect.getMetadata(HTTP_CODE_METADATA, RagEvalController.prototype.cancelRun),
+    200,
+  );
+});
+
 test('RAG eval exposes dataset quality trend and low-score case summaries', () => {
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
-  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+  const serviceSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
 
   assert.match(repositorySource, /interface RagEvalQualitySummary/);
   assert.match(repositorySource, /trend_delta/);
@@ -176,23 +217,23 @@ test('RAG eval exposes dataset quality trend and low-score case summaries', () =
   assert.match(repositorySource, /order by overall_score asc/i);
   assert.match(repositorySource, /limit 5/i);
 
-  assert.match(controllerSource, /getRagEvalQualitySummaryForUser/);
-  assert.match(controllerSource, /res\.send\(summary\)/);
+  assert.match(serviceSource, /getRagEvalQualitySummaryForUser\(datasetId, userId\)/);
+  assert.match(serviceSource, /return summary/);
 });
 
 test('RAG eval exposes historical chat RAG runs for the quality center', () => {
   const nestControllerSource = readSource('src/modules/rag-eval/rag-eval.controller.ts');
-  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+  const serviceSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
 
   assert.match(nestControllerSource, /@Controller\('rag-eval'\)/);
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
-  assert.match(nestControllerSource, /@Get\('history'\)[\s\S]*?return listRagEvalHistory\(request, reply\)/);
-  assert.match(controllerSource, /DEFAULT_RAG_EVAL_HISTORY_LIMIT = 50/);
-  assert.match(controllerSource, /MAX_RAG_EVAL_HISTORY_LIMIT = 200/);
-  assert.match(controllerSource, /listRagEvalHistory/);
-  assert.match(controllerSource, /listHistoricalRagRunsForUser\(req\.user\.id, historyLimit\)/);
-  assert.match(controllerSource, /res\.send\(\{ items: history \}\)/);
+  assert.match(nestControllerSource, /@Get\('history'\)[\s\S]*?@Query\('limit'\)[\s\S]*?this\.ragEvalService\.history\(user\.id, limit, requestId\)/);
+  assert.match(serviceSource, /DEFAULT_RAG_EVAL_HISTORY_LIMIT = 50/);
+  assert.match(serviceSource, /MAX_RAG_EVAL_HISTORY_LIMIT = 200/);
+  assert.match(serviceSource, /async history\(userId: string, limit: unknown/);
+  assert.match(serviceSource, /listHistoricalRagRunsForUser\(userId, historyLimit\)/);
+  assert.match(serviceSource, /return \{ items: history \}/);
 
   assert.match(repositorySource, /interface RagEvalHistoryItem/);
   assert.match(repositorySource, /listHistoricalRagRunsForUser/);
@@ -238,7 +279,7 @@ test('RAG eval claims and terminal writes are fenced by renewable leases', () =>
   const migrationSource = readOptionalSource('migrations/0027_rag_eval_snapshots_leases.sql');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
   const queueSource = readOptionalSource('src/services/ragEvalQueue.ts');
-  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+  const serviceSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
 
   assert.match(migrationSource, /add column if not exists lease_token uuid/i);
   assert.match(migrationSource, /add column if not exists heartbeat_at timestamptz/i);
@@ -260,7 +301,7 @@ test('RAG eval claims and terminal writes are fenced by renewable leases', () =>
   assert.match(queueSource, /RAG_EVAL_QUEUE_STALE_AFTER_MS \/ 4/);
   assert.match(queueSource, /new AbortController\(\)/);
   assert.match(queueSource, /abortRun\(runId: string\)/);
-  assert.match(controllerSource, /ragEvalQueue\.abortRun\(run\.id\)/);
+  assert.match(serviceSource, /ragEvalQueue\.abortRun\(run\.id\)/);
 });
 
 test('RAG eval request execution forwards the claim and stops its heartbeat', async () => {
@@ -441,23 +482,23 @@ test('RAG eval deadline aborts answer preparation before transport', async () =>
 });
 
 test('RAG eval runs are bounded before calling the RAG service', () => {
-  const controllerSource = readOptionalSource('src/controllers/ragEval.ts');
+  const serviceSource = readSource('src/modules/rag-eval/rag-eval.service.ts');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
   const queueSource = readOptionalSource('src/services/ragEvalQueue.ts');
 
-  assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_RUN = serverEnv\.RAG_EVAL_MAX_CASES_PER_RUN/);
-  assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_DATASET = serverEnv\.RAG_EVAL_MAX_CASES_PER_DATASET/);
-  assert.match(controllerSource, /dataset\.cases\.length >= MAX_RAG_EVAL_CASES_PER_DATASET/);
-  assert.match(controllerSource, /dataset\.cases\.length > MAX_RAG_EVAL_CASES_PER_RUN/);
+  assert.match(serviceSource, /MAX_RAG_EVAL_CASES_PER_RUN = serverEnv\.RAG_EVAL_MAX_CASES_PER_RUN/);
+  assert.match(serviceSource, /MAX_RAG_EVAL_CASES_PER_DATASET = serverEnv\.RAG_EVAL_MAX_CASES_PER_DATASET/);
+  assert.match(serviceSource, /dataset\.cases\.length >= MAX_RAG_EVAL_CASES_PER_DATASET/);
+  assert.match(serviceSource, /dataset\.cases\.length > MAX_RAG_EVAL_CASES_PER_RUN/);
   assert.match(
-    controllerSource,
-    /return res\.code\(400\)\.send\(\{ error: 'Dataset has too many eval cases' \}\)/
+    serviceSource,
+    /throw requestError\(400, 'Dataset has too many eval cases'\)/
   );
   assert.match(
-    controllerSource,
-    /return res\.code\(400\)\.send\(\{ error: 'Dataset has too many eval cases for one run' \}\)/
+    serviceSource,
+    /throw requestError\(400, 'Dataset has too many eval cases for one run'\)/
   );
-  assert.match(controllerSource, /maxCases: MAX_RAG_EVAL_CASES_PER_DATASET/);
+  assert.match(serviceSource, /maxCases: MAX_RAG_EVAL_CASES_PER_DATASET/);
   assert.match(queueSource, /expected_answer: testCase\.expected_answer/);
   assert.match(repositorySource, /from rag_eval_datasets[\s\S]*for update/i);
   assert.match(repositorySource, /case_count >= maxCases/);

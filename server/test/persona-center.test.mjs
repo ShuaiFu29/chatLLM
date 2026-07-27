@@ -46,41 +46,105 @@ test('persona evidence migration clears legacy active generated rows without del
 
 test('persona center exposes authenticated profile, analysis, edit, hide, and reset routes', () => {
   const nestControllerSource = readSource('src/modules/persona/persona.controller.ts');
-  const handlerSource = readOptionalSource('src/controllers/persona.ts');
+  const moduleSource = readSource('src/modules/persona/persona.module.ts');
+  const serviceSource = readSource('src/modules/persona/persona.service.ts');
   const repositorySource = readOptionalSource('src/repositories/persona.ts');
 
   assert.match(nestControllerSource, /@Controller\('persona'\)/);
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
   assert.match(nestControllerSource, /@RateLimitScope\(\{[\s\S]*?keyPrefix:\s*'persona',[\s\S]*?max:\s*serverEnv\.RATE_LIMIT_MAX/);
-  assert.match(nestControllerSource, /@Get\(\)[\s\S]*?return getPersonaCenter\(request, reply\)/);
-  assert.match(nestControllerSource, /@Post\('analyze'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaAnalyze\)[\s\S]*?return analyzePersonaCenter\(request, reply\)/);
-  assert.match(nestControllerSource, /@Patch\('profile'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateProfile\)[\s\S]*?return updatePersonaProfile\(request, reply\)/);
-  assert.match(nestControllerSource, /@Delete\('profile'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteProfile\)[\s\S]*?return deletePersonaProfile\(request, reply\)/);
-  assert.match(nestControllerSource, /@Patch\('interests\/:interestId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateInterest\)[\s\S]*?return updatePersonaInterest\(request, reply\)/);
-  assert.match(nestControllerSource, /@Delete\('interests\/:interestId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteInterest\)[\s\S]*?return deletePersonaInterest\(request, reply\)/);
-  assert.match(nestControllerSource, /@Patch\('observations\/:observationId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateObservation\)[\s\S]*?return updatePersonaObservation\(request, reply\)/);
-  assert.match(nestControllerSource, /@Delete\('observations\/:observationId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteObservation\)[\s\S]*?return deletePersonaObservation\(request, reply\)/);
-  assert.match(nestControllerSource, /@Patch\('suggestions\/:suggestionId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateSuggestion\)[\s\S]*?return updatePersonaSuggestion\(request, reply\)/);
-  assert.match(nestControllerSource, /@Delete\('suggestions\/:suggestionId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteSuggestion\)[\s\S]*?return deletePersonaSuggestion\(request, reply\)/);
-  assert.match(nestControllerSource, /@Post\('reset'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaReset\)[\s\S]*?return resetPersonaCenter\(request, reply\)/);
+  assert.match(nestControllerSource, /constructor\(private readonly personaService: PersonaService\)/);
+  assert.match(nestControllerSource, /@Get\(\)[\s\S]*?@CurrentUser\(\)[\s\S]*?this\.personaService\.get\(user\.id, requestId\)/);
+  assert.match(nestControllerSource, /@Post\('analyze'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaAnalyze\)[\s\S]*?this\.personaService\.analyze\(user\.id, requestId\)/);
+  assert.match(nestControllerSource, /@Patch\('profile'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateProfile\)[\s\S]*?@Body\(\)[\s\S]*?this\.personaService\.updateProfile\(user\.id, body, requestId\)/);
+  assert.match(nestControllerSource, /@Delete\('profile'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteProfile\)[\s\S]*?this\.personaService\.deleteProfile\(user\.id, requestId\)/);
+  assert.match(nestControllerSource, /@Patch\('interests\/:interestId'\)[\s\S]*?@Param\('interestId'\)[\s\S]*?this\.personaService\.updateInterest\(user\.id, interestId, status, requestId\)/);
+  assert.match(nestControllerSource, /@Delete\('interests\/:interestId'\)[\s\S]*?this\.personaService\.deleteInterest\(user\.id, interestId, requestId\)/);
+  assert.match(nestControllerSource, /@Patch\('observations\/:observationId'\)[\s\S]*?this\.personaService\.updateObservation\(user\.id, observationId, status, requestId\)/);
+  assert.match(nestControllerSource, /@Delete\('observations\/:observationId'\)[\s\S]*?this\.personaService\.deleteObservation\(user\.id, observationId, requestId\)/);
+  assert.match(nestControllerSource, /@Patch\('suggestions\/:suggestionId'\)[\s\S]*?this\.personaService\.updateSuggestion\(user\.id, suggestionId, status, requestId\)/);
+  assert.match(nestControllerSource, /@Delete\('suggestions\/:suggestionId'\)[\s\S]*?this\.personaService\.deleteSuggestion\(user\.id, suggestionId, requestId\)/);
+  assert.match(nestControllerSource, /@Post\('reset'\)[\s\S]*?this\.personaService\.reset\(user\.id, requestId\)/);
+  assert.doesNotMatch(nestControllerSource, /@Res\(|@Req\(|AppReply|AppRequest/);
+  assert.match(moduleSource, /providers:\s*\[AuthGuard, PersonaService\]/);
+  assert.equal(existsSync(path.join(serverRoot, 'src/controllers/persona.ts')), false);
 
-  assert.match(handlerSource, /getPersonaCenterForUser\(req\.user\.id\)/);
-  assert.match(handlerSource, /refreshPersonaInsightsForUser\(req\.user\.id\)/);
-  assert.match(handlerSource, /updatePersonaProfileForUser\(req\.user\.id/);
-  assert.match(handlerSource, /updatePersonaInterestStatusForUser\(req\.user\.id/);
-  assert.match(handlerSource, /updatePersonaObservationStatusForUser\(req\.user\.id/);
-  assert.match(handlerSource, /updatePersonaSuggestionStatusForUser\(req\.user\.id/);
-  assert.match(handlerSource, /deletePersonaProfileForUser\(req\.user\.id\)/);
-  assert.match(handlerSource, /deletePersonaInterestForUser\(req\.user\.id/);
-  assert.match(handlerSource, /deletePersonaObservationForUser\(req\.user\.id/);
-  assert.match(handlerSource, /deletePersonaSuggestionForUser\(req\.user\.id/);
-  assert.match(handlerSource, /resetPersonaCenterForUser\(req\.user\.id\)/);
+  assert.match(serviceSource, /@Injectable\(\)/);
+  assert.match(serviceSource, /getPersonaCenterForUser\(userId\)/);
+  assert.match(serviceSource, /refreshPersonaInsightsForUser\(userId\)/);
+  assert.match(serviceSource, /updatePersonaProfileForUser\(userId/);
+  assert.match(serviceSource, /updatePersonaInterestStatusForUser\([\s\S]*?userId/);
+  assert.match(serviceSource, /updatePersonaObservationStatusForUser\([\s\S]*?userId/);
+  assert.match(serviceSource, /updatePersonaSuggestionStatusForUser\([\s\S]*?userId/);
+  assert.match(serviceSource, /deletePersonaProfileForUser\(userId\)/);
+  assert.match(serviceSource, /deletePersonaInterestForUser\(userId, interestId\)/);
+  assert.match(serviceSource, /deletePersonaObservationForUser\(userId, observationId\)/);
+  assert.match(serviceSource, /deletePersonaSuggestionForUser\(userId, suggestionId\)/);
+  assert.match(serviceSource, /resetPersonaCenterForUser\(userId\)/);
+  assert.doesNotMatch(serviceSource, /AppReply|AppRequest|res\.code|res\.send/);
 
   assert.match(repositorySource, /listRecentUserMessagesForPersona/);
   assert.match(repositorySource, /where c\.user_id = \$1/i);
   assert.match(repositorySource, /m\.role = 'user'/i);
   assert.match(repositorySource, /upsertPersonaProfileForUser/);
   assert.match(repositorySource, /updated_by_user_at is null/i);
+});
+
+test('persona native Nest controller forwards validated values and preserves public 400 errors', async () => {
+  const { PersonaController } = require(path.join(
+    serverRoot,
+    'dist',
+    'modules',
+    'persona',
+    'persona.controller.js',
+  ));
+  const { PersonaService } = require(path.join(
+    serverRoot,
+    'dist',
+    'modules',
+    'persona',
+    'persona.service.js',
+  ));
+  const expected = { id: 'interest-one', status: 'hidden' };
+  const calls = [];
+  const controller = new PersonaController({
+    updateInterest: async (...args) => {
+      calls.push(args);
+      return expected;
+    },
+  });
+
+  const result = await controller.updateInterest(
+    { id: 'user-one' },
+    'interest-one',
+    'hidden',
+    'request-one',
+  );
+  assert.equal(result, expected);
+  assert.deepEqual(calls, [[
+    'user-one',
+    'interest-one',
+    'hidden',
+    'request-one',
+  ]]);
+
+  const service = new PersonaService();
+  await assert.rejects(
+    service.updateProfile('user-one', {}, 'request-one'),
+    (error) => {
+      assert.equal(error.getStatus(), 400);
+      assert.deepEqual(error.getResponse(), { error: 'No fields to update' });
+      return true;
+    },
+  );
+  await assert.rejects(
+    service.updateInterest('user-one', 'interest-one', 'unsupported', 'request-one'),
+    (error) => {
+      assert.equal(error.getStatus(), 400);
+      assert.deepEqual(error.getResponse(), { error: 'Invalid interest status' });
+      return true;
+    },
+  );
 });
 
 test('persona center exposes hidden records for review restore and deletion', () => {

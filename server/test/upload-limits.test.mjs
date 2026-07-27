@@ -14,7 +14,10 @@ const uploadLimits = require(path.join(serverRoot, 'dist', 'lib', 'uploadLimits.
 const { HttpExceptionFilter } = require(
   path.join(serverRoot, 'dist', 'common', 'filters', 'http-exception.filter.js'),
 );
-const uploadControllerSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'upload.ts'), 'utf8');
+const uploadControllerSource = readFileSync(
+  path.join(serverRoot, 'src', 'modules', 'upload', 'upload.service.ts'),
+  'utf8',
+);
 const multipartInterceptorSource = readFileSync(
   path.join(serverRoot, 'src', 'common', 'interceptors', 'multipart-upload.interceptor.ts'),
   'utf8',
@@ -69,7 +72,7 @@ function buildMultipartPayload(boundary, byteLength) {
 }
 
 function withMockedUploadController(overrides = {}) {
-  const controllerPath = path.join(serverRoot, 'dist', 'controllers', 'upload.js');
+  const controllerPath = path.join(serverRoot, 'dist', 'modules', 'upload', 'upload.service.js');
   const previousEntries = new Map();
 
   function mockModule(relativePath, exports) {
@@ -136,7 +139,46 @@ function withMockedUploadController(overrides = {}) {
     ...(overrides.ragClient || {}),
   });
 
-  const controller = require(controllerPath);
+  const { isHttpResponse } = require(path.join(
+    serverRoot,
+    'dist',
+    'common',
+    'http',
+    'http-response.js',
+  ));
+  const { UploadService } = require(controllerPath);
+  const service = new UploadService();
+  const applyResult = (response, result) => {
+    if (isHttpResponse(result)) {
+      if (result.options.statusCode !== undefined) response.code(result.options.statusCode);
+      return response.send(result.body);
+    }
+    return response.send(result);
+  };
+  const controller = {
+    async initUpload(request, response) {
+      return applyResult(response, await service.initUpload(
+        request.user.id,
+        request.body,
+        request.requestId,
+      ));
+    },
+    async uploadChunk(request, response) {
+      return applyResult(response, await service.uploadChunk(
+        request.user.id,
+        request.body,
+        request.uploadFile,
+        request.requestId,
+      ));
+    },
+    async mergeChunks(request, response) {
+      return applyResult(response, await service.mergeChunks(
+        request.user.id,
+        request.body,
+        request.requestId,
+      ));
+    },
+  };
 
   return {
     controller,
@@ -767,7 +809,7 @@ test('legacy merge requeues cleanup instead of reviving a file when deletion win
 });
 
 test('legacy chunk merge streams chunk files instead of buffering entire uploads', () => {
-  const mergeBody = uploadControllerSource.split('export const mergeChunks')[1].split('export const listFiles')[0];
+  const mergeBody = uploadControllerSource.split('async mergeChunks')[1].split('async listFiles')[0];
 
   assert.match(mergeBody, /pipeline/);
   assert.match(mergeBody, /fs\.createReadStream\(chunkPath\)/);

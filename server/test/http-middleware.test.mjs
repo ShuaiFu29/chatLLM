@@ -36,6 +36,13 @@ before(async () => {
     'filters',
     'http-exception.filter.js',
   ));
+  const { HttpResponseInterceptor } = require(path.join(
+    serverRoot,
+    'dist',
+    'common',
+    'interceptors',
+    'http-response.interceptor.js',
+  ));
   const { registerHttpHooks } = require(path.join(
     serverRoot,
     'dist',
@@ -95,6 +102,7 @@ before(async () => {
       callback(error, false);
     },
   });
+  app.useGlobalInterceptors(new HttpResponseInterceptor());
   app.useGlobalFilters(new HttpExceptionFilter());
   await app.init();
   await fastify.ready();

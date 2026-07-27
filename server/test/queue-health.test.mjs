@@ -21,6 +21,7 @@ Object.assign(process.env, {
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
+const health = require(path.join(serverRoot, 'dist', 'lib', 'health.js'));
 const queueHealthDistPath = path.join(serverRoot, 'dist', 'lib', 'queueHealth.js');
 const queueHealth = existsSync(queueHealthDistPath) ? require(queueHealthDistPath) : null;
 const { OperationsController } = require(path.join(
@@ -41,30 +42,7 @@ const operationsSource = readFileSync(
 const integrationEnabled = process.env.QUEUE_HEALTH_INTEGRATION === '1'
   && Boolean(process.env.TEST_DATABASE_URL);
 
-const createResponse = () => ({
-  statusCode: 200,
-  body: undefined,
-  contentType: undefined,
-  code(code) {
-    this.statusCode = code;
-    return this;
-  },
-  type(contentType) {
-    this.contentType = contentType;
-    return this;
-  },
-  send(body) {
-    this.body = body;
-    return this;
-  },
-});
-
-const createRequest = () => ({
-  requestId: 'request-queue-health',
-  headers: {
-    authorization: `Bearer ${process.env.METRICS_TOKEN}`,
-  },
-});
+const metricsAuthorization = `Bearer ${process.env.METRICS_TOKEN}`;
 
 test('queue health classifies pending work as healthy and exhausted or stale leases as degraded', () => {
   assert.ok(queueHealth, 'dist/lib/queueHealth.js must exist');
@@ -97,7 +75,6 @@ test('OperationsController returns 503 for degraded queues and stable public err
   assert.ok(queueHealth, 'dist/lib/queueHealth.js must exist');
   const controller = new OperationsController();
   const originalReadQueueHealthCounts = queueHealth.readQueueHealthCounts;
-  const degradedResponse = createResponse();
   queueHealth.readQueueHealthCounts = async () => ({
     cleanup_pending: 1,
     cleanup_exhausted: 1,
@@ -105,9 +82,13 @@ test('OperationsController returns 503 for degraded queues and stable public err
     ingestion_expired_leases: 0,
     eval_expired_leases: 0,
   });
-  await controller.queues(createRequest(), degradedResponse);
+  const degradedResponse = await controller.queues(
+    metricsAuthorization,
+    undefined,
+    'request-queue-health',
+  );
 
-  assert.equal(degradedResponse.statusCode, 503);
+  assert.equal(degradedResponse.options.statusCode, 503);
   assert.equal(degradedResponse.body.status, 'degraded');
   assert.equal(degradedResponse.body.checks.cleanup.status, 'degraded');
 
@@ -115,13 +96,16 @@ test('OperationsController returns 503 for degraded queues and stable public err
   const warnings = [];
   console.warn = (...args) => warnings.push(args);
   try {
-    const errorResponse = createResponse();
     queueHealth.readQueueHealthCounts = async () => {
       throw Object.assign(new Error('postgres-password-leak'), { code: 'QUERY_FAILED' });
     };
-    await controller.queues(createRequest(), errorResponse);
+    const errorResponse = await controller.queues(
+      undefined,
+      process.env.METRICS_TOKEN,
+      'request-queue-health',
+    );
 
-    assert.equal(errorResponse.statusCode, 503);
+    assert.equal(errorResponse.options.statusCode, 503);
     assert.deepEqual(errorResponse.body, {
       status: 'unavailable',
       checks: {
@@ -136,6 +120,99 @@ test('OperationsController returns 503 for degraded queues and stable public err
     queueHealth.readQueueHealthCounts = originalReadQueueHealthCounts;
     console.warn = originalWarn;
   }
+});
+
+test('OperationsController preserves ready probe 200 and 503 contracts', async () => {
+  const controller = new OperationsController();
+  const originalReadReadyHealth = health.readReadyHealth;
+
+  try {
+    health.readReadyHealth = async (_dependencies, requestId) => ({
+      statusCode: 200,
+      body: { status: 'ready', checks: { postgres: 'ok' }, requestId },
+    });
+    const ready = await controller.ready('request-ready');
+    assert.equal(ready.options.statusCode, 200);
+    assert.deepEqual(ready.body, {
+      status: 'ready',
+      checks: { postgres: 'ok' },
+      requestId: 'request-ready',
+    });
+
+    health.readReadyHealth = async () => ({
+      statusCode: 503,
+      body: { status: 'not_ready', checks: { postgres: 'error' } },
+    });
+    const unavailable = await controller.ready('request-unavailable');
+    assert.equal(unavailable.options.statusCode, 503);
+    assert.deepEqual(unavailable.body, {
+      status: 'not_ready',
+      checks: { postgres: 'error' },
+    });
+  } finally {
+    health.readReadyHealth = originalReadReadyHealth;
+  }
+});
+
+test('OperationsController preserves healthy queue 200 contract', async () => {
+  const originalReadQueueHealthCounts = queueHealth.readQueueHealthCounts;
+
+  try {
+    queueHealth.readQueueHealthCounts = async () => ({
+      cleanup_pending: 3,
+      cleanup_exhausted: 0,
+      cleanup_expired_leases: 0,
+      ingestion_expired_leases: 0,
+      eval_expired_leases: 0,
+    });
+    const response = await new OperationsController().queues(
+      metricsAuthorization,
+      undefined,
+      'request-healthy-queues',
+    );
+
+    assert.equal(response.options.statusCode, 200);
+    assert.equal(response.body.status, 'ok');
+    assert.equal(response.body.checks.cleanup.pending, 3);
+  } finally {
+    queueHealth.readQueueHealthCounts = originalReadQueueHealthCounts;
+  }
+});
+
+test('OperationsController rejects missing metrics credentials without native replies', async () => {
+  const controller = new OperationsController();
+
+  const queueResponse = await controller.queues(undefined, undefined, 'request-unauthorized');
+  const metricsResponse = controller.metrics('Bearer incorrect-token', undefined);
+
+  for (const response of [queueResponse, metricsResponse]) {
+    assert.equal(response.options.statusCode, 401);
+    assert.deepEqual(response.body, { error: 'Unauthorized' });
+  }
+  assert.doesNotMatch(operationsSource, /@(Req|Res)\s*\(/);
+  assert.doesNotMatch(operationsSource, /\bApp(?:Request|Reply)\b/);
+});
+
+test('OperationsController fails closed with 503 when metrics token is not configured', () => {
+  const { serverEnv } = require(path.join(serverRoot, 'dist', 'lib', 'env.js'));
+  const originalMetricsToken = serverEnv.METRICS_TOKEN;
+
+  try {
+    serverEnv.METRICS_TOKEN = '';
+    const response = new OperationsController().metrics(undefined, undefined);
+    assert.equal(response.options.statusCode, 503);
+    assert.deepEqual(response.body, { error: 'Metrics token is not configured' });
+  } finally {
+    serverEnv.METRICS_TOKEN = originalMetricsToken;
+  }
+});
+
+test('OperationsController preserves Prometheus text content type', () => {
+  const response = new OperationsController().metrics(metricsAuthorization, undefined);
+
+  assert.equal(response.options.statusCode, undefined);
+  assert.equal(response.options.headers['content-type'], 'text/plain; charset=utf-8');
+  assert.match(response.body, /chatllm_http_requests_total/);
 });
 
 test('queue health query checks cleanup exhaustion and only active expired leases', () => {

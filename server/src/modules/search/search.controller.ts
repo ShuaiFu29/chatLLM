@@ -1,45 +1,28 @@
 import {
   Controller,
   Get,
-  Req,
-  Res,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../../common/guards/auth.guard';
-import { AppReply, AppRequest } from '../../common/http/app-request';
-import { normalizeSearchQuery, readSearchFilters } from '../../lib/searchInput';
-import { toSafeError } from '../../lib/safeError';
-import { searchMessagesForUser } from '../../repositories/messages';
+import {
+  CurrentUser,
+  RequestId,
+} from '../../common/http/request-context.decorator';
+import { User } from '../../types';
+import { SearchService } from './search.service';
 
 @Controller('search')
 @UseGuards(AuthGuard)
 export class SearchController {
+  constructor(private readonly searchService: SearchService) {}
+
   @Get()
-  async search(@Req() request: AppRequest, @Res() reply: AppReply) {
-    try {
-      if (!request.user) {
-        return reply.code(401).send({ error: 'Unauthorized' });
-      }
-
-      const normalizedQuery = normalizeSearchQuery(request.query.q);
-      if (!normalizedQuery.ok) {
-        return reply
-          .code(normalizedQuery.statusCode)
-          .send({ error: normalizedQuery.error });
-      }
-
-      const results = await searchMessagesForUser(
-        request.user.id,
-        normalizedQuery.query,
-        readSearchFilters(request.query),
-      );
-      return reply.send(results);
-    } catch (error) {
-      console.error(
-        '[Search] Unexpected error:',
-        toSafeError(error, request.requestId),
-      );
-      return reply.code(500).send({ error: 'Internal server error' });
-    }
+  search(
+    @CurrentUser() user: User,
+    @Query() query: Record<string, unknown>,
+    @RequestId() requestId?: string,
+  ) {
+    return this.searchService.search(user.id, query, requestId);
   }
 }

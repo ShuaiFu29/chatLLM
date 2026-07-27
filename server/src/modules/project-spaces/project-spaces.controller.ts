@@ -1,47 +1,77 @@
 import {
+  Body,
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
+  Param,
   Patch,
   Post,
-  Req,
-  Res,
   UseGuards,
 } from '@nestjs/common';
-import {
-  createProjectSpace,
-  deleteProjectSpace,
-  listProjectSpaces,
-  updateProjectSpace,
-} from '../../controllers/projectSpaces';
 import { AuthGuard } from '../../common/guards/auth.guard';
-import { AppReply, AppRequest } from '../../common/http/app-request';
+import {
+  CurrentUser,
+  RequestId,
+} from '../../common/http/request-context.decorator';
 import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
 import { mutationSchemas } from '../../lib/mutationSchemas';
+import { User } from '../../types';
+import {
+  ProjectSpaceCreateBody,
+  ProjectSpacesService,
+  ProjectSpaceUpdateBody,
+} from './project-spaces.service';
 
 @Controller('project-spaces')
 @UseGuards(AuthGuard)
 export class ProjectSpacesController {
+  constructor(private readonly projectSpacesService: ProjectSpacesService) {}
+
   @Get()
-  list(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return listProjectSpaces(request, reply);
+  list(
+    @CurrentUser() user: User,
+    @RequestId() requestId?: string,
+  ) {
+    return this.projectSpacesService.list(user.id, requestId);
   }
 
   @Post()
+  @HttpCode(HttpStatus.CREATED)
   @ValidateMutation(mutationSchemas.projectSpaceCreate)
-  create(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return createProjectSpace(request, reply);
+  create(
+    @CurrentUser() user: User,
+    @Body() body: ProjectSpaceCreateBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.projectSpacesService.create(user.id, body, requestId);
   }
 
   @Patch(':projectSpaceId')
   @ValidateMutation(mutationSchemas.projectSpaceUpdate)
-  update(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return updateProjectSpace(request, reply);
+  update(
+    @CurrentUser() user: User,
+    @Param('projectSpaceId') projectSpaceId: string,
+    @Body() body: ProjectSpaceUpdateBody,
+    @RequestId() requestId?: string,
+  ) {
+    return this.projectSpacesService.update(
+      user.id,
+      projectSpaceId,
+      body,
+      requestId,
+    );
   }
 
   @Delete(':projectSpaceId')
+  @HttpCode(HttpStatus.ACCEPTED)
   @ValidateMutation(mutationSchemas.projectSpaceDelete)
-  delete(@Req() request: AppRequest, @Res() reply: AppReply) {
-    return deleteProjectSpace(request, reply);
+  delete(
+    @CurrentUser() user: User,
+    @Param('projectSpaceId') projectSpaceId: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.projectSpacesService.delete(user.id, projectSpaceId, requestId);
   }
 }

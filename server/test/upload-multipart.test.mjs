@@ -40,7 +40,7 @@ function createResponse() {
 }
 
 function withMockedUploadController(overrides = {}) {
-  const controllerPath = path.join(serverRoot, 'dist', 'controllers', 'upload.js');
+  const controllerPath = path.join(serverRoot, 'dist', 'modules', 'upload', 'upload.service.js');
   const previousEntries = new Map();
 
   function mockModule(relativePath, exports) {
@@ -140,7 +140,33 @@ function withMockedUploadController(overrides = {}) {
     ...(overrides.ragClient || {}),
   });
 
-  const controller = require(controllerPath);
+  const { isHttpResponse } = require(path.join(
+    serverRoot,
+    'dist',
+    'common',
+    'http',
+    'http-response.js',
+  ));
+  const { UploadService } = require(controllerPath);
+  const service = new UploadService();
+  const applyResult = (response, result) => {
+    if (isHttpResponse(result)) {
+      if (result.options.statusCode !== undefined) response.code(result.options.statusCode);
+      return response.send(result.body);
+    }
+    return response.send(result);
+  };
+  const invoke = async (method, request, response) => applyResult(
+    response,
+    await service[method](request.user.id, request.body, request.requestId),
+  );
+  const controller = {
+    checkFile: (request, response) => invoke('checkFile', request, response),
+    initMultipartUpload: (request, response) => invoke('initMultipartUpload', request, response),
+    presignMultipartParts: (request, response) => invoke('presignMultipartParts', request, response),
+    completeMultipartUpload: (request, response) => invoke('completeMultipartUpload', request, response),
+    abortMultipartUpload: (request, response) => invoke('abortMultipartUpload', request, response),
+  };
 
   return {
     controller,
@@ -242,7 +268,14 @@ test('Nest upload controller exposes direct multipart endpoints beside chunk fal
     path.join(serverRoot, 'src', 'modules', 'upload', 'upload.controller.ts'),
     'utf8',
   );
-  const controllerSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'upload.ts'), 'utf8');
+  const controllerSource = readFileSync(
+    path.join(serverRoot, 'src', 'modules', 'upload', 'upload.service.ts'),
+    'utf8',
+  );
+  const multipartInterceptorSource = readFileSync(
+    path.join(serverRoot, 'src', 'common', 'interceptors', 'multipart-upload.interceptor.ts'),
+    'utf8',
+  );
   const migrationSource = readFileSync(path.join(serverRoot, 'migrations', '0020_direct_multipart_uploads.sql'), 'utf8');
 
   assert.match(routesSource, /@Controller\('upload'\)/);
@@ -252,6 +285,17 @@ test('Nest upload controller exposes direct multipart endpoints beside chunk fal
   assert.match(routesSource, /@Post\('multipart\/abort'\)[\s\S]*@ValidateMutation\(mutationSchemas\.uploadMultipartAbort\)/);
   assert.match(routesSource, /@Post\('chunk'\)[\s\S]*@MultipartUpload\([\s\S]*DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES/);
   assert.match(routesSource, /@Post\('avatar'\)[\s\S]*@MultipartUpload\([\s\S]*AVATAR_UPLOAD_LIMIT_BYTES/);
+  assert.equal(
+    (routesSource.match(/@BufferedUploadFile\(\) file: BufferedUpload \| undefined/g) || []).length,
+    2,
+  );
+  assert.doesNotMatch(routesSource, /@(Req|Res)\s*\(|AppReply|AppRequest|controllers\/upload/);
+  assert.match(routesSource, /@CurrentUser\(\) user: User/);
+  assert.match(routesSource, /@RequestId\(\) requestId\?: string/);
+  assert.match(
+    multipartInterceptorSource,
+    /readBufferedUploadFile[\s\S]*?getRequest<AppRequest>\(\)\.uploadFile/,
+  );
   assert.match(controllerSource, /initMultipartUpload/);
   assert.match(controllerSource, /completeMultipartUpload/);
   assert.match(controllerSource, /fileQueue\.trigger\(\)/);

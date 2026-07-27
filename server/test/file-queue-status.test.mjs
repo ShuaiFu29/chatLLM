@@ -14,7 +14,7 @@ const readJson = (relativePath) => JSON.parse(readSource(relativePath));
 
 test('usage API exposes per-user file queue state for document processing traceability', () => {
   const nestControllerSource = readSource('src/modules/usage/usage.controller.ts');
-  const controllerSource = readSource('src/controllers/usage.ts');
+  const serviceSource = readSource('src/modules/usage/usage.service.ts');
   const repositorySource = readSource('src/repositories/usage.ts');
   const migrationSource = readSource('migrations/0021_file_ingestion_jobs.sql');
 
@@ -22,13 +22,13 @@ test('usage API exposes per-user file queue state for document processing tracea
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
   assert.match(
     nestControllerSource,
-    /@Get\('file-queue'\)[\s\S]*?return getUsageFileQueue\(request, reply\)/,
+    /@Get\('file-queue'\)[\s\S]*?this\.usageService\.getFileQueue\(user\.id/,
   );
 
-  assert.match(controllerSource, /getUsageFileQueue/);
-  assert.match(controllerSource, /getFileQueueSummaryForUser\(req\.user\.id, fileLimit\)/);
-  assert.match(controllerSource, /DEFAULT_USAGE_FILE_LIMIT/);
-  assert.match(controllerSource, /MAX_USAGE_FILE_LIMIT/);
+  assert.match(serviceSource, /getFileQueue/);
+  assert.match(serviceSource, /getFileQueueSummaryForUser\(userId, fileLimit\)/);
+  assert.match(serviceSource, /DEFAULT_USAGE_FILE_LIMIT/);
+  assert.match(serviceSource, /MAX_USAGE_FILE_LIMIT/);
 
   assert.match(repositorySource, /getFileQueueSummaryForUser/);
   assert.match(repositorySource, /count\(\*\) filter \(where status = 'pending'\)/i);
