@@ -1,5 +1,6 @@
 import hmac
 import threading
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
 from typing import Literal
@@ -29,7 +30,32 @@ from retrieval import retrieve_documents
 from safe_errors import safe_error_fields
 from vector_store import check_vector_store_ready, delete_file_vectors, ensure_collection
 
-app = FastAPI(title="RAG Service", description="Microservice for Retrieval-Augmented Generation")
+
+def startup():
+    startup_tasks = [
+        ("milvus collection", ensure_collection),
+        ("elasticsearch keyword index", ensure_keyword_index),
+        ("neo4j graph schema", ensure_graph_schema),
+    ]
+
+    for label, task in startup_tasks:
+        try:
+            task()
+        except Exception as error:
+            print(f"[startup] Deferred {label} initialization: {safe_error_fields(error)}")
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    startup()
+    yield
+
+
+app = FastAPI(
+    title="RAG Service",
+    description="Microservice for Retrieval-Augmented Generation",
+    lifespan=lifespan,
+)
 app.add_exception_handler(Exception, public_internal_error_handler)
 ingest_semaphore = threading.BoundedSemaphore(settings.rag_ingest_concurrency)
 
@@ -268,20 +294,6 @@ def ready_health_check():
         )
 
     return {"status": "ready", "checks": checks, "capabilities": capabilities}
-
-@app.on_event("startup")
-def startup():
-    startup_tasks = [
-        ("milvus collection", ensure_collection),
-        ("elasticsearch keyword index", ensure_keyword_index),
-        ("neo4j graph schema", ensure_graph_schema),
-    ]
-
-    for label, task in startup_tasks:
-        try:
-            task()
-        except Exception as error:
-            print(f"[startup] Deferred {label} initialization: {safe_error_fields(error)}")
 
 def process_file_with_guard(file_id: str, attempt_id: UUID, lease_token: UUID):
     try:
