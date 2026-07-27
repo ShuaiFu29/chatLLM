@@ -95,11 +95,11 @@ const TOPICS: TopicDefinition[] = [
   },
   {
     topic: '后端架构与服务治理',
-    keywords: ['express', 'nest', '后端', '架构', '消息队列', '限流', '监控', 'metrics', '健康检查', '服务治理', '数据库', '索引'],
+    keywords: ['fastify', 'nestjs', '后端', '架构', '消息队列', '限流', '监控', 'metrics', '健康检查', '服务治理', '数据库', '索引'],
     observationCategory: 'architecture_focus',
     observationLabel: '关注后端架构演进',
     observationDetail: '关注后端服务边界、可观测性、数据库索引和服务治理能力。',
-    suggestionQuestion: 'Express 后端下一步如何演进到更适合企业级维护的结构？',
+    suggestionQuestion: 'NestJS 后端下一步如何演进到更适合企业级维护的结构？',
     suggestionReason: '你关心后端是否能抗住企业级负载，以及是否需要架构升级。',
   },
 ];

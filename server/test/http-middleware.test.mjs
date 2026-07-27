@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
-import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import path from 'node:path';
-import { after, test } from 'node:test';
+import { after, before, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
@@ -18,62 +17,113 @@ Object.assign(process.env, {
   S3_SECRET_KEY: 'minioadmin',
   JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
   DEEPSEEK_API_KEY: 'sk-test',
+  METRICS_TOKEN: 'test-metrics-token',
+  CORS_ALLOWED_ORIGINS: 'http://allowed.example',
 });
 
-const rateLimitRepository = require(path.join(serverRoot, 'dist', 'repositories', 'rateLimits.js'));
-rateLimitRepository.consumeRateLimitBucket = async ({ windowMs }) => ({
-  count: 1,
-  resetAt: Date.now() + windowMs,
-});
+let app;
+let fastify;
 
-const { app } = require(path.join(serverRoot, 'dist', 'index.js'));
-const { closeDatabasePool } = require(path.join(serverRoot, 'dist', 'lib', 'db.js'));
+before(async () => {
+  const { Controller, Post } = require('@nestjs/common');
+  const { FastifyAdapter } = require('@nestjs/platform-fastify');
+  const { Test } = require('@nestjs/testing');
+  const cors = require('@fastify/cors');
+  const { HttpExceptionFilter } = require(path.join(
+    serverRoot,
+    'dist',
+    'common',
+    'filters',
+    'http-exception.filter.js',
+  ));
+  const { registerHttpHooks } = require(path.join(
+    serverRoot,
+    'dist',
+    'common',
+    'http',
+    'http-hooks.js',
+  ));
+  const { JSON_REQUEST_LIMIT_BYTES } = require(path.join(
+    serverRoot,
+    'dist',
+    'lib',
+    'requestLimits.js',
+  ));
+  const { OperationsController } = require(path.join(
+    serverRoot,
+    'dist',
+    'modules',
+    'operations',
+    'operations.controller.js',
+  ));
+
+  class BodyProbeController {
+    accept() {
+      return { accepted: true };
+    }
+  }
+  Controller('test')(BodyProbeController);
+  Post('body')(
+    BodyProbeController.prototype,
+    'accept',
+    Object.getOwnPropertyDescriptor(BodyProbeController.prototype, 'accept'),
+  );
+
+  const testingModule = await Test.createTestingModule({
+    controllers: [OperationsController, BodyProbeController],
+  }).compile();
+  app = testingModule.createNestApplication(new FastifyAdapter({
+    bodyLimit: JSON_REQUEST_LIMIT_BYTES,
+  }));
+  fastify = app.getHttpAdapter().getInstance();
+
+  registerHttpHooks(fastify);
+  await app.register(cors, {
+    credentials: true,
+    exposedHeaders: [
+      'x-chatllm-has-more',
+      'x-chatllm-next-cursor',
+      'x-chatllm-page-limit',
+    ],
+    origin: (origin, callback) => {
+      if (!origin || origin === 'http://allowed.example') {
+        callback(null, true);
+        return;
+      }
+      const error = new Error('Not allowed by CORS');
+      error.statusCode = 403;
+      callback(error, false);
+    },
+  });
+  app.useGlobalFilters(new HttpExceptionFilter());
+  await app.init();
+  await fastify.ready();
+});
 
 after(async () => {
-  await closeDatabasePool();
+  await app?.close();
 });
-
-const listen = () => new Promise((resolve) => {
-  const server = createServer(app);
-  server.listen(0, '127.0.0.1', () => resolve(server));
-});
-
-const close = (server) => new Promise((resolve, reject) => {
-  server.close((error) => {
-    if (error) reject(error);
-    else resolve();
-  });
-});
-
-const request = (server, pathname, options = {}) => {
-  const address = server.address();
-  return fetch(`http://127.0.0.1:${address.port}${pathname}`, options);
-};
 
 test('live health responses include security headers and request ids', async () => {
-  const server = await listen();
+  const response = await app.inject({
+    method: 'GET',
+    url: '/health/live',
+    headers: {
+      'x-request-id': 'test-request-1',
+    },
+  });
 
-  try {
-    const response = await request(server, '/health/live', {
-      headers: {
-        'x-request-id': 'test-request-1',
-      },
-    });
-
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get('x-request-id'), 'test-request-1');
-    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal(response.headers.get('x-frame-options'), 'DENY');
-    assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
-    assert.match(response.headers.get('permissions-policy') || '', /microphone=\(\)/);
-    assert.deepEqual(await response.json(), { status: 'ok' });
-  } finally {
-    await close(server);
-  }
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['x-request-id'], 'test-request-1');
+  assert.equal(response.headers['x-content-type-options'], 'nosniff');
+  assert.equal(response.headers['x-frame-options'], 'DENY');
+  assert.equal(response.headers['referrer-policy'], 'no-referrer');
+  assert.match(response.headers['permissions-policy'] || '', /microphone=\(\)/);
+  assert.equal(response.headers['x-powered-by'], undefined);
+  assert.deepEqual(response.json(), { status: 'ok' });
 });
 
 test('request completion logs exclude query strings and reject unsafe request ids', async () => {
-  const server = await listen();
   const originalConsoleInfo = console.info;
   const infoLogs = [];
   console.info = (message) => {
@@ -81,16 +131,20 @@ test('request completion logs exclude query strings and reject unsafe request id
   };
 
   try {
-    const response = await request(server, '/health/live?access_token=query-secret-value', {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/health/live?access_token=query-secret-value',
       headers: {
         'x-request-id': 'unsafe request id with spaces and secret-value',
       },
     });
-    await response.text();
     await new Promise((resolve) => setImmediate(resolve));
 
-    assert.equal(response.status, 200);
-    assert.notEqual(response.headers.get('x-request-id'), 'unsafe request id with spaces and secret-value');
+    assert.equal(response.statusCode, 200);
+    assert.notEqual(
+      response.headers['x-request-id'],
+      'unsafe request id with spaces and secret-value',
+    );
     assert.equal(infoLogs.length, 1);
 
     const logEntry = JSON.parse(infoLogs[0]);
@@ -98,12 +152,10 @@ test('request completion logs exclude query strings and reject unsafe request id
     assert.doesNotMatch(infoLogs[0], /query-secret-value|access_token|secret-value/);
   } finally {
     console.info = originalConsoleInfo;
-    await close(server);
   }
 });
 
 test('unknown API routes return structured JSON 404 responses', async () => {
-  const server = await listen();
   const originalConsoleError = console.error;
   const originalConsoleInfo = console.info;
   const errorLogs = [];
@@ -116,15 +168,17 @@ test('unknown API routes return structured JSON 404 responses', async () => {
   };
 
   try {
-    const response = await request(server, '/api/not-a-real-route/secret-path-value?access_token=query-secret-value', {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/not-a-real-route/secret-path-value?access_token=query-secret-value',
       headers: {
         'x-request-id': 'test-request-404',
       },
     });
 
-    assert.equal(response.status, 404);
-    assert.match(response.headers.get('content-type') || '', /application\/json/);
-    assert.deepEqual(await response.json(), {
+    assert.equal(response.statusCode, 404);
+    assert.match(response.headers['content-type'] || '', /application\/json/);
+    assert.deepEqual(response.json(), {
       error: 'Route not found',
       requestId: 'test-request-404',
     });
@@ -141,6 +195,76 @@ test('unknown API routes return structured JSON 404 responses', async () => {
   } finally {
     console.error = originalConsoleError;
     console.info = originalConsoleInfo;
-    await close(server);
   }
+});
+
+test('CORS allows configured origins, exposes pagination headers, and rejects other origins', async () => {
+  const allowed = await app.inject({
+    method: 'GET',
+    url: '/health/live',
+    headers: { origin: 'http://allowed.example' },
+  });
+  assert.equal(allowed.statusCode, 200);
+  assert.equal(allowed.headers['access-control-allow-origin'], 'http://allowed.example');
+  assert.equal(allowed.headers['access-control-allow-credentials'], 'true');
+  assert.match(
+    allowed.headers['access-control-expose-headers'] || '',
+    /x-chatllm-next-cursor/i,
+  );
+
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  try {
+    const rejected = await app.inject({
+      method: 'GET',
+      url: '/health/live',
+      headers: { origin: 'http://blocked.example' },
+    });
+    assert.equal(rejected.statusCode, 403);
+    assert.equal(rejected.json().error, 'Origin is not allowed');
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
+
+test('JSON request bodies remain bounded by the configured Fastify limit', async () => {
+  const { JSON_REQUEST_LIMIT_BYTES } = require(path.join(
+    serverRoot,
+    'dist',
+    'lib',
+    'requestLimits.js',
+  ));
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+
+  try {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/test/body',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ content: 'x'.repeat(JSON_REQUEST_LIMIT_BYTES) }),
+    });
+    assert.equal(response.statusCode, 413);
+    assert.deepEqual(response.json(), {
+      error: 'Request body too large',
+      requestId: response.headers['x-request-id'],
+    });
+  } finally {
+    console.error = originalConsoleError;
+  }
+});
+
+test('metrics endpoint fails closed and serves Prometheus output only with its token', async () => {
+  const unauthorized = await app.inject({ method: 'GET', url: '/metrics' });
+  assert.equal(unauthorized.statusCode, 401);
+  assert.deepEqual(unauthorized.json(), { error: 'Unauthorized' });
+
+  const authorized = await app.inject({
+    method: 'GET',
+    url: '/metrics',
+    headers: { authorization: 'Bearer test-metrics-token' },
+  });
+  assert.equal(authorized.statusCode, 200);
+  assert.match(authorized.headers['content-type'] || '', /text\/plain/);
+  assert.match(authorized.body, /chatllm_http_requests_total/);
 });

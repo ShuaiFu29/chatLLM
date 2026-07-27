@@ -24,23 +24,19 @@ test('RAG trace migration stores agentic run metadata and links assistant messag
 });
 
 test('server exposes authenticated RAG workbench endpoints for inspection and graph search', () => {
-  const indexSource = readSource('src/index.ts');
-  const routesSource = readOptionalSource('src/routes/ragWorkbench.ts');
-  const controllerSource = readOptionalSource('src/controllers/ragWorkbench.ts');
+  const nestControllerSource = readSource('src/modules/rag-workbench/rag-workbench.controller.ts');
+  const handlerSource = readOptionalSource('src/controllers/ragWorkbench.ts');
   const ragClientSource = readSource('src/lib/ragClient.ts');
 
-  assert.match(indexSource, /ragWorkbenchRoutes/);
-  assert.match(indexSource, /\/api\/rag-workbench/);
-  assert.match(routesSource, /router\.post\('\/inspect'/);
-  assert.match(routesSource, /router\.post\('\/graph\/list'/);
-  assert.match(routesSource, /router\.post\('\/graph\/search'/);
-  assert.match(routesSource, /requireAuth/);
-  assert.match(controllerSource, /inspectRagRetrieval/);
-  assert.match(controllerSource, /listRagGraph/);
-  assert.match(controllerSource, /searchRagGraph/);
-  assert.match(controllerSource, /retrieveAgenticRagDocuments/);
-  assert.match(controllerSource, /listRagGraphDocuments/);
-  assert.match(controllerSource, /searchRagGraphDocuments/);
+  assert.match(nestControllerSource, /@Controller\('rag-workbench'\)/);
+  assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(nestControllerSource, /@RateLimitScope\(\{[\s\S]*?keyPrefix:\s*'rag-workbench'/);
+  assert.match(nestControllerSource, /@Post\('inspect'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragWorkbenchInspect\)[\s\S]*?return inspectRagRetrieval\(request, reply\)/);
+  assert.match(nestControllerSource, /@Post\('graph\/list'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragWorkbenchGraphList\)[\s\S]*?return listRagGraph\(request, reply\)/);
+  assert.match(nestControllerSource, /@Post\('graph\/search'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.ragWorkbenchGraphSearch\)[\s\S]*?return searchRagGraph\(request, reply\)/);
+  assert.match(handlerSource, /retrieveAgenticRagDocuments/);
+  assert.match(handlerSource, /listRagGraphDocuments/);
+  assert.match(handlerSource, /searchRagGraphDocuments/);
   assert.match(ragClientSource, /listRagGraphDocuments/);
   assert.match(ragClientSource, /searchRagGraphDocuments/);
   assert.match(ragClientSource, /\/graph\/list/);

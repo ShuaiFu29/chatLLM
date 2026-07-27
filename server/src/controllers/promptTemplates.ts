@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { AppReply, AppRequest } from '../common/http/app-request';
 import {
   createPromptTemplateForUser,
   deletePromptTemplateForUser,
@@ -13,20 +13,20 @@ const readProjectSpaceId = (value: unknown) => {
   return trimmed || null;
 };
 
-export const listPromptTemplates = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const listPromptTemplates = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const templates = await listPromptTemplatesForUser(req.user.id);
-    res.json(templates);
+    res.send(templates);
   } catch (error) {
-    console.error('Error listing prompt templates:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to list prompt templates' });
+    console.error('Error listing prompt templates:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to list prompt templates' });
   }
 };
 
-export const createPromptTemplate = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const createPromptTemplate = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const name = req.body.name as string;
   const content = req.body.content as string;
@@ -41,15 +41,15 @@ export const createPromptTemplate = async (req: Request, res: Response) => {
       description,
       isDefault: req.body.is_default ?? req.body.isDefault ?? false,
     });
-    res.status(201).json(template);
+    res.code(201).send(template);
   } catch (error) {
-    console.error('Error creating prompt template:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to create prompt template' });
+    console.error('Error creating prompt template:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to create prompt template' });
   }
 };
 
-export const updatePromptTemplate = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const updatePromptTemplate = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { templateId } = req.params;
 
   const updates: {
@@ -72,24 +72,24 @@ export const updatePromptTemplate = async (req: Request, res: Response) => {
 
   try {
     const template = await updatePromptTemplateForUser(templateId, req.user.id, updates);
-    if (!template) return res.status(404).json({ error: 'Prompt template not found' });
-    res.json(template);
+    if (!template) return res.code(404).send({ error: 'Prompt template not found' });
+    res.send(template);
   } catch (error) {
-    console.error('Error updating prompt template:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to update prompt template' });
+    console.error('Error updating prompt template:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to update prompt template' });
   }
 };
 
-export const deletePromptTemplate = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deletePromptTemplate = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { templateId } = req.params;
 
   try {
     const deleted = await deletePromptTemplateForUser(templateId, req.user.id);
-    if (!deleted) return res.status(404).json({ error: 'Prompt template not found' });
-    res.json({ success: true });
+    if (!deleted) return res.code(404).send({ error: 'Prompt template not found' });
+    res.send({ success: true });
   } catch (error) {
-    console.error('Error deleting prompt template:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to delete prompt template' });
+    console.error('Error deleting prompt template:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to delete prompt template' });
   }
 };

@@ -5,31 +5,25 @@ import {
   OnApplicationShutdown,
 } from '@nestjs/common';
 import { closeDatabasePool } from '../lib/db';
-import { serverEnv } from '../lib/env';
 import { runMigrations } from '../lib/migrations';
 import { closeRedis, connectRedis } from '../lib/redis';
-import { toSafeError } from '../lib/safeError';
 import { artifactCleanupQueue } from '../services/cleanupQueue';
 import { fileQueue } from '../services/fileQueue';
 import { maintenanceService } from '../services/maintenance';
 import { ragEvalQueue } from '../services/ragEvalQueue';
 
-const withTimeout = async (operation: Promise<unknown>, timeoutMs: number) => {
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    await Promise.race([
-      operation,
-      new Promise<never>((_resolve, reject) => {
-        timeout = setTimeout(
-          () => reject(new Error('Graceful shutdown timed out')),
-          timeoutMs,
-        );
-        timeout.unref();
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
+const queues = [fileQueue, ragEvalQueue, artifactCleanupQueue] as const;
+
+const getRejectedReasons = (results: PromiseSettledResult<unknown>[]) => (
+  results
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => result.reason)
+);
+
+const createLifecycleError = (message: string, causes: unknown[]) => {
+  const error = new Error(message) as Error & { causes: unknown[] };
+  error.causes = causes;
+  return error;
 };
 
 @Injectable()
@@ -38,27 +32,24 @@ export class RuntimeLifecycleService implements
   BeforeApplicationShutdown,
   OnApplicationShutdown {
   private maintenanceStarted = false;
-  private runtimeStarted = false;
+  private queuesMayBeRunning = false;
+  private resourcesClosed = false;
+  private shutdownPromise: Promise<void> | null = null;
 
   async onApplicationBootstrap() {
-    await runMigrations();
-    await connectRedis();
-
     try {
-      await Promise.all([
-        fileQueue.start(),
-        ragEvalQueue.start(),
-        artifactCleanupQueue.start(),
-      ]);
-      this.runtimeStarted = true;
+      await runMigrations();
+      await connectRedis();
+      this.queuesMayBeRunning = true;
+      const startResults = await Promise.allSettled(queues.map((queue) => queue.start()));
+      const startErrors = getRejectedReasons(startResults);
+      if (startErrors.length > 0) throw startErrors[0];
     } catch (error) {
-      await Promise.allSettled([
-        fileQueue.stop(),
-        ragEvalQueue.stop(),
-        artifactCleanupQueue.stop(),
-        closeRedis(),
-        closeDatabasePool(),
-      ]);
+      try {
+        await this.shutdownRuntime();
+      } catch (rollbackError) {
+        throw createLifecycleError('Runtime startup and rollback failed', [error, rollbackError]);
+      }
       throw error;
     }
   }
@@ -69,29 +60,46 @@ export class RuntimeLifecycleService implements
     this.maintenanceStarted = true;
   }
 
-  beforeApplicationShutdown() {
+  async beforeApplicationShutdown() {
     if (!this.maintenanceStarted) return;
-    maintenanceService.stop();
     this.maintenanceStarted = false;
+    await maintenanceService.stop();
   }
 
   async onApplicationShutdown() {
-    try {
-      await withTimeout((async () => {
-        if (this.runtimeStarted) {
-          await Promise.all([
-            fileQueue.stop(),
-            ragEvalQueue.stop(),
-            artifactCleanupQueue.stop(),
-          ]);
-          this.runtimeStarted = false;
+    await this.shutdownRuntime();
+  }
+
+  private shutdownRuntime(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+
+    this.shutdownPromise = (async () => {
+      const errors: unknown[] = [];
+      if (this.queuesMayBeRunning) {
+        this.queuesMayBeRunning = false;
+        const stopResults = await Promise.allSettled(queues.map((queue) => queue.stop()));
+        errors.push(...getRejectedReasons(stopResults));
+      }
+
+      if (!this.resourcesClosed) {
+        this.resourcesClosed = true;
+        try {
+          await closeRedis();
+        } catch (error) {
+          errors.push(error);
         }
-        await closeRedis();
-        await closeDatabasePool();
-      })(), serverEnv.SHUTDOWN_TIMEOUT_MS);
-    } catch (error) {
-      console.error('[Server] Shutdown failed:', toSafeError(error));
-      process.exitCode = 1;
-    }
+        try {
+          await closeDatabasePool();
+        } catch (error) {
+          errors.push(error);
+        }
+      }
+
+      if (errors.length > 0) {
+        throw createLifecycleError('Runtime shutdown failed', errors);
+      }
+    })();
+
+    return this.shutdownPromise;
   }
 }

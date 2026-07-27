@@ -18,8 +18,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 
 const { generateAccessToken } = require(path.join(serverRoot, 'dist', 'lib', 'jwt.js'));
-const { resolveAuthenticatedUser } = require(path.join(serverRoot, 'dist', 'middleware', 'auth.js'));
+const authenticationModule = require(path.join(serverRoot, 'dist', 'services', 'authentication.js'));
+const { resolveAuthenticatedUser } = authenticationModule;
+const { AuthGuard } = require(path.join(serverRoot, 'dist', 'common', 'guards', 'auth.guard.js'));
 const authControllerSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'auth.ts'), 'utf8');
+
+const createExecutionContext = (request) => ({
+  switchToHttp: () => ({
+    getRequest: () => request,
+  }),
+});
 
 test('resolveAuthenticatedUser returns the current database user rather than stale token fields', async () => {
   const token = generateAccessToken({
@@ -58,6 +66,73 @@ test('resolveAuthenticatedUser does not query the database for invalid tokens', 
 
   assert.equal(user, null);
   assert.equal(databaseWasQueried, false);
+});
+
+test('resolveAuthenticatedUser rejects users whose deletion is pending', async () => {
+  const token = generateAccessToken({
+    id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
+    github_id: 12345,
+    username: 'pending-user',
+    avatar_url: '',
+    display_name: 'Pending User',
+  });
+  let queriedUserId;
+
+  const user = await resolveAuthenticatedUser(token, async (userId) => {
+    queriedUserId = userId;
+    return {
+      id: userId,
+      deletion_status: 'pending',
+    };
+  });
+
+  assert.equal(queriedUserId, 'd4bf7f87-0769-486c-bdb8-351df9f6cb38');
+  assert.equal(user, null);
+});
+
+test('AuthGuard uses Fastify cookies and attaches the current database user', async () => {
+  const originalResolveAuthenticatedUser = authenticationModule.resolveAuthenticatedUser;
+  const databaseUser = {
+    id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
+    deletion_status: 'active',
+    username: 'current-user',
+  };
+  const request = { cookies: { access_token: 'signed-access-token' } };
+  let receivedToken;
+  authenticationModule.resolveAuthenticatedUser = async (accessToken) => {
+    receivedToken = accessToken;
+    return databaseUser;
+  };
+
+  try {
+    assert.equal(await new AuthGuard().canActivate(createExecutionContext(request)), true);
+  } finally {
+    authenticationModule.resolveAuthenticatedUser = originalResolveAuthenticatedUser;
+  }
+
+  assert.equal(receivedToken, 'signed-access-token');
+  assert.deepEqual(request.user, databaseUser);
+});
+
+test('AuthGuard rejects requests without an access token before authentication lookup', async () => {
+  const originalResolveAuthenticatedUser = authenticationModule.resolveAuthenticatedUser;
+  let authenticationWasCalled = false;
+  authenticationModule.resolveAuthenticatedUser = async () => {
+    authenticationWasCalled = true;
+    return null;
+  };
+
+  try {
+    await assert.rejects(
+      new AuthGuard().canActivate(createExecutionContext({ cookies: {} })),
+      (error) => error.getStatus() === 401
+        && assert.deepEqual(error.getResponse(), { error: 'Unauthorized: No access token' }) === undefined,
+    );
+  } finally {
+    authenticationModule.resolveAuthenticatedUser = originalResolveAuthenticatedUser;
+  }
+
+  assert.equal(authenticationWasCalled, false);
 });
 
 test('GitHub OAuth state cookie uses the same baseline security options as auth cookies', () => {

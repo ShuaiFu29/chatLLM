@@ -26,7 +26,7 @@ pnpm run dev
 - 检查后端 / 前端 / RAG 端口是否已经被其他进程占用
 - 启动 PostgreSQL / MinIO / Milvus / Attu / Elasticsearch / Neo4j
 - 后端启动时自动执行 server/migrations 里尚未应用的数据库迁移
-- 启动后端 Express
+- 启动后端 NestJS/Fastify
 - 启动 RAG 服务
 - 启动前端 React
 
@@ -56,7 +56,7 @@ cd D:\project\chatLLM
 npm run dev:infra
 
 
-启动后端 Express：
+启动后端 NestJS/Fastify：
 
 cd D:\project\chatLLM\server
 npm run dev

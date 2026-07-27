@@ -1,11 +1,10 @@
 import { Controller, Get, HttpCode, Req, Res } from '@nestjs/common';
 import { AppReply, AppRequest } from '../../common/http/app-request';
-import { checkDatabaseReady } from '../../lib/db';
+import { SkipRateLimit } from '../../common/guards/rate-limit.guard';
 import { serverEnv } from '../../lib/env';
+import { readReadyHealth } from '../../lib/health';
 import { metrics } from '../../lib/metrics';
 import { classifyQueueHealth, readQueueHealthCounts } from '../../lib/queueHealth';
-import { checkRagServiceReady } from '../../lib/ragClient';
-import { checkRedisReady } from '../../lib/redis';
 import { toSafeError } from '../../lib/safeError';
 
 const readMetricsToken = (request: AppRequest) => {
@@ -30,6 +29,7 @@ const authorizeMetrics = (request: AppRequest, reply: AppReply) => {
 };
 
 @Controller()
+@SkipRateLimit()
 export class OperationsController {
   @Get('health')
   @HttpCode(200)
@@ -45,31 +45,8 @@ export class OperationsController {
 
   @Get('health/ready')
   async ready(@Req() request: AppRequest, @Res() reply: AppReply) {
-    const checks: Record<string, 'ok' | 'error'> = {
-      postgres: 'error',
-      redis: 'error',
-      rag: 'error',
-    };
-    const dependencies = [
-      ['postgres', checkDatabaseReady],
-      ['redis', checkRedisReady],
-      ['rag', checkRagServiceReady],
-    ] as const;
-
-    for (const [name, check] of dependencies) {
-      try {
-        await check();
-        checks[name] = 'ok';
-      } catch (error) {
-        console.warn(`[Health] ${name} readiness check failed:`, toSafeError(error, request.requestId));
-      }
-    }
-
-    const isReady = Object.values(checks).every((status) => status === 'ok');
-    reply.code(isReady ? 200 : 503).send({
-      status: isReady ? 'ready' : 'not_ready',
-      checks,
-    });
+    const result = await readReadyHealth({}, request.requestId);
+    reply.code(result.statusCode).send(result.body);
   }
 
   @Get('health/queues')

@@ -10,8 +10,24 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
+Object.assign(process.env, {
+  NODE_ENV: 'test',
+  DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+  S3_ENDPOINT: 'http://localhost:9000',
+  S3_ACCESS_KEY: 'minioadmin',
+  S3_SECRET_KEY: 'minioadmin',
+  JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+  DEEPSEEK_API_KEY: 'sk-test',
+});
 const safeErrorModulePath = path.join(serverRoot, 'dist', 'lib', 'safeError.js');
 const safeErrorModule = fs.existsSync(safeErrorModulePath) ? require(safeErrorModulePath) : {};
+const { HttpExceptionFilter } = require(path.join(
+  serverRoot,
+  'dist',
+  'common',
+  'filters',
+  'http-exception.filter.js',
+));
 const axiosModule = require(path.join(serverRoot, 'node_modules', 'axios'));
 const axios = axiosModule.default || axiosModule;
 
@@ -48,6 +64,32 @@ const assertContainsNoSecrets = (value) => {
   }
 };
 
+const createFilterHarness = (requestId) => {
+  const request = { requestId };
+  const reply = {
+    sent: false,
+    raw: { headersSent: false },
+    statusCode: 200,
+    body: null,
+    code(statusCode) {
+      this.statusCode = statusCode;
+      return this;
+    },
+    send(body) {
+      this.body = body;
+      this.sent = true;
+      return this;
+    },
+  };
+  const host = {
+    switchToHttp: () => ({
+      getRequest: () => request,
+      getResponse: () => reply,
+    }),
+  };
+  return { host, reply };
+};
+
 
 test('toSafeError allowlists only error class, code, status, and request id', () => {
   assert.equal(typeof safeErrorModule.toSafeError, 'function');
@@ -77,25 +119,11 @@ test('toSafeError rejects forged names, codes, and request ids', () => {
 });
 
 
-test('error middleware logs and returns a sanitized 500 response', () => {
-  const { errorHandlerMiddleware } = require(path.join(serverRoot, 'dist', 'middleware', 'errorHandler.js'));
+test('HttpExceptionFilter logs and returns a sanitized Fastify 500 response', () => {
   const originalConsoleError = console.error;
   const logs = [];
   console.error = (message) => logs.push(message);
-  const response = {
-    headersSent: false,
-    locals: { requestId: 'request-id-500' },
-    statusCode: 200,
-    body: null,
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body) {
-      this.body = body;
-      return this;
-    },
-  };
+  const { host, reply } = createFilterHarness('request-id-500');
   const error = Object.assign(new Error('exception-secret-value'), {
     code: 'ERR_PRIVATE_FAILURE',
     statusCode: 500,
@@ -103,13 +131,13 @@ test('error middleware logs and returns a sanitized 500 response', () => {
   });
 
   try {
-    errorHandlerMiddleware(error, {}, response, () => undefined);
+    new HttpExceptionFilter().catch(error, host);
   } finally {
     console.error = originalConsoleError;
   }
 
-  assert.equal(response.statusCode, 500);
-  assert.deepEqual(response.body, {
+  assert.equal(reply.statusCode, 500);
+  assert.deepEqual(reply.body, {
     error: 'Internal server error',
     requestId: 'request-id-500',
   });
@@ -125,80 +153,51 @@ test('error middleware logs and returns a sanitized 500 response', () => {
 });
 
 
-test('error middleware never echoes untrusted 4xx exception messages', () => {
-  const { errorHandlerMiddleware } = require(path.join(serverRoot, 'dist', 'middleware', 'errorHandler.js'));
+test('HttpExceptionFilter never echoes untrusted 4xx exception messages', () => {
   const originalConsoleError = console.error;
   const logs = [];
   console.error = (message) => logs.push(message);
-  const response = {
-    headersSent: false,
-    locals: { requestId: 'request-id-400' },
-    statusCode: 200,
-    body: null,
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body) {
-      this.body = body;
-      return this;
-    },
-  };
+  const { host, reply } = createFilterHarness('request-id-400');
   const error = Object.assign(new Error('exception-secret-value'), { statusCode: 400 });
 
   try {
-    errorHandlerMiddleware(error, {}, response, () => undefined);
+    new HttpExceptionFilter().catch(error, host);
   } finally {
     console.error = originalConsoleError;
   }
 
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, {
+  assert.equal(reply.statusCode, 400);
+  assert.deepEqual(reply.body, {
     error: 'Bad request',
     requestId: 'request-id-400',
   });
-  assert.doesNotMatch(JSON.stringify([response.body, logs]), /exception-secret-value/);
+  assert.doesNotMatch(JSON.stringify([reply.body, logs]), /exception-secret-value/);
 });
 
 
-test('health controller never logs Axios request configuration or payloads', async () => {
+test('readReadyHealth never logs downstream Axios request configuration or payloads', async () => {
   assert.equal(typeof safeErrorModule.toSafeError, 'function');
-  const dbModule = require(path.join(serverRoot, 'dist', 'lib', 'db.js'));
   const healthModule = require(path.join(serverRoot, 'dist', 'lib', 'health.js'));
-  const originalCheckDatabaseReady = dbModule.checkDatabaseReady;
-  const originalAxiosGet = axios.get;
   const originalConsoleWarn = console.warn;
   const logs = [];
-  dbModule.checkDatabaseReady = async () => true;
-  axios.get = async () => { throw makeSensitiveAxiosError(); };
   console.warn = (...args) => logs.push(args);
-  const response = {
-    locals: { requestId: 'request-id-health' },
-    statusCode: 200,
-    body: null,
-    status(code) {
-      this.statusCode = code;
-      return this;
-    },
-    json(body) {
-      this.body = body;
-      return this;
-    },
-  };
+  let result;
 
   try {
-    const handler = healthModule.createReadyHealthHandler({
+    result = await healthModule.readReadyHealth({
       checkDatabaseReady: async () => true,
       checkRedisReady: async () => true,
-    });
-    await handler({}, response);
+      checkRagServiceReady: async () => { throw makeSensitiveAxiosError(); },
+    }, 'request-id-health');
   } finally {
-    dbModule.checkDatabaseReady = originalCheckDatabaseReady;
-    axios.get = originalAxiosGet;
     console.warn = originalConsoleWarn;
   }
 
-  assert.equal(response.statusCode, 503);
+  assert.equal(result.statusCode, 503);
+  assert.deepEqual(result.body, {
+    status: 'not_ready',
+    checks: { postgres: 'ok', redis: 'ok', rag: 'error' },
+  });
   assert.equal(logs.length, 1);
   assert.deepEqual(logs[0][1], {
     name: 'AxiosError',

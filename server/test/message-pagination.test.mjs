@@ -65,7 +65,8 @@ test('message cursors round-trip created time and id without exposing raw SQL fr
 test('chat message listing uses cursor pagination and exposes page metadata headers', () => {
   const repositorySource = readSource('src/repositories/messages.ts');
   const controllerSource = readSource('src/controllers/chat.ts');
-  const indexSource = readSource('src/index.ts');
+  const nestControllerSource = readSource('src/modules/chat/chat.controller.ts');
+  const mainSource = readSource('src/main.ts');
   const storeSource = readSource('../client/src/stores/useChatStore.ts');
 
   assert.match(repositorySource, /listMessagesForConversationPage/);
@@ -80,9 +81,14 @@ test('chat message listing uses cursor pagination and exposes page metadata head
   assert.match(controllerSource, /x-chatllm-next-cursor/);
   assert.match(controllerSource, /x-chatllm-page-limit/);
   assert.match(controllerSource, /listMessagesForConversationPage/);
+  assert.match(controllerSource, /res\.header\('x-chatllm-has-more'/);
+  assert.match(controllerSource, /res\.header\('x-chatllm-next-cursor'/);
+  assert.match(controllerSource, /res\.send\(page\.messages\)/);
 
-  assert.match(indexSource, /exposedHeaders/);
-  assert.match(indexSource, /x-chatllm-next-cursor/);
+  assert.match(nestControllerSource, /@Get\('conversations\/:conversationId\/messages'\)/);
+  assert.match(nestControllerSource, /return getMessages\(request, reply\)/);
+  assert.match(mainSource, /exposedHeaders/);
+  assert.match(mainSource, /x-chatllm-next-cursor/);
 
   assert.match(storeSource, /messagePagination/);
   assert.match(storeSource, /loadOlderMessages/);

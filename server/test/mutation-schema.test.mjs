@@ -12,13 +12,13 @@ const UUID = '11111111-1111-4111-8111-111111111111';
 const SHA256 = 'a'.repeat(64);
 
 const expectedRouteSchemas = {
-  'auth.ts': [
+  'modules/auth/auth.controller.ts': [
     'authRefresh',
     'authUpdateProfile',
     'authDeleteAccount',
     'authLogout',
   ],
-  'chat.ts': [
+  'modules/chat/chat.controller.ts': [
     'chatCreateConversation',
     'chatBranchConversation',
     'chatUpdateConversation',
@@ -27,7 +27,7 @@ const expectedRouteSchemas = {
     'chatTruncateConversation',
     'chatSendMessage',
   ],
-  'persona.ts': [
+  'modules/persona/persona.controller.ts': [
     'personaAnalyze',
     'personaUpdateProfile',
     'personaDeleteProfile',
@@ -39,17 +39,17 @@ const expectedRouteSchemas = {
     'personaDeleteSuggestion',
     'personaReset',
   ],
-  'projectSpaces.ts': [
+  'modules/project-spaces/project-spaces.controller.ts': [
     'projectSpaceCreate',
     'projectSpaceUpdate',
     'projectSpaceDelete',
   ],
-  'promptTemplates.ts': [
+  'modules/prompt-templates/prompt-templates.controller.ts': [
     'promptTemplateCreate',
     'promptTemplateUpdate',
     'promptTemplateDelete',
   ],
-  'ragEval.ts': [
+  'modules/rag-eval/rag-eval.controller.ts': [
     'ragEvalDatasetCreate',
     'ragEvalDatasetUpdate',
     'ragEvalDatasetDelete',
@@ -58,12 +58,12 @@ const expectedRouteSchemas = {
     'ragEvalRunCancel',
     'ragEvalCaseDelete',
   ],
-  'ragWorkbench.ts': [
+  'modules/rag-workbench/rag-workbench.controller.ts': [
     'ragWorkbenchInspect',
     'ragWorkbenchGraphList',
     'ragWorkbenchGraphSearch',
   ],
-  'upload.ts': [
+  'modules/upload/upload.controller.ts': [
     'uploadCheck',
     'uploadInit',
     'uploadMultipartInit',
@@ -182,21 +182,35 @@ const emptyBodySchemas = [
 
 const loadValidation = () => require(path.join(serverRoot, 'dist', 'lib', 'validation.js'));
 const loadSchemas = () => require(path.join(serverRoot, 'dist', 'lib', 'mutationSchemas.js'));
+const loadValidationInterceptor = () => require(path.join(
+  serverRoot,
+  'dist',
+  'common',
+  'interceptors',
+  'mutation-validation.interceptor.js',
+));
+const loadHttpExceptionFilter = () => require(path.join(
+  serverRoot,
+  'dist',
+  'common',
+  'filters',
+  'http-exception.filter.js',
+));
 
-test('every Express mutation route mounts the shared validation boundary', () => {
+test('every Nest mutation controller method declares the shared validation boundary', () => {
   for (const [filename, schemaNames] of Object.entries(expectedRouteSchemas)) {
-    const source = readFileSync(path.join(serverRoot, 'src', 'routes', filename), 'utf8');
-    const mutationLines = source
-      .split(/\r?\n/)
-      .filter((line) => /router\.(?:post|put|patch|delete)\(/.test(line));
+    const source = readFileSync(path.join(serverRoot, 'src', filename), 'utf8');
+    const mutationLines = source.match(/@(Post|Put|Patch|Delete)\(/g) || [];
 
     assert.equal(mutationLines.length, schemaNames.length, `${filename} mutation count changed`);
-    for (const line of mutationLines) {
-      assert.match(line, /validateMutation\(mutationSchemas\.[A-Za-z]+\)/, `${filename}: ${line.trim()}`);
-    }
     for (const schemaName of schemaNames) {
-      assert.match(source, new RegExp(`validateMutation\\(mutationSchemas\\.${schemaName}\\)`));
+      assert.match(source, new RegExp(`@ValidateMutation\\(mutationSchemas\\.${schemaName}\\)`));
     }
+    assert.equal(
+      (source.match(/@ValidateMutation\(mutationSchemas\.[A-Za-z]+\)/g) || []).length,
+      mutationLines.length,
+      `${filename} has a mutation without validation metadata`,
+    );
   }
 });
 
@@ -393,45 +407,81 @@ test('RAG eval case schema accepts bounded advanced Gold labels and rejects inva
   }));
 });
 
-test('validation middleware returns a stable non-reflective 400 and forwards parsed values', () => {
-  const { validateMutation } = loadValidation();
+test('MutationValidationInterceptor throws a non-reflective validation error and forwards parsed values', () => {
+  const { HttpValidationError } = loadValidation();
+  const { MutationValidationInterceptor } = loadValidationInterceptor();
   const { mutationSchemas } = loadSchemas();
   const secretProbe = 'query-token-that-must-not-be-reflected';
   const invalidRequest = {
     body: { is_pinned: 'false', secret: secretProbe },
     params: { conversationId: UUID },
   };
-  const response = {
+  const reflector = {
+    getAllAndOverride() {
+      return mutationSchemas.chatUpdateConversation;
+    },
+  };
+  const interceptor = new MutationValidationInterceptor(reflector);
+  const createExecutionContext = (request) => ({
+    getHandler: () => function updateConversation() {},
+    getClass: () => class ChatController {},
+    switchToHttp: () => ({ getRequest: () => request }),
+  });
+  const nextResult = { subscribe() {} };
+  let nextCalls = 0;
+  const next = {
+    handle() {
+      nextCalls += 1;
+      return nextResult;
+    },
+  };
+
+  let validationError;
+  try {
+    interceptor.intercept(createExecutionContext(invalidRequest), next);
+  } catch (error) {
+    validationError = error;
+  }
+
+  assert.ok(validationError instanceof HttpValidationError);
+  assert.doesNotMatch(validationError.message, new RegExp(secretProbe));
+  assert.equal(nextCalls, 0);
+
+  const reply = {
+    sent: false,
+    raw: { headersSent: false },
     statusCode: undefined,
     body: undefined,
-    status(code) {
-      this.statusCode = code;
+    code(statusCode) {
+      this.statusCode = statusCode;
       return this;
     },
-    json(body) {
+    send(body) {
       this.body = body;
+      this.sent = true;
       return this;
     },
   };
-  let nextCalls = 0;
+  const host = {
+    switchToHttp: () => ({
+      getRequest: () => invalidRequest,
+      getResponse: () => reply,
+    }),
+  };
+  const { HttpExceptionFilter } = loadHttpExceptionFilter();
+  new HttpExceptionFilter().catch(validationError, host);
 
-  validateMutation(mutationSchemas.chatUpdateConversation)(invalidRequest, response, () => {
-    nextCalls += 1;
-  });
-
-  assert.equal(response.statusCode, 400);
-  assert.deepEqual(response.body, { error: 'Invalid request', code: 'validation_error' });
-  assert.doesNotMatch(JSON.stringify(response.body), new RegExp(secretProbe));
-  assert.equal(nextCalls, 0);
+  assert.equal(reply.statusCode, 400);
+  assert.deepEqual(reply.body, { error: 'Invalid request', code: 'validation_error' });
+  assert.doesNotMatch(JSON.stringify(reply.body), new RegExp(secretProbe));
 
   const validRequest = {
     body: { title: '  Renamed  ', is_pinned: false },
     params: { conversationId: UUID },
   };
-  validateMutation(mutationSchemas.chatUpdateConversation)(validRequest, response, () => {
-    nextCalls += 1;
-  });
+  const result = interceptor.intercept(createExecutionContext(validRequest), next);
 
+  assert.equal(result, nextResult);
   assert.equal(nextCalls, 1);
   assert.deepEqual(validRequest.body, { title: 'Renamed', is_pinned: false });
   assert.deepEqual(validRequest.params, { conversationId: UUID });

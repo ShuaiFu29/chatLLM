@@ -1,5 +1,3 @@
-import { RequestHandler } from 'express';
-
 type RagStatus = 'ok' | 'error';
 type DatabaseStatus = 'ok' | 'error';
 type ChatStreamStatus = 'completed' | 'failed' | 'rejected';
@@ -288,7 +286,3 @@ class MetricsRegistry {
 }
 
 export const metrics = new MetricsRegistry();
-
-export const metricsHandler: RequestHandler = (_req, res) => {
-  res.type('text/plain').send(metrics.renderPrometheus());
-};

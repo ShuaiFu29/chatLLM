@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 const repositorySource = readFileSync(path.join(serverRoot, 'src/repositories/projectSpaces.ts'), 'utf8');
-const controllerSource = readFileSync(path.join(serverRoot, 'src/controllers/projectSpaces.ts'), 'utf8');
+const handlerSource = readFileSync(path.join(serverRoot, 'src/controllers/projectSpaces.ts'), 'utf8');
+const nestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/project-spaces/project-spaces.controller.ts'), 'utf8');
 
 test('deleting a workspace is finalized only after durable child cleanup', () => {
   const cleanupRepositoryPath = path.join(serverRoot, 'src/repositories/cleanupJobs.ts');
@@ -24,10 +25,16 @@ test('deleting a workspace is finalized only after durable child cleanup', () =>
 });
 
 test('workspace deletion controller enqueues cleanup without inline external calls', () => {
-  assert.match(controllerSource, /enqueueProjectSpaceCleanup/);
-  assert.match(controllerSource, /status\(202\)/);
-  assert.doesNotMatch(controllerSource, /cleanupRagFileVectors/);
-  assert.doesNotMatch(controllerSource, /deleteObject/);
+  assert.match(nestControllerSource, /@Controller\('project-spaces'\)/);
+  assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(
+    nestControllerSource,
+    /@Delete\(':projectSpaceId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.projectSpaceDelete\)[\s\S]*?return deleteProjectSpace\(request, reply\)/,
+  );
+  assert.match(handlerSource, /enqueueProjectSpaceCleanup/);
+  assert.match(handlerSource, /code\(202\)\.send/);
+  assert.doesNotMatch(handlerSource, /cleanupRagFileVectors/);
+  assert.doesNotMatch(handlerSource, /deleteObject/);
 });
 
 test('normal workspace lookups hide deleting rows while deletion remains idempotent', () => {
@@ -36,7 +43,7 @@ test('normal workspace lookups hide deleting rows while deletion remains idempot
 
   assert.match(activeLookup, /status = 'active'/i);
   assert.match(repositorySource, /export const findProjectSpaceForUserIncludingDeleting/);
-  assert.match(controllerSource, /findProjectSpaceForUserIncludingDeleting/);
-  const deleteController = controllerSource.split('export const deleteProjectSpace', 2)[1] || '';
+  assert.match(handlerSource, /findProjectSpaceForUserIncludingDeleting/);
+  const deleteController = handlerSource.split('export const deleteProjectSpace', 2)[1] || '';
   assert.match(deleteController, /findProjectSpaceForUserIncludingDeleting/);
 });

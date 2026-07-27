@@ -18,10 +18,24 @@ Object.assign(process.env, {
   S3_SECRET_KEY: 'minioadmin',
   JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
   DEEPSEEK_API_KEY: 'sk-test',
+  RATE_LIMIT_WINDOW_MS: '60000',
 });
 
-const { createRateLimit } = require(path.join(serverRoot, 'dist', 'middleware', 'rateLimit.js'));
+const rateLimitModule = require(path.join(
+  serverRoot,
+  'dist',
+  'common',
+  'guards',
+  'rate-limit.guard.js',
+));
+const rateLimitRepository = require(path.join(serverRoot, 'dist', 'repositories', 'rateLimits.js'));
+const { Reflector } = require(path.join(serverRoot, 'node_modules', '@nestjs', 'core'));
 const { generateAccessToken } = require(path.join(serverRoot, 'dist', 'lib', 'jwt.js'));
+const {
+  consumeRequestRateLimit,
+  RateLimitGuard,
+  RateLimitScope,
+} = rateLimitModule;
 
 const readSource = (relativePath) => readFileSync(path.join(serverRoot, relativePath), 'utf8');
 
@@ -33,33 +47,41 @@ const createUser = (id) => ({
   display_name: id,
 });
 
-const createMockResponse = () => ({
-  locals: { requestId: 'rate-limit-test' },
-  statusCode: 200,
+const createMockReply = () => ({
   headers: new Map(),
-  body: undefined,
-  setHeader(name, value) {
+  header(name, value) {
     this.headers.set(name.toLowerCase(), String(value));
-  },
-  status(statusCode) {
-    this.statusCode = statusCode;
-    return this;
-  },
-  json(body) {
-    this.body = body;
     return this;
   },
 });
 
-const invokeMiddleware = async (middleware, req) => {
-  const res = createMockResponse();
-  let nextCalled = false;
+const createExecutionContext = (request, reply, handler, controller) => ({
+  getHandler: () => handler,
+  getClass: () => controller,
+  switchToHttp: () => ({
+    getRequest: () => request,
+    getResponse: () => reply,
+  }),
+});
 
-  await middleware(req, res, () => {
-    nextCalled = true;
-  });
+const createScopedGuard = (options) => {
+  const handler = function rateLimitedHandler() {};
+  class TestController {}
+  RateLimitScope(options)(handler);
+  return {
+    guard: new RateLimitGuard(new Reflector()),
+    context: (request, reply) => createExecutionContext(request, reply, handler, TestController),
+  };
+};
 
-  return { res, nextCalled };
+const withConsumer = async (consumer, callback) => {
+  const originalConsumer = rateLimitRepository.consumeRateLimitBucket;
+  rateLimitRepository.consumeRateLimitBucket = consumer;
+  try {
+    return await callback();
+  } finally {
+    rateLimitRepository.consumeRateLimitBucket = originalConsumer;
+  }
 };
 
 const createSharedConsumer = () => {
@@ -81,126 +103,136 @@ const createSharedConsumer = () => {
   };
 };
 
-test('rate limiter scopes authenticated users separately before route auth runs', async () => {
+test('rate limiter scopes authenticated users separately before AuthGuard runs', async () => {
   const userAToken = generateAccessToken(createUser('user-a'));
   const userBToken = generateAccessToken(createUser('user-b'));
   const shared = createSharedConsumer();
-  const limiter = createRateLimit({
-    keyPrefix: `rate-limit-test-${Date.now()}`,
-    windowMs: 60000,
-    max: 1,
-  }, shared.consume);
+  const options = { keyPrefix: `rate-limit-test-${Date.now()}`, max: 1 };
 
-  const first = await invokeMiddleware(limiter, {
-    ip: '127.0.0.1',
-    cookies: { access_token: userAToken },
-  });
-  const second = await invokeMiddleware(limiter, {
-    ip: '127.0.0.1',
-    cookies: { access_token: userBToken },
+  await withConsumer(shared.consume, async () => {
+    const first = await consumeRequestRateLimit({
+      ip: '127.0.0.1',
+      cookies: { access_token: userAToken },
+      requestId: 'rate-limit-a',
+    }, createMockReply(), options);
+    const second = await consumeRequestRateLimit({
+      ip: '127.0.0.1',
+      cookies: { access_token: userBToken },
+      requestId: 'rate-limit-b',
+    }, createMockReply(), options);
+
+    assert.deepEqual(first, { allowed: true });
+    assert.deepEqual(second, { allowed: true });
   });
 
-  assert.equal(first.nextCalled, true);
-  assert.equal(first.res.statusCode, 200);
-  assert.equal(second.nextCalled, true);
-  assert.equal(second.res.statusCode, 200);
   assert.equal(shared.calls.length, 2);
   assert.notEqual(shared.calls[0].bucketKey, shared.calls[1].bucketKey);
   assert.doesNotMatch(JSON.stringify(shared.calls), /user-a|user-b|127\.0\.0\.1/);
   assert.match(shared.calls[0].bucketKey, /^[^:]+:[a-f0-9]{64}$/);
 });
 
-test('rate limiter can skip read-only routes while still limiting mutations', async () => {
+test('RateLimitGuard skips configured read methods while still limiting mutations', async () => {
   const shared = createSharedConsumer();
-  const limiter = createRateLimit({
+  const scope = createScopedGuard({
     keyPrefix: `rate-limit-skip-test-${Date.now()}`,
-    windowMs: 60000,
     max: 1,
-    skip: (req) => req.method === 'GET',
-  }, shared.consume);
-
-  const firstRead = await invokeMiddleware(limiter, {
-    method: 'GET',
-    ip: '127.0.0.1',
-    cookies: {},
-  });
-  const secondRead = await invokeMiddleware(limiter, {
-    method: 'GET',
-    ip: '127.0.0.1',
-    cookies: {},
-  });
-  const firstWrite = await invokeMiddleware(limiter, {
-    method: 'POST',
-    ip: '127.0.0.1',
-    cookies: {},
-  });
-  const secondWrite = await invokeMiddleware(limiter, {
-    method: 'POST',
-    ip: '127.0.0.1',
-    cookies: {},
+    skipMethods: ['GET'],
   });
 
-  assert.equal(firstRead.nextCalled, true);
-  assert.equal(firstRead.res.headers.has('x-ratelimit-limit'), false);
-  assert.equal(secondRead.nextCalled, true);
-  assert.equal(secondRead.res.headers.has('x-ratelimit-limit'), false);
-  assert.equal(firstWrite.nextCalled, true);
-  assert.equal(firstWrite.res.statusCode, 200);
-  assert.equal(secondWrite.nextCalled, false);
-  assert.equal(secondWrite.res.statusCode, 429);
+  await withConsumer(shared.consume, async () => {
+    const readReply = createMockReply();
+    assert.equal(await scope.guard.canActivate(scope.context({
+      method: 'GET',
+      ip: '127.0.0.1',
+      cookies: {},
+    }, readReply)), true);
+    assert.equal(readReply.headers.has('x-ratelimit-limit'), false);
+
+    const firstWriteReply = createMockReply();
+    assert.equal(await scope.guard.canActivate(scope.context({
+      method: 'POST',
+      ip: '127.0.0.1',
+      cookies: {},
+    }, firstWriteReply)), true);
+    assert.equal(firstWriteReply.headers.get('x-ratelimit-limit'), '1');
+
+    const secondWriteReply = createMockReply();
+    await assert.rejects(
+      scope.guard.canActivate(scope.context({
+        method: 'POST',
+        ip: '127.0.0.1',
+        cookies: {},
+        requestId: 'rate-limit-test',
+      }, secondWriteReply)),
+      (error) => error.getStatus() === 429
+        && error.getResponse().error === 'Too many requests',
+    );
+    assert.equal(secondWriteReply.headers.get('x-ratelimit-limit'), '1');
+    assert.equal(secondWriteReply.headers.get('x-ratelimit-remaining'), '0');
+    assert.match(secondWriteReply.headers.get('x-ratelimit-reset'), /^\d+$/);
+    assert.match(secondWriteReply.headers.get('retry-after'), /^\d+$/);
+  });
+
   assert.equal(shared.calls.length, 2);
 });
 
-test('independent limiter instances consume one shared bucket', async () => {
+test('independent RateLimitGuard instances consume one shared IP bucket', async () => {
   const shared = createSharedConsumer();
-  const options = {
-    keyPrefix: `rate-limit-shared-test-${Date.now()}`,
-    windowMs: 60000,
-    max: 1,
-  };
-  const limiterA = createRateLimit(options, shared.consume);
-  const limiterB = createRateLimit(options, shared.consume);
-  const request = {
-    ip: '10.0.0.1',
-    cookies: {},
-  };
+  const options = { keyPrefix: `rate-limit-shared-test-${Date.now()}`, max: 1 };
+  const scopeA = createScopedGuard(options);
+  const scopeB = createScopedGuard(options);
+  const request = { method: 'POST', ip: '10.0.0.1', cookies: {} };
 
-  const first = await invokeMiddleware(limiterA, request);
-  const second = await invokeMiddleware(limiterB, request);
+  await withConsumer(shared.consume, async () => {
+    assert.equal(
+      await scopeA.guard.canActivate(scopeA.context(request, createMockReply())),
+      true,
+    );
+    await assert.rejects(
+      scopeB.guard.canActivate(scopeB.context(request, createMockReply())),
+      (error) => error.getStatus() === 429,
+    );
+  });
 
-  assert.equal(first.nextCalled, true);
-  assert.equal(second.nextCalled, false);
-  assert.equal(second.res.statusCode, 429);
   assert.equal(shared.calls.length, 2);
   assert.equal(shared.calls[0].bucketKey, shared.calls[1].bucketKey);
+  assert.doesNotMatch(shared.calls[0].bucketKey, /10\.0\.0\.1/);
 });
 
-test('rate limiter fails closed without reflecting repository errors', async () => {
+test('RateLimitGuard fails closed without reflecting repository errors', async () => {
   const secret = 'postgres://user:secret-password@database.internal/chatllm';
   const logs = [];
   const originalConsoleError = console.error;
   console.error = (...args) => logs.push(args);
-  const limiter = createRateLimit({
+  const scope = createScopedGuard({
     keyPrefix: `rate-limit-failure-test-${Date.now()}`,
-    windowMs: 60000,
     max: 1,
-  }, async () => {
-    throw new Error(secret);
   });
+  const reply = createMockReply();
 
   try {
-    const result = await invokeMiddleware(limiter, {
-      ip: '127.0.0.1',
-      cookies: { access_token: generateAccessToken(createUser('sensitive-user')) },
+    await withConsumer(async () => {
+      throw new Error(secret);
+    }, async () => {
+      await assert.rejects(
+        scope.guard.canActivate(scope.context({
+          method: 'POST',
+          ip: '127.0.0.1',
+          cookies: { access_token: generateAccessToken(createUser('sensitive-user')) },
+          requestId: 'rate-limit-test',
+        }, reply)),
+        (error) => {
+          assert.equal(error.getStatus(), 503);
+          assert.deepEqual(error.getResponse(), {
+            error: 'Rate limit service unavailable',
+            requestId: 'rate-limit-test',
+          });
+          return true;
+        },
+      );
     });
 
-    assert.equal(result.nextCalled, false);
-    assert.equal(result.res.statusCode, 503);
-    assert.deepEqual(result.res.body, {
-      error: 'Rate limit service unavailable',
-      requestId: 'rate-limit-test',
-    });
-    assert.equal(result.res.headers.get('retry-after'), '1');
+    assert.equal(reply.headers.get('retry-after'), '1');
     assert.doesNotMatch(JSON.stringify(logs), /secret-password|database\.internal/);
   } finally {
     console.error = originalConsoleError;
@@ -208,7 +240,6 @@ test('rate limiter fails closed without reflecting repository errors', async () 
 });
 
 test('rate limit repository consumes one atomic Redis fixed-window script', async () => {
-  const repository = require(path.join(serverRoot, 'dist', 'repositories', 'rateLimits.js'));
   const calls = [];
   const redis = {
     async eval(...args) {
@@ -218,7 +249,7 @@ test('rate limit repository consumes one atomic Redis fixed-window script', asyn
   };
 
   const before = Date.now();
-  const consumed = await repository.consumeRateLimitBucket({
+  const consumed = await rateLimitRepository.consumeRateLimitBucket({
     bucketKey: `global:${'a'.repeat(64)}`,
     windowMs: 60000,
   }, redis);
@@ -236,16 +267,13 @@ test('rate limit repository consumes one atomic Redis fixed-window script', asyn
   assert.match(script, /redis\.call\('PTTL', KEYS\[1\]\)/);
 });
 
-test('Redis rate limiting preserves principal scoping and fails closed', () => {
-  const middlewareSource = readSource('src/middleware/rateLimit.ts');
-  const indexSource = readSource('src/index.ts');
-  assert.match(middlewareSource, /consumeRateLimitBucket/);
-  assert.match(middlewareSource, /isIP/);
-  assert.doesNotMatch(middlewareSource, /new Map|MAX_RATE_LIMIT_BUCKETS|pruneOldestBuckets/);
-  assert.match(indexSource, /app\.set\('trust proxy', serverEnv\.TRUST_PROXY_HOPS\)/);
-  assert.doesNotMatch(indexSource, /app\.set\('trust proxy', 1\)/);
+test('Nest rate limiting preserves Redis principal scoping without in-memory fallback', () => {
+  const guardSource = readSource('src/common/guards/rate-limit.guard.ts');
 
-  const cookieParserIndex = indexSource.indexOf('app.use(cookieParser())');
-  const globalLimiterIndex = indexSource.indexOf("keyPrefix: 'global'");
-  assert.ok(cookieParserIndex >= 0 && cookieParserIndex < globalLimiterIndex);
+  assert.match(guardSource, /consumeRateLimitBucket/);
+  assert.match(guardSource, /isIP/);
+  assert.match(guardSource, /verifyAccessToken/);
+  assert.match(guardSource, /reply\.header\('X-RateLimit-Limit'/);
+  assert.match(guardSource, /throw new HttpException/);
+  assert.doesNotMatch(guardSource, /new Map|MAX_RATE_LIMIT_BUCKETS|pruneOldestBuckets/);
 });

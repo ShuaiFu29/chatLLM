@@ -1,4 +1,5 @@
-import { Request, Response } from 'express';
+import type { AppReply, AppRequest } from '../common/http/app-request';
+import { SseWriter } from '../common/http/sse-writer';
 import {
   createChatClientForModel,
   getDefaultChatModel,
@@ -79,57 +80,57 @@ const ragAnswerGroundingStatusToTraceStatus = (status: string) => {
   return 'failed';
 };
 
-export const getConversations = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getConversations = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const projectSpaceId = readProjectSpaceId(req.query.projectSpaceId || req.query.project_space_id);
     const includeArchived = readBooleanQuery(req.query.includeArchived || req.query.include_archived);
     const conversations = await listConversations(req.user.id, { projectSpaceId, includeArchived });
-    res.json(conversations);
+    res.send(conversations);
   } catch (error) {
-    console.error('Error fetching conversations:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to fetch conversations' });
+    console.error('Error fetching conversations:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to fetch conversations' });
   }
 };
 
-export const searchMessages = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const searchMessages = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const normalizedQuery = normalizeSearchQuery(req.query.q);
 
   if (!normalizedQuery.ok) {
-    res.status(normalizedQuery.statusCode).json({ error: normalizedQuery.error });
+    res.code(normalizedQuery.statusCode).send({ error: normalizedQuery.error });
     return;
   }
 
   try {
     const results = await searchMessagesForUser(req.user.id, normalizedQuery.query, readSearchFilters(req.query));
-    res.json(results);
+    res.send(results);
   } catch (error) {
-    console.error('Error searching messages:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to search messages' });
+    console.error('Error searching messages:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to search messages' });
   }
 };
 
-export const createConversation = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const createConversation = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { title } = req.body;
 
   try {
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
-    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
+    if (!projectSpaceId) return res.code(404).send({ error: 'Project space not found' });
 
     const conversation = await createConversationForUser(req.user.id, title || 'New Chat', projectSpaceId);
-    res.json(conversation);
+    res.send(conversation);
   } catch (error) {
-    console.error('Error creating conversation:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to create conversation' });
+    console.error('Error creating conversation:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to create conversation' });
   }
 };
 
-export const updateConversation = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const updateConversation = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId } = req.params;
   const { title, model, temperature, system_prompt, enable_rag, is_pinned, archived, is_favorite, tags, note } = req.body;
 
@@ -163,31 +164,31 @@ export const updateConversation = async (req: Request, res: Response) => {
       updates.project_space_id = null;
     } else {
       const space = await findProjectSpaceForUser(requestedProjectSpaceId, req.user.id);
-      if (!space) return res.status(404).json({ error: 'Project space not found' });
+      if (!space) return res.code(404).send({ error: 'Project space not found' });
       updates.project_space_id = space.id;
     }
   }
 
   if (Object.keys(updates).length === 0) {
-    return res.status(400).json({ error: 'No fields to update' });
+    return res.code(400).send({ error: 'No fields to update' });
   }
 
   try {
     const conversation = await updateConversationForUser(conversationId, req.user.id, updates);
 
     if (!conversation) {
-      return res.status(404).json({ error: 'Conversation not found' });
+      return res.code(404).send({ error: 'Conversation not found' });
     }
 
-    res.json(conversation);
+    res.send(conversation);
   } catch (error) {
-    console.error('Error updating conversation:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to update conversation' });
+    console.error('Error updating conversation:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to update conversation' });
   }
 };
 
-export const branchConversation = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const branchConversation = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId } = req.params;
   const { messageId, title } = req.body;
 
@@ -199,67 +200,67 @@ export const branchConversation = async (req: Request, res: Response) => {
       title,
     });
 
-    if (!conversation) return res.status(404).json({ error: 'Conversation or message not found' });
-    res.json(conversation);
+    if (!conversation) return res.code(404).send({ error: 'Conversation or message not found' });
+    res.send(conversation);
   } catch (error) {
-    console.error('Error branching conversation:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to branch conversation' });
+    console.error('Error branching conversation:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to branch conversation' });
   }
 };
 
-export const compareConversations = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const compareConversations = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId, otherConversationId } = req.params;
 
   try {
     const comparison = await compareConversationsForUser(req.user.id, conversationId, otherConversationId);
-    if (!comparison) return res.status(404).json({ error: 'Conversation not found' });
-    res.json(comparison);
+    if (!comparison) return res.code(404).send({ error: 'Conversation not found' });
+    res.send(comparison);
   } catch (error) {
-    console.error('Error comparing conversations:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to compare conversations' });
+    console.error('Error comparing conversations:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to compare conversations' });
   }
 };
 
-export const deleteConversation = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deleteConversation = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId } = req.params;
 
   try {
     const deleted = await deleteConversationForUser(conversationId, req.user.id);
-    if (!deleted) return res.status(404).json({ error: 'Conversation not found' });
-    res.json({ success: true });
+    if (!deleted) return res.code(404).send({ error: 'Conversation not found' });
+    res.send({ success: true });
   } catch (error) {
-    console.error('Error deleting conversation:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to delete conversation' });
+    console.error('Error deleting conversation:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to delete conversation' });
   }
 };
 
-export const deleteMessage = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deleteMessage = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { messageId } = req.params;
 
   try {
     const deleted = await deleteMessageForUser(messageId, req.user.id);
-    if (!deleted) return res.status(404).json({ error: 'Message not found' });
-    res.json({ success: true });
+    if (!deleted) return res.code(404).send({ error: 'Message not found' });
+    res.send({ success: true });
   } catch (error) {
-    console.error('Error deleting message:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to delete message' });
+    console.error('Error deleting message:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to delete message' });
   }
 };
 
-export const truncateConversation = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const truncateConversation = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId, messageId } = req.params;
 
   try {
     const result = await truncateConversationFromUserMessage(conversationId, messageId, req.user.id);
-    if (!result) return res.status(404).json({ error: 'Conversation or user message not found' });
-    res.json({ success: true, ...result });
+    if (!result) return res.code(404).send({ error: 'Conversation or user message not found' });
+    res.send({ success: true, ...result });
   } catch (error) {
-    console.error('Error truncating conversation:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to truncate conversation' });
+    console.error('Error truncating conversation:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to truncate conversation' });
   }
 };
 
@@ -286,52 +287,60 @@ const generateConversationTitle = async (conversationId: string, firstMessage: s
   }
 };
 
-export const getMessages = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getMessages = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId } = req.params;
   const pageQuery = normalizeMessagePageQuery(req.query);
 
   if (!pageQuery.ok) {
-    res.status(pageQuery.statusCode).json({ error: pageQuery.error });
+    res.code(pageQuery.statusCode).send({ error: pageQuery.error });
     return;
   }
 
   try {
     const conversation = await findConversationForUser(conversationId, req.user.id);
-    if (!conversation) return res.status(403).json({ error: 'Forbidden' });
+    if (!conversation) return res.code(403).send({ error: 'Forbidden' });
 
     const page = await listMessagesForConversationPage(conversationId, pageQuery);
-    res.setHeader('x-chatllm-has-more', String(page.hasMore));
-    res.setHeader('x-chatllm-next-cursor', page.nextCursor || '');
-    res.setHeader('x-chatllm-page-limit', String(pageQuery.limit));
-    res.json(page.messages);
+    res.header('x-chatllm-has-more', String(page.hasMore));
+    res.header('x-chatllm-next-cursor', page.nextCursor || '');
+    res.header('x-chatllm-page-limit', String(pageQuery.limit));
+    res.send(page.messages);
   } catch (error) {
-    console.error('Error fetching messages:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to fetch messages' });
+    console.error('Error fetching messages:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to fetch messages' });
   }
 };
 
-export const sendMessage = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+const isChatConnectionClosed = (req: AppRequest, res: AppReply) => (
+  req.raw.aborted
+  || req.raw.destroyed
+  || res.raw.destroyed
+  || res.raw.writableEnded
+);
+
+export const sendMessage = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId } = req.params;
   const normalizedContent = normalizeChatMessageContent(req.body.content);
 
   if (!normalizedContent.ok) {
-    res.status(normalizedContent.statusCode).json({ error: normalizedContent.error });
+    res.code(normalizedContent.statusCode).send({ error: normalizedContent.error });
     return;
   }
   const { content } = normalizedContent;
 
   const conversation = await findConversationForUser(conversationId, req.user.id);
   if (!conversation) {
-    res.status(403).json({ error: 'Forbidden' });
+    res.code(403).send({ error: 'Forbidden' });
     return;
   }
+  if (isChatConnectionClosed(req, res)) return;
 
   const chatSlot = tryAcquireChatStreamSlot(req.user.id);
   if (!chatSlot.acquired) {
-    res.setHeader('Retry-After', String(chatSlot.retryAfterSeconds));
-    res.status(429).json({
+    res.header('Retry-After', String(chatSlot.retryAfterSeconds));
+    res.code(429).send({
       error: 'Too many active chat streams',
       retryAfter: chatSlot.retryAfterSeconds,
     });
@@ -341,22 +350,24 @@ export const sendMessage = async (req: Request, res: Response) => {
   let streamStarted = false;
   let failed = false;
   const streamAbortController = new AbortController();
+  const sse = new SseWriter(res);
+  let upstreamAborted = false;
   const abortUpstreamStream = () => {
-    if (!res.writableEnded) {
-      streamAbortController.abort();
-    }
+    if (upstreamAborted || streamAbortController.signal.aborted) return;
+    upstreamAborted = true;
+    streamAbortController.abort();
   };
 
-  req.on('close', () => {
-    if (streamStarted) abortUpstreamStream();
-  });
-  res.on('close', abortUpstreamStream);
+  req.raw.once('aborted', abortUpstreamStream);
+  res.raw.once('close', abortUpstreamStream);
+  if (isChatConnectionClosed(req, res)) abortUpstreamStream();
 
   try {
+    if (streamAbortController.signal.aborted) return;
     const model = conversation.model || getDefaultChatModel();
     const userMessage = await insertMessage(conversationId, 'user', content);
     refreshPersonaInsightsForUser(req.user.id).catch((error) => {
-      console.warn('[Chat] Failed to refresh persona insights:', toSafeError(error, res.locals.requestId));
+      console.warn('[Chat] Failed to refresh persona insights:', toSafeError(error, req.requestId));
     });
 
     if (conversation.title === 'New Chat') {
@@ -364,14 +375,10 @@ export const sendMessage = async (req: Request, res: Response) => {
     }
 
     touchConversation(conversationId, req.user.id).catch((error) => {
-      console.warn('[Chat] Failed to update conversation timestamp:', toSafeError(error, res.locals.requestId));
+      console.warn('[Chat] Failed to update conversation timestamp:', toSafeError(error, req.requestId));
     });
 
-    res.writeHead(200, {
-      'Content-Type': 'text/event-stream',
-      'Cache-Control': 'no-cache',
-      Connection: 'keep-alive',
-    });
+    if (!sse.open()) return;
     streamStarted = true;
 
     const temperature = conversation.temperature !== undefined && conversation.temperature !== null
@@ -393,7 +400,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     let answerGuidance = '';
 
     if (enableRag && !shouldRunRag) {
-      res.write(`data: ${JSON.stringify({ ragSkipped: true })}\n\n`);
+      await sse.send({ ragSkipped: true });
     }
 
     if (shouldRunRag) {
@@ -416,43 +423,42 @@ export const sendMessage = async (req: Request, res: Response) => {
         contextText = preparedAnswer.contextText;
         assistantSources = preparedAnswer.assistantSources;
         verificationSources = preparedAnswer.verificationSources;
-        // This is JSON-encoded SSE under text/event-stream, never an HTML response.
-        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-        res.write(`data: ${JSON.stringify({
+        await sse.send({
           ragRunId: agenticRagRun.run_id,
           sources: assistantSources,
           traceSummary,
           qualitySummary: agenticRagRun.quality,
           insufficientEvidence,
           answer_guidance: answerGuidance,
-        })}\n\n`);
+        });
       } catch (error) {
+        if (streamAbortController.signal.aborted || sse.isClosed) {
+          sse.close();
+          return;
+        }
         failed = true;
-        console.warn('[Chat] RAG retrieval failed; answer generation stopped:', toSafeError(error, res.locals.requestId));
-        res.write(`data: ${JSON.stringify({
+        console.warn('[Chat] RAG retrieval failed; answer generation stopped:', toSafeError(error, req.requestId));
+        await sse.send({
           ragError: {
             code: 'rag_retrieval_unavailable',
             retryable: true,
             message: 'Workspace document retrieval failed. Retry before relying on an answer.',
           },
-        })}\n\n`);
-        res.write('data: [DONE]\n\n');
-        res.end();
+        });
+        await sse.done();
+        sse.close();
         return;
       }
     }
 
     let fullContent = '';
 
-    // JSON-encoded SSE is parsed as event data, not rendered as HTML.
-    // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-    res.write(`data: ${JSON.stringify({ userMessageId: userMessage.id })}\n\n`);
+    await sse.send({ userMessageId: userMessage.id });
 
     if (shouldRunRag && insufficientEvidence && !contextText.trim()) {
       fullContent = buildInsufficientEvidenceAnswer(content);
       // This local policy response deliberately bypasses the answer model when no evidence exists.
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-      res.write(`data: ${JSON.stringify({ content: fullContent, deterministicAbstention: true })}\n\n`);
+      await sse.send({ content: fullContent, deterministicAbstention: true });
     } else {
       const { client: chatClient, resolvedModel } = createChatClientForModel(model);
       const messages = buildGroundedAnswerMessages({
@@ -474,13 +480,11 @@ export const sendMessage = async (req: Request, res: Response) => {
       });
 
       for await (const chunk of stream) {
-        if (res.destroyed) break;
+        if (sse.isClosed) break;
         const delta = chunk.choices[0]?.delta?.content || '';
         if (delta) {
           fullContent += delta;
-          // JSON.stringify safely frames model text inside the SSE data payload.
-          // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-          res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
+          await sse.send({ content: delta });
         }
       }
     }
@@ -526,14 +530,12 @@ export const sendMessage = async (req: Request, res: Response) => {
             }
           : null;
 
-        // This response remains JSON-encoded SSE under the stream content type.
-        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-        res.write(`data: ${JSON.stringify({
+        await sse.send({
           sources: finalAssistantSources,
           traceSummary: finalTraceSummary,
           qualitySummary: finalQuality,
           answerGrounding: answerGrounding,
-        })}\n\n`);
+        });
       }
 
       const assistantMessage = await insertMessage(conversationId, 'assistant', fullContent, finalAssistantSources);
@@ -551,33 +553,33 @@ export const sendMessage = async (req: Request, res: Response) => {
           retrievedSources: finalAssistantSources,
           status: finalQuality?.evidence_label === 'weak' || finalQuality?.answer_grounding_status === 'unsupported' ? 'partial' : 'success',
         }).catch((error) => {
-          console.warn('[Chat] Failed to persist RAG trace:', toSafeError(error, res.locals.requestId));
+          console.warn('[Chat] Failed to persist RAG trace:', toSafeError(error, req.requestId));
         });
       }
-      // JSON-encoded identifiers are emitted as SSE event data, not HTML.
-      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-      res.write(`data: ${JSON.stringify({ assistantMessageId: assistantMessage.id })}\n\n`);
+      await sse.send({ assistantMessageId: assistantMessage.id });
     }
 
-    res.write('data: [DONE]\n\n');
-    res.end();
+    await sse.done();
+    sse.close();
   } catch (error) {
     failed = !streamAbortController.signal.aborted;
     if (streamAbortController.signal.aborted) {
-      if (!res.writableEnded) res.end();
+      sse.close();
       return;
     }
-    console.error('[Chat] Failed to generate response:', toSafeError(error, res.locals.requestId));
+    console.error('[Chat] Failed to generate response:', toSafeError(error, req.requestId));
     if (streamStarted) {
-      res.write(`data: ${JSON.stringify({ error: 'Failed to generate response' })}\n\n`);
-      res.end();
+      await sse.send({ error: 'Failed to generate response' });
+      sse.close();
     } else {
       const statusCode = error instanceof ModelProviderConfigurationError || error instanceof UnsupportedOfficialModelError
         ? error.statusCode
         : 500;
-      res.status(statusCode).json({ error: 'Failed to generate response' });
+      res.code(statusCode).send({ error: 'Failed to generate response' });
     }
   } finally {
+    req.raw.off('aborted', abortUpstreamStream);
+    res.raw.off('close', abortUpstreamStream);
     chatSlot.release(failed);
   }
 };

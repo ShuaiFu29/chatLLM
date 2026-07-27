@@ -8,12 +8,15 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 
 test('usage tracking exposes authenticated user-scoped routes', () => {
-  const indexSource = readFileSync(path.join(serverRoot, 'src/index.ts'), 'utf8');
-  const routeSource = readFileSync(path.join(serverRoot, 'src/routes/usage.ts'), 'utf8');
+  const nestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/usage/usage.controller.ts'), 'utf8');
 
-  assert.match(indexSource, /app\.use\('\/api\/usage', usageRoutes\)/);
-  assert.match(routeSource, /router\.get\('\/', requireAuth, getUsageOverview\)/);
-  assert.match(routeSource, /router\.get\('\/conversations\/:conversationId', requireAuth, getUsageConversation\)/);
+  assert.match(nestControllerSource, /@Controller\('usage'\)/);
+  assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(nestControllerSource, /@Get\(\)[\s\S]*?return getUsageOverview\(request, reply\)/);
+  assert.match(
+    nestControllerSource,
+    /@Get\('conversations\/:conversationId'\)[\s\S]*?return getUsageConversation\(request, reply\)/,
+  );
 });
 
 test('usage repository aggregates conversations, messages, documents, citations, and rag runs by current user only', () => {
@@ -39,8 +42,8 @@ test('usage controller returns overview lists and protects missing conversations
   assert.match(controllerSource, /findUsageConversationForUser\(conversationId, req\.user\.id\)/);
   assert.match(controllerSource, /listUsageConversationMessagesForUser\(conversationId, req\.user\.id, messageLimit\)/);
   assert.match(controllerSource, /listUsageRagRunsForConversation\(conversationId, req\.user\.id, ragRunLimit\)/);
-  assert.match(controllerSource, /res\.json\(\{ conversation, messages, ragRuns \}\)/);
-  assert.match(controllerSource, /return res\.status\(404\)\.json\(\{ error: 'Conversation not found' \}\)/);
+  assert.match(controllerSource, /res\.send\(\{ conversation, messages, ragRuns \}\)/);
+  assert.match(controllerSource, /return res\.code\(404\)\.send\(\{ error: 'Conversation not found' \}\)/);
 });
 
 test('usage tracking applies bounded list limits for large histories', () => {

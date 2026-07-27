@@ -20,12 +20,20 @@ function createResponse() {
   return {
     statusCode: undefined,
     body: undefined,
-    status(code) {
+    sent: false,
+    headers: {},
+    raw: { headersSent: false },
+    code(code) {
       this.statusCode = code;
       return this;
     },
-    json(body) {
+    send(body) {
       this.body = body;
+      this.sent = true;
+      return this;
+    },
+    header(name, value) {
+      this.headers[name.toLowerCase()] = value;
       return this;
     },
   };
@@ -229,15 +237,21 @@ test('multipart upload chooses S3-safe part sizes for very large markdown files'
   assert.equal(parseMultipartPartNumbers([10001]), null);
 });
 
-test('upload routes expose direct multipart endpoints beside legacy chunk fallback', () => {
-  const routesSource = readFileSync(path.join(serverRoot, 'src', 'routes', 'upload.ts'), 'utf8');
+test('Nest upload controller exposes direct multipart endpoints beside chunk fallback', () => {
+  const routesSource = readFileSync(
+    path.join(serverRoot, 'src', 'modules', 'upload', 'upload.controller.ts'),
+    'utf8',
+  );
   const controllerSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'upload.ts'), 'utf8');
   const migrationSource = readFileSync(path.join(serverRoot, 'migrations', '0020_direct_multipart_uploads.sql'), 'utf8');
 
-  assert.match(routesSource, /\/multipart\/init/);
-  assert.match(routesSource, /\/multipart\/parts/);
-  assert.match(routesSource, /\/multipart\/complete/);
-  assert.match(routesSource, /\/multipart\/abort/);
+  assert.match(routesSource, /@Controller\('upload'\)/);
+  assert.match(routesSource, /@Post\('multipart\/init'\)[\s\S]*@ValidateMutation\(mutationSchemas\.uploadMultipartInit\)/);
+  assert.match(routesSource, /@Post\('multipart\/parts'\)[\s\S]*@ValidateMutation\(mutationSchemas\.uploadMultipartParts\)/);
+  assert.match(routesSource, /@Post\('multipart\/complete'\)[\s\S]*@ValidateMutation\(mutationSchemas\.uploadMultipartComplete\)/);
+  assert.match(routesSource, /@Post\('multipart\/abort'\)[\s\S]*@ValidateMutation\(mutationSchemas\.uploadMultipartAbort\)/);
+  assert.match(routesSource, /@Post\('chunk'\)[\s\S]*@MultipartUpload\([\s\S]*DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES/);
+  assert.match(routesSource, /@Post\('avatar'\)[\s\S]*@MultipartUpload\([\s\S]*AVATAR_UPLOAD_LIMIT_BYTES/);
   assert.match(controllerSource, /initMultipartUpload/);
   assert.match(controllerSource, /completeMultipartUpload/);
   assert.match(controllerSource, /fileQueue\.trigger\(\)/);

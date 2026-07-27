@@ -7,11 +7,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 const migration = readFileSync(path.join(serverRoot, 'migrations', '0004_chat_workbench_upgrades.sql'), 'utf8');
-const indexSource = readFileSync(path.join(serverRoot, 'src/index.ts'), 'utf8');
-const chatRoutesSource = readFileSync(path.join(serverRoot, 'src/routes/chat.ts'), 'utf8');
+const chatNestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/chat/chat.controller.ts'), 'utf8');
 const chatControllerSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
 const conversationRepositorySource = readFileSync(path.join(serverRoot, 'src/repositories/conversations.ts'), 'utf8');
-const promptRoutesSource = readFileSync(path.join(serverRoot, 'src/routes/promptTemplates.ts'), 'utf8');
+const promptNestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/prompt-templates/prompt-templates.controller.ts'), 'utf8');
 const promptRepositorySource = readFileSync(path.join(serverRoot, 'src/repositories/promptTemplates.ts'), 'utf8');
 const messageRepositorySource = readFileSync(path.join(serverRoot, 'src/repositories/messages.ts'), 'utf8');
 const usageRepositorySource = readFileSync(path.join(serverRoot, 'src/repositories/usage.ts'), 'utf8');
@@ -26,9 +25,17 @@ test('workbench migration adds branch metadata, conversation metadata, and promp
   assert.match(migration, /prompt_templates_user_id_updated_at_idx/i);
 });
 
-test('chat routes expose branching and comparison endpoints scoped by authentication', () => {
-  assert.match(chatRoutesSource, /router\.post\('\/conversations\/:conversationId\/branches', requireAuth, validateMutation\(mutationSchemas\.chatBranchConversation\), branchConversation\)/);
-  assert.match(chatRoutesSource, /router\.get\('\/conversations\/:conversationId\/compare\/:otherConversationId', requireAuth, compareConversations\)/);
+test('chat controller exposes branching and comparison endpoints scoped by authentication', () => {
+  assert.match(chatNestControllerSource, /@Controller\('chat'\)/);
+  assert.match(chatNestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(
+    chatNestControllerSource,
+    /@Post\('conversations\/:conversationId\/branches'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.chatBranchConversation\)[\s\S]*?return branchConversation\(request, reply\)/,
+  );
+  assert.match(
+    chatNestControllerSource,
+    /@Get\('conversations\/:conversationId\/compare\/:otherConversationId'\)[\s\S]*?return compareConversations\(request, reply\)/,
+  );
   assert.match(chatControllerSource, /createConversationBranchForUser\(\{\s*userId: req\.user\.id/s);
   assert.match(chatControllerSource, /compareConversationsForUser\(req\.user\.id/);
 });
@@ -44,12 +51,22 @@ test('conversation repository stores tags, favorites, notes, and branch lineage'
   assert.match(conversationRepositorySource, /compareConversationsForUser/);
 });
 
-test('prompt templates have authenticated routes and a user-scoped repository', () => {
-  assert.match(indexSource, /app\.use\('\/api\/prompt-templates', promptTemplateRoutes\)/);
-  assert.match(promptRoutesSource, /router\.get\('\/', requireAuth, listPromptTemplates\)/);
-  assert.match(promptRoutesSource, /router\.post\('\/', requireAuth, validateMutation\(mutationSchemas\.promptTemplateCreate\), createPromptTemplate\)/);
-  assert.match(promptRoutesSource, /router\.patch\('\/:templateId', requireAuth, validateMutation\(mutationSchemas\.promptTemplateUpdate\), updatePromptTemplate\)/);
-  assert.match(promptRoutesSource, /router\.delete\('\/:templateId', requireAuth, validateMutation\(mutationSchemas\.promptTemplateDelete\), deletePromptTemplate\)/);
+test('prompt templates have an authenticated Nest controller and a user-scoped repository', () => {
+  assert.match(promptNestControllerSource, /@Controller\('prompt-templates'\)/);
+  assert.match(promptNestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(promptNestControllerSource, /@Get\(\)[\s\S]*?return listPromptTemplates\(request, reply\)/);
+  assert.match(
+    promptNestControllerSource,
+    /@Post\(\)[\s\S]*?@ValidateMutation\(mutationSchemas\.promptTemplateCreate\)[\s\S]*?return createPromptTemplate\(request, reply\)/,
+  );
+  assert.match(
+    promptNestControllerSource,
+    /@Patch\(':templateId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.promptTemplateUpdate\)[\s\S]*?return updatePromptTemplate\(request, reply\)/,
+  );
+  assert.match(
+    promptNestControllerSource,
+    /@Delete\(':templateId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.promptTemplateDelete\)[\s\S]*?return deletePromptTemplate\(request, reply\)/,
+  );
   assert.match(promptRepositorySource, /where user_id = \$1/i);
 });
 

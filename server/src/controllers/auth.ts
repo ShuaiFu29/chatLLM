@@ -1,4 +1,3 @@
-import { Request, Response } from 'express';
 import crypto from 'crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { serverEnv } from '../lib/env';
@@ -8,6 +7,7 @@ import { createUser, findUserByGithubId, findUserById, updateUser } from '../rep
 import { enqueueAccountCleanup } from '../repositories/cleanupJobs';
 import { toSafeError } from '../lib/safeError';
 import { artifactCleanupQueue } from '../services/cleanupQueue';
+import { AppReply, AppRequest } from '../common/http/app-request';
 
 const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000;
 const ACCESS_TOKEN_DURATION = 15 * 60 * 1000;
@@ -38,37 +38,43 @@ const fetchJson = async (url: string, init: any) => {
   return data;
 };
 
-const setAuthCookies = (res: Response, accessToken: string, refreshToken: string) => {
-  res.cookie('access_token', accessToken, {
+const cookieLifetime = (durationMs: number) => ({
+  maxAge: Math.floor(durationMs / 1000),
+  expires: new Date(Date.now() + durationMs),
+});
+
+const setAuthCookies = (reply: AppReply, accessToken: string, refreshToken: string) => {
+  reply.setCookie('access_token', accessToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
-    maxAge: ACCESS_TOKEN_DURATION,
+    path: '/',
+    ...cookieLifetime(ACCESS_TOKEN_DURATION),
   });
 
-  res.cookie('refresh_token', refreshToken, {
+  reply.setCookie('refresh_token', refreshToken, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/api/auth',
-    maxAge: REFRESH_TOKEN_DURATION,
+    ...cookieLifetime(REFRESH_TOKEN_DURATION),
   });
 };
 
-const clearAuthCookies = (res: Response) => {
-  res.clearCookie('access_token');
-  res.clearCookie('refresh_token', { path: '/api/auth' });
-  res.clearCookie('refresh_token', { path: '/api/auth/refresh' });
+const clearAuthCookies = (reply: AppReply) => {
+  reply.clearCookie('access_token', { path: '/' });
+  reply.clearCookie('refresh_token', { path: '/api/auth' });
+  reply.clearCookie('refresh_token', { path: '/api/auth/refresh' });
 };
 
-export const githubLogin = (req: Request, res: Response) => {
+export const githubLogin = (_req: AppRequest, reply: AppReply) => {
   const state = crypto.randomBytes(16).toString('hex');
-  res.cookie('github_oauth_state', state, {
+  reply.setCookie('github_oauth_state', state, {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: 'lax',
     path: '/api/auth',
-    maxAge: 10 * 60 * 1000,
+    ...cookieLifetime(10 * 60 * 1000),
   });
 
   const params = new URLSearchParams({
@@ -78,25 +84,25 @@ export const githubLogin = (req: Request, res: Response) => {
     scope: 'read:user',
   });
 
-  res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
+  reply.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
 };
 
-export const githubCallback = async (req: Request, res: Response) => {
+export const githubCallback = async (req: AppRequest, reply: AppReply) => {
   const code = typeof req.query.code === 'string' ? req.query.code : undefined;
   const state = typeof req.query.state === 'string' ? req.query.state : undefined;
   const storedState = req.cookies.github_oauth_state;
 
   if (!code) {
-    res.status(400).json({ error: 'Missing code' });
+    reply.code(400).send({ error: 'Missing code' });
     return;
   }
 
   if (!state || !storedState || state !== storedState) {
-    res.status(403).json({ error: 'Invalid state' });
+    reply.code(403).send({ error: 'Invalid state' });
     return;
   }
 
-  res.clearCookie('github_oauth_state', { path: '/api/auth' });
+  reply.clearCookie('github_oauth_state', { path: '/api/auth' });
 
   try {
     const tokenBody = new URLSearchParams({
@@ -116,7 +122,7 @@ export const githubCallback = async (req: Request, res: Response) => {
 
     const { access_token } = tokenResponse || {};
     if (!access_token) {
-      res.status(400).json({ error: 'Failed to get access token' });
+      reply.code(400).send({ error: 'Failed to get access token' });
       return;
     }
 
@@ -132,7 +138,7 @@ export const githubCallback = async (req: Request, res: Response) => {
     let user = await findUserByGithubId(Number(ghUser.id));
 
     if (user?.deletion_status === 'pending') {
-      res.status(409).json({ error: 'Account deletion is in progress' });
+      reply.code(409).send({ error: 'Account deletion is in progress' });
       return;
     }
 
@@ -150,20 +156,20 @@ export const githubCallback = async (req: Request, res: Response) => {
     await createSession(refreshToken, user.id, expiresAt);
 
     const jwtAccessToken = generateAccessToken(user);
-    setAuthCookies(res, jwtAccessToken, refreshToken);
+    setAuthCookies(reply, jwtAccessToken, refreshToken);
 
-    res.redirect(`${serverEnv.FRONTEND_URL}?login=success`);
+    reply.redirect(`${serverEnv.FRONTEND_URL}?login=success`);
   } catch (error) {
-    console.error('[Auth] GitHub callback failed:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Authentication failed' });
+    console.error('[Auth] GitHub callback failed:', toSafeError(error, req.requestId));
+    reply.code(500).send({ error: 'Authentication failed' });
   }
 };
 
-export const refreshToken = async (req: Request, res: Response) => {
+export const refreshToken = async (req: AppRequest, reply: AppReply) => {
   const oldRefreshToken = req.cookies.refresh_token;
 
   if (!oldRefreshToken) {
-    return res.status(401).json({ error: 'No refresh token provided' });
+    return reply.code(401).send({ error: 'No refresh token provided' });
   }
 
   try {
@@ -172,36 +178,36 @@ export const refreshToken = async (req: Request, res: Response) => {
     const session = await rotateSession(oldRefreshToken, newRefreshToken, expiresAt);
 
     if (!session) {
-      clearAuthCookies(res);
-      return res.status(401).json({ error: 'Invalid or expired refresh token' });
+      clearAuthCookies(reply);
+      return reply.code(401).send({ error: 'Invalid or expired refresh token' });
     }
 
     const newAccessToken = generateAccessToken(session.user);
-    setAuthCookies(res, newAccessToken, newRefreshToken);
+    setAuthCookies(reply, newAccessToken, newRefreshToken);
 
-    res.json({ success: true });
+    reply.send({ success: true });
   } catch (error) {
-    console.error('Refresh Token Error:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to refresh token' });
+    console.error('Refresh Token Error:', toSafeError(error, req.requestId));
+    reply.code(500).send({ error: 'Failed to refresh token' });
   }
 };
 
-export const getMe = async (req: Request, res: Response) => {
+export const getMe = async (req: AppRequest, reply: AppReply) => {
   if (!req.user) {
-    return res.status(401).json({ error: 'Unauthorized' });
+    return reply.code(401).send({ error: 'Unauthorized' });
   }
 
   const user = await findUserById(req.user.id);
 
   if (!user) {
-    return res.status(401).json({ error: 'Unauthorized: User not found' });
+    return reply.code(401).send({ error: 'Unauthorized: User not found' });
   }
 
-  res.json({ user });
+  reply.send({ user });
 };
 
-export const updateProfile = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const updateProfile = async (req: AppRequest, reply: AppReply) => {
+  if (!req.user) return reply.code(401).send({ error: 'Unauthorized' });
 
   const { display_name, avatar_url, settings } = req.body;
 
@@ -212,39 +218,39 @@ export const updateProfile = async (req: Request, res: Response) => {
   });
 
   if (!user) {
-    return res.status(404).json({ error: 'User not found' });
+    return reply.code(404).send({ error: 'User not found' });
   }
 
-  res.json({ user });
+  reply.send({ user });
 };
 
-export const deleteAccount = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deleteAccount = async (req: AppRequest, reply: AppReply) => {
+  if (!req.user) return reply.code(401).send({ error: 'Unauthorized' });
 
   try {
     const userId = req.user.id;
     const cleanup = await enqueueAccountCleanup(userId);
-    if (!cleanup) return res.status(404).json({ error: 'User not found' });
-    clearAuthCookies(res);
+    if (!cleanup) return reply.code(404).send({ error: 'User not found' });
+    clearAuthCookies(reply);
     artifactCleanupQueue.trigger();
-    res.status(202).json({
+    reply.code(202).send({
       status: 'deleting',
       cleanup_job_id: cleanup.job.id,
       child_jobs: cleanup.childCount,
     });
   } catch (error) {
-    console.error('Delete account error:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to delete account' });
+    console.error('Delete account error:', toSafeError(error, req.requestId));
+    reply.code(500).send({ error: 'Failed to delete account' });
   }
 };
 
-export const logout = async (req: Request, res: Response) => {
+export const logout = async (req: AppRequest, reply: AppReply) => {
   const refreshToken = req.cookies.refresh_token;
 
   if (refreshToken) {
     await deleteSession(refreshToken);
   }
 
-  clearAuthCookies(res);
-  res.json({ message: 'Logged out', github_logout_url: 'https://github.com/logout' });
+  clearAuthCookies(reply);
+  reply.send({ message: 'Logged out', github_logout_url: 'https://github.com/logout' });
 };

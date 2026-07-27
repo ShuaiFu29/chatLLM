@@ -45,37 +45,36 @@ test('persona evidence migration clears legacy active generated rows without del
 });
 
 test('persona center exposes authenticated profile, analysis, edit, hide, and reset routes', () => {
-  const indexSource = readSource('src/index.ts');
-  const routesSource = readOptionalSource('src/routes/persona.ts');
-  const controllerSource = readOptionalSource('src/controllers/persona.ts');
+  const nestControllerSource = readSource('src/modules/persona/persona.controller.ts');
+  const handlerSource = readOptionalSource('src/controllers/persona.ts');
   const repositorySource = readOptionalSource('src/repositories/persona.ts');
 
-  assert.match(indexSource, /personaRoutes/);
-  assert.match(indexSource, /app\.use\('\/api\/persona', createRateLimit\(/);
-  assert.match(indexSource, /keyPrefix:\s*'persona'/);
-  assert.match(routesSource, /router\.get\('\/', requireAuth, getPersonaCenter\)/);
-  assert.match(routesSource, /router\.post\('\/analyze', requireAuth, validateMutation\(mutationSchemas\.personaAnalyze\), analyzePersonaCenter\)/);
-  assert.match(routesSource, /router\.patch\('\/profile', requireAuth, validateMutation\(mutationSchemas\.personaUpdateProfile\), updatePersonaProfile\)/);
-  assert.match(routesSource, /router\.delete\('\/profile', requireAuth, validateMutation\(mutationSchemas\.personaDeleteProfile\), deletePersonaProfile\)/);
-  assert.match(routesSource, /router\.patch\('\/interests\/:interestId', requireAuth, validateMutation\(mutationSchemas\.personaUpdateInterest\), updatePersonaInterest\)/);
-  assert.match(routesSource, /router\.delete\('\/interests\/:interestId', requireAuth, validateMutation\(mutationSchemas\.personaDeleteInterest\), deletePersonaInterest\)/);
-  assert.match(routesSource, /router\.patch\('\/observations\/:observationId', requireAuth, validateMutation\(mutationSchemas\.personaUpdateObservation\), updatePersonaObservation\)/);
-  assert.match(routesSource, /router\.delete\('\/observations\/:observationId', requireAuth, validateMutation\(mutationSchemas\.personaDeleteObservation\), deletePersonaObservation\)/);
-  assert.match(routesSource, /router\.patch\('\/suggestions\/:suggestionId', requireAuth, validateMutation\(mutationSchemas\.personaUpdateSuggestion\), updatePersonaSuggestion\)/);
-  assert.match(routesSource, /router\.delete\('\/suggestions\/:suggestionId', requireAuth, validateMutation\(mutationSchemas\.personaDeleteSuggestion\), deletePersonaSuggestion\)/);
-  assert.match(routesSource, /router\.post\('\/reset', requireAuth, validateMutation\(mutationSchemas\.personaReset\), resetPersonaCenter\)/);
+  assert.match(nestControllerSource, /@Controller\('persona'\)/);
+  assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(nestControllerSource, /@RateLimitScope\(\{[\s\S]*?keyPrefix:\s*'persona',[\s\S]*?max:\s*serverEnv\.RATE_LIMIT_MAX/);
+  assert.match(nestControllerSource, /@Get\(\)[\s\S]*?return getPersonaCenter\(request, reply\)/);
+  assert.match(nestControllerSource, /@Post\('analyze'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaAnalyze\)[\s\S]*?return analyzePersonaCenter\(request, reply\)/);
+  assert.match(nestControllerSource, /@Patch\('profile'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateProfile\)[\s\S]*?return updatePersonaProfile\(request, reply\)/);
+  assert.match(nestControllerSource, /@Delete\('profile'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteProfile\)[\s\S]*?return deletePersonaProfile\(request, reply\)/);
+  assert.match(nestControllerSource, /@Patch\('interests\/:interestId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateInterest\)[\s\S]*?return updatePersonaInterest\(request, reply\)/);
+  assert.match(nestControllerSource, /@Delete\('interests\/:interestId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteInterest\)[\s\S]*?return deletePersonaInterest\(request, reply\)/);
+  assert.match(nestControllerSource, /@Patch\('observations\/:observationId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateObservation\)[\s\S]*?return updatePersonaObservation\(request, reply\)/);
+  assert.match(nestControllerSource, /@Delete\('observations\/:observationId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteObservation\)[\s\S]*?return deletePersonaObservation\(request, reply\)/);
+  assert.match(nestControllerSource, /@Patch\('suggestions\/:suggestionId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaUpdateSuggestion\)[\s\S]*?return updatePersonaSuggestion\(request, reply\)/);
+  assert.match(nestControllerSource, /@Delete\('suggestions\/:suggestionId'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaDeleteSuggestion\)[\s\S]*?return deletePersonaSuggestion\(request, reply\)/);
+  assert.match(nestControllerSource, /@Post\('reset'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.personaReset\)[\s\S]*?return resetPersonaCenter\(request, reply\)/);
 
-  assert.match(controllerSource, /getPersonaCenterForUser\(req\.user\.id\)/);
-  assert.match(controllerSource, /refreshPersonaInsightsForUser\(req\.user\.id\)/);
-  assert.match(controllerSource, /updatePersonaProfileForUser\(req\.user\.id/);
-  assert.match(controllerSource, /updatePersonaInterestStatusForUser\(req\.user\.id/);
-  assert.match(controllerSource, /updatePersonaObservationStatusForUser\(req\.user\.id/);
-  assert.match(controllerSource, /updatePersonaSuggestionStatusForUser\(req\.user\.id/);
-  assert.match(controllerSource, /deletePersonaProfileForUser\(req\.user\.id\)/);
-  assert.match(controllerSource, /deletePersonaInterestForUser\(req\.user\.id/);
-  assert.match(controllerSource, /deletePersonaObservationForUser\(req\.user\.id/);
-  assert.match(controllerSource, /deletePersonaSuggestionForUser\(req\.user\.id/);
-  assert.match(controllerSource, /resetPersonaCenterForUser\(req\.user\.id\)/);
+  assert.match(handlerSource, /getPersonaCenterForUser\(req\.user\.id\)/);
+  assert.match(handlerSource, /refreshPersonaInsightsForUser\(req\.user\.id\)/);
+  assert.match(handlerSource, /updatePersonaProfileForUser\(req\.user\.id/);
+  assert.match(handlerSource, /updatePersonaInterestStatusForUser\(req\.user\.id/);
+  assert.match(handlerSource, /updatePersonaObservationStatusForUser\(req\.user\.id/);
+  assert.match(handlerSource, /updatePersonaSuggestionStatusForUser\(req\.user\.id/);
+  assert.match(handlerSource, /deletePersonaProfileForUser\(req\.user\.id\)/);
+  assert.match(handlerSource, /deletePersonaInterestForUser\(req\.user\.id/);
+  assert.match(handlerSource, /deletePersonaObservationForUser\(req\.user\.id/);
+  assert.match(handlerSource, /deletePersonaSuggestionForUser\(req\.user\.id/);
+  assert.match(handlerSource, /resetPersonaCenterForUser\(req\.user\.id\)/);
 
   assert.match(repositorySource, /listRecentUserMessagesForPersona/);
   assert.match(repositorySource, /where c\.user_id = \$1/i);

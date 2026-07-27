@@ -1,7 +1,12 @@
-import { Request, Response } from 'express';
 import path from 'path';
 import fs from 'fs-extra';
 import { pipeline } from 'stream/promises';
+import { AppReply, AppRequest } from '../common/http/app-request';
+import {
+  endHijackedReply,
+  sendHijackedJson,
+  streamReadableReply,
+} from '../common/http/raw-stream';
 import { toSafeError } from '../lib/safeError';
 import {
   abortMultipartObjectUpload,
@@ -70,7 +75,7 @@ import {
   parseUploadTotalChunks,
 } from '../lib/uploadInput';
 import { serverEnv } from '../lib/env';
-import { DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES } from '../lib/uploadMiddleware';
+import { DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES } from '../lib/uploadLimits';
 
 const UPLOAD_DIR = path.join(__dirname, '../../uploads/temp');
 fs.ensureDirSync(UPLOAD_DIR);
@@ -149,7 +154,8 @@ const getMergeIntegrityMessage = (error: unknown): string | null => {
 };
 
 const sendUploadError = (
-  res: Response,
+  req: AppRequest,
+  res: AppReply,
   status: number,
   publicMessage: string,
   error: unknown,
@@ -158,10 +164,10 @@ const sendUploadError = (
   if (status >= 500) {
     console.error('[Upload] operation failed:', {
       operation,
-      error: toSafeError(error, res.locals?.requestId),
+      error: toSafeError(error, req.requestId),
     });
   }
-  return res.status(status).json({ error: publicMessage, details: publicMessage });
+  return res.code(status).send({ error: publicMessage, details: publicMessage });
 };
 
 const ensureSupportedDocumentFilename = (filename?: string) => {
@@ -214,13 +220,13 @@ const normalizeStorageParts = (parts: Array<{ partNumber: number; etag: string; 
     .sort((a, b) => a.partNumber - b.partNumber);
 
 const sendExistingMultipartSession = async (
-  res: Response,
+  res: AppReply,
   session: MultipartUploadSessionRow,
   fileId: string,
   projectSpaceId: string
 ) => {
   if (session.status === 'completed') {
-    return res.json({
+    return res.send({
       exists: true,
       uploadNeeded: false,
       uploadId: fileId,
@@ -228,20 +234,20 @@ const sendExistingMultipartSession = async (
     });
   }
   if (session.status === 'completing') {
-    return res.status(409).json({ error: 'Multipart upload completion is in progress' });
+    return res.code(409).send({ error: 'Multipart upload completion is in progress' });
   }
   if (session.status === 'cancelling') {
-    return res.status(409).json({ error: 'Multipart upload cancellation is pending' });
+    return res.code(409).send({ error: 'Multipart upload cancellation is pending' });
   }
   if (new Date(session.expires_at).getTime() <= Date.now()) {
-    return res.status(410).json({ error: 'Multipart upload cleanup is pending' });
+    return res.code(410).send({ error: 'Multipart upload cleanup is pending' });
   }
 
   const uploadedParts = await listMultipartObjectParts(
     session.object_key,
     session.storage_upload_id
   ).catch(() => []);
-  return res.json({
+  return res.send({
     exists: false,
     uploadNeeded: true,
     uploadStrategy: 'direct-multipart',
@@ -316,8 +322,8 @@ const inspectCompletedMultipartObject = async (
   }
 };
 
-const sendMultipartCompleteSuccess = (res: Response) => (
-  res.json({ success: true, message: 'File uploaded and queued for processing' })
+const sendMultipartCompleteSuccess = (res: AppReply) => (
+  res.send({ success: true, message: 'File uploaded and queued for processing' })
 );
 
 const MULTIPART_COMPLETION_RETRYABLE = 'Multipart completion is pending reconciliation';
@@ -325,8 +331,8 @@ const MULTIPART_ABORT_RETRYABLE = 'Multipart abort is pending reconciliation';
 const MULTIPART_UPLOAD_MISSING = 'Multipart upload no longer exists';
 const MULTIPART_COMPLETION_REJECTED = 'Multipart completion was rejected by storage';
 
-export const checkFile = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const checkFile = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const { hash, filename } = req.body;
 
@@ -335,12 +341,12 @@ export const checkFile = async (req: Request, res: Response) => {
     ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
-    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
+    if (!projectSpaceId) return res.code(404).send({ error: 'Project space not found' });
 
     const claimedFile = await findClaimedFileByUserAndHash(req.user.id, normalizedHash, projectSpaceId);
 
     if (claimedFile && !needsFileBytes(claimedFile)) {
-      return res.json({
+      return res.send({
         exists: true,
         uploadNeeded: false,
         fileId: claimedFile.id,
@@ -356,13 +362,13 @@ export const checkFile = async (req: Request, res: Response) => {
       const activeSession = await findActiveMultipartUploadSession(fileId, req.user.id);
       if (activeSession) {
         if (activeSession.status === 'completing') {
-          return res.status(409).json({ error: 'Multipart upload completion is in progress' });
+          return res.code(409).send({ error: 'Multipart upload completion is in progress' });
         }
         if (activeSession.status === 'cancelling') {
-          return res.status(409).json({ error: 'Multipart upload cancellation is pending' });
+          return res.code(409).send({ error: 'Multipart upload cancellation is pending' });
         }
         if (new Date(activeSession.expires_at).getTime() <= Date.now()) {
-          return res.status(410).json({ error: 'Multipart upload cleanup is pending' });
+          return res.code(410).send({ error: 'Multipart upload cleanup is pending' });
         }
         const uploadedParts = await listMultipartObjectParts(activeSession.object_key, activeSession.storage_upload_id)
           .catch(() => []);
@@ -383,7 +389,7 @@ export const checkFile = async (req: Request, res: Response) => {
       }
     }
 
-    res.json({
+    res.send({
       exists: false,
       uploadNeeded: true,
       uploadedChunks,
@@ -394,12 +400,12 @@ export const checkFile = async (req: Request, res: Response) => {
     });
   } catch (err) {
     const inputMessage = getUploadInputMessage(err);
-    return sendUploadError(res, inputMessage ? 400 : 500, inputMessage || 'Check failed', err, 'Check');
+    return sendUploadError(req, res, inputMessage ? 400 : 500, inputMessage || 'Check failed', err, 'Check');
   }
 };
 
-export const initUpload = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const initUpload = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { filename, hash, size, type } = req.body;
 
   try {
@@ -408,7 +414,7 @@ export const initUpload = async (req: Request, res: Response) => {
     const contentType = ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
-    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
+    if (!projectSpaceId) return res.code(404).send({ error: 'Project space not found' });
 
     const reservation = await reserveUploadFile({
       userId: req.user.id,
@@ -421,7 +427,7 @@ export const initUpload = async (req: Request, res: Response) => {
     const file = reservation.file;
 
     if (!needsFileBytes(file)) {
-      return res.json({
+      return res.send({
         exists: true,
         uploadNeeded: false,
         uploadId: file.id,
@@ -429,12 +435,13 @@ export const initUpload = async (req: Request, res: Response) => {
       });
     }
 
-    res.json({ uploadId: file.id, projectSpaceId });
+    res.send({ uploadId: file.id, projectSpaceId });
   } catch (err) {
     const inputMessage = getUploadInputMessage(err);
     const reservationFailure = getUploadReservationFailure(err);
     const publicMessage = reservationFailure?.message || inputMessage || 'Init failed';
     return sendUploadError(
+      req,
       res,
       getUploadFailureStatus(inputMessage, reservationFailure),
       publicMessage,
@@ -444,8 +451,8 @@ export const initUpload = async (req: Request, res: Response) => {
   }
 };
 
-export const initMultipartUpload = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const initMultipartUpload = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { filename, hash, size, type } = req.body;
   let unclaimedStorageUpload: { objectKey: string; storageUploadId: string } | null = null;
 
@@ -455,7 +462,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     const contentType = ensureSupportedDocumentFilename(filename);
     const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
     const projectSpaceId = await resolveProjectSpaceId(req.user.id, requestedProjectSpaceId);
-    if (!projectSpaceId) return res.status(404).json({ error: 'Project space not found' });
+    if (!projectSpaceId) return res.code(404).send({ error: 'Project space not found' });
 
     const reservation = await reserveUploadFile({
       userId: req.user.id,
@@ -467,7 +474,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     });
     const file = reservation.file;
     if (!needsFileBytes(file)) {
-      return res.json({
+      return res.send({
         exists: true,
         uploadNeeded: false,
         uploadId: file.id,
@@ -482,7 +489,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
     const partSize = chooseMultipartPartSize(normalizedSize, serverEnv.MULTIPART_UPLOAD_PART_SIZE_BYTES);
     const totalParts = Math.ceil(normalizedSize / partSize);
     if (totalParts > MAX_MULTIPART_UPLOAD_PARTS) {
-      return res.status(400).json({ error: `File requires too many parts. Maximum is ${MAX_MULTIPART_UPLOAD_PARTS}` });
+      return res.code(400).send({ error: `File requires too many parts. Maximum is ${MAX_MULTIPART_UPLOAD_PARTS}` });
     }
 
     const objectKey = buildDocumentKey(req.user.id, file.id, filename);
@@ -509,14 +516,14 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
       unclaimedStorageUpload = null;
       const currentSession = await findMultipartUploadSessionForUser(file.id, req.user.id);
       if (!currentSession) {
-        return res.status(409).json({ error: 'Multipart upload state changed' });
+        return res.code(409).send({ error: 'Multipart upload state changed' });
       }
       return sendExistingMultipartSession(res, currentSession, file.id, projectSpaceId);
     } else {
       unclaimedStorageUpload = null;
     }
 
-    res.json({
+    res.send({
       exists: false,
       uploadNeeded: true,
       uploadStrategy: 'direct-multipart',
@@ -541,6 +548,7 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
       ).catch(() => undefined);
     }
     return sendUploadError(
+      req,
       res,
       stateChanged ? 409 : getUploadFailureStatus(inputMessage, reservationFailure),
       failureMessage,
@@ -550,35 +558,35 @@ export const initMultipartUpload = async (req: Request, res: Response) => {
   }
 };
 
-export const presignMultipartParts = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const presignMultipartParts = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { uploadId } = req.body;
   const partNumbers = parseMultipartPartNumbers(req.body.partNumbers ?? req.body.part_numbers);
 
   if (!uploadId || !partNumbers) {
-    return res.status(400).json({ error: 'Missing multipart upload parameters' });
+    return res.code(400).send({ error: 'Missing multipart upload parameters' });
   }
 
   try {
     const session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
     if (!session || !['initiated', 'uploading'].includes(session.status)) {
-      return res.status(404).json({ error: 'Multipart upload session not found' });
+      return res.code(404).send({ error: 'Multipart upload session not found' });
     }
 
     const upload = await findFileForUser(uploadId, req.user.id);
-    if (!upload) return res.status(404).json({ error: 'Upload session not found' });
+    if (!upload) return res.code(404).send({ error: 'Upload session not found' });
     if (partNumbers.some((partNumber) => partNumber > Number(session.total_parts))) {
-      return res.status(400).json({ error: 'Part number exceeds reserved upload' });
+      return res.code(400).send({ error: 'Part number exceeds reserved upload' });
     }
 
     if (new Date(session.expires_at).getTime() <= Date.now()) {
       const message = 'Multipart upload session expired';
-      return res.status(410).json({ error: message });
+      return res.code(410).send({ error: message });
     }
 
     const activeSession = await markMultipartUploadSessionUploading(uploadId, req.user.id);
     if (!activeSession) {
-      return res.status(409).json({ error: 'Multipart upload state changed' });
+      return res.code(409).send({ error: 'Multipart upload state changed' });
     }
     const parts = await presignMultipartUploadParts(
       activeSession.object_key,
@@ -591,32 +599,32 @@ export const presignMultipartParts = async (req: Request, res: Response) => {
       }
     );
 
-    res.json({
+    res.send({
       uploadId,
       expiresIn: serverEnv.MULTIPART_UPLOAD_URL_EXPIRES_SECONDS,
       parts,
     });
   } catch (err) {
-    return sendUploadError(res, 500, 'Multipart presign failed', err, 'Multipart presign');
+    return sendUploadError(req, res, 500, 'Multipart presign failed', err, 'Multipart presign');
   }
 };
 
-export const completeMultipartUpload = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const completeMultipartUpload = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { uploadId } = req.body;
 
   if (!uploadId) {
-    return res.status(400).json({ error: 'Missing uploadId' });
+    return res.code(400).send({ error: 'Missing uploadId' });
   }
 
   try {
     const upload = await findFileForUser(uploadId, req.user.id);
-    if (!upload) return res.status(404).json({ error: 'Upload session not found' });
+    if (!upload) return res.code(404).send({ error: 'Upload session not found' });
 
     let session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
     let ownsCompletion = false;
     if (!session) {
-      return res.status(404).json({ error: 'Multipart upload session not found' });
+      return res.code(404).send({ error: 'Multipart upload session not found' });
     }
     if (session.status === 'completed') return sendMultipartCompleteSuccess(res);
     if (session.status === 'completing') {
@@ -629,7 +637,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
             MULTIPART_COMPLETION_RETRYABLE
           );
           if (!reclaimed) {
-            return res.status(202).json({ status: 'completing' });
+            return res.code(202).send({ status: 'completing' });
           }
           session = reclaimed;
           ownsCompletion = true;
@@ -641,7 +649,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
             object.storageBytes
           );
           if (!result.transitioned && result.session?.status !== 'completed') {
-            return res.status(409).json({ error: 'Multipart completion state changed' });
+            return res.code(409).send({ error: 'Multipart completion state changed' });
           }
           if (result.transitioned) fileQueue.trigger();
           return sendMultipartCompleteSuccess(res);
@@ -656,6 +664,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
           ).catch(() => undefined);
         }
         return sendUploadError(
+          req,
           res,
           integrityMessage ? 409 : 503,
           integrityMessage || MULTIPART_COMPLETION_RETRYABLE,
@@ -666,11 +675,11 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
     }
     if (!ownsCompletion) {
       if (!['initiated', 'uploading'].includes(session.status) || upload.status !== 'uploading') {
-        return res.status(409).json({ error: 'Multipart upload is not completable' });
+        return res.code(409).send({ error: 'Multipart upload is not completable' });
       }
 
       if (new Date(session.expires_at).getTime() <= Date.now()) {
-        return res.status(410).json({ error: 'Multipart upload session expired' });
+        return res.code(410).send({ error: 'Multipart upload session expired' });
       }
 
       const claimed = await claimMultipartUploadCompletion(uploadId, req.user.id);
@@ -678,13 +687,13 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
         session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
         if (session?.status === 'completed') return sendMultipartCompleteSuccess(res);
         if (session?.status === 'completing') {
-          return res.status(202).json({ status: 'completing' });
+          return res.code(202).send({ status: 'completing' });
         }
-        return res.status(409).json({ error: 'Multipart completion state changed' });
+        return res.code(409).send({ error: 'Multipart completion state changed' });
       }
       session = claimed;
     } else if (upload.status !== 'uploading') {
-      return res.status(409).json({ error: 'Multipart completion state changed' });
+      return res.code(409).send({ error: 'Multipart completion state changed' });
     }
 
     let storageParts: ReturnType<typeof normalizeStorageParts>;
@@ -707,7 +716,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
           req.user.id,
           completionMessage
         ).catch(() => undefined);
-        return sendUploadError(res, 400, completionMessage, error, 'Multipart complete validation');
+        return sendUploadError(req, res, 400, completionMessage, error, 'Multipart complete validation');
       }
 
       if (isMultipartUploadMissingError(error)) {
@@ -731,7 +740,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
               MULTIPART_UPLOAD_MISSING
             );
             if (result.transitioned || result.session?.status === 'failed') {
-              return res.status(409).json({ error: MULTIPART_UPLOAD_MISSING });
+              return res.code(409).send({ error: MULTIPART_UPLOAD_MISSING });
             }
           }
         } catch {
@@ -751,6 +760,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
         MULTIPART_COMPLETION_RETRYABLE
       ).catch(() => undefined);
       return sendUploadError(
+        req,
         res,
         503,
         MULTIPART_COMPLETION_RETRYABLE,
@@ -776,7 +786,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
               MULTIPART_UPLOAD_MISSING
             );
             if (result.transitioned || result.session?.status === 'failed') {
-              return res.status(409).json({ error: MULTIPART_UPLOAD_MISSING });
+              return res.code(409).send({ error: MULTIPART_UPLOAD_MISSING });
             }
           }
           if (isStorageClientError(error)) {
@@ -785,7 +795,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
               req.user.id,
               MULTIPART_COMPLETION_REJECTED
             );
-            return res.status(409).json({ error: MULTIPART_COMPLETION_REJECTED });
+            return res.code(409).send({ error: MULTIPART_COMPLETION_REJECTED });
           }
           await markMultipartUploadCompletionRetryable(
             uploadId,
@@ -793,6 +803,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
             MULTIPART_COMPLETION_RETRYABLE
           ).catch(() => undefined);
           return sendUploadError(
+            req,
             res,
             503,
             MULTIPART_COMPLETION_RETRYABLE,
@@ -807,6 +818,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
           MULTIPART_COMPLETION_RETRYABLE
         ).catch(() => undefined);
         return sendUploadError(
+          req,
           res,
           503,
           MULTIPART_COMPLETION_RETRYABLE,
@@ -825,7 +837,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
             req.user.id,
             MULTIPART_COMPLETION_RETRYABLE
           ).catch(() => undefined);
-          return res.status(503).json({ error: MULTIPART_COMPLETION_RETRYABLE });
+          return res.code(503).send({ error: MULTIPART_COMPLETION_RETRYABLE });
         }
         completedStorageBytes = object.storageBytes;
       } catch (error) {
@@ -836,6 +848,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
           integrityMessage || MULTIPART_COMPLETION_RETRYABLE
         ).catch(() => undefined);
         return sendUploadError(
+          req,
           res,
           integrityMessage ? 409 : 503,
           integrityMessage || MULTIPART_COMPLETION_RETRYABLE,
@@ -860,6 +873,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
         MULTIPART_COMPLETION_RETRYABLE
       ).catch(() => undefined);
       return sendUploadError(
+        req,
         res,
         503,
         MULTIPART_COMPLETION_RETRYABLE,
@@ -869,7 +883,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
     }
 
     if (!result.transitioned && result.session?.status !== 'completed') {
-      return res.status(409).json({ error: 'Multipart completion state changed' });
+      return res.code(409).send({ error: 'Multipart completion state changed' });
     }
     if (result.transitioned) fileQueue.trigger();
 
@@ -881,6 +895,7 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
       MULTIPART_COMPLETION_RETRYABLE
     ).catch(() => undefined);
     return sendUploadError(
+      req,
       res,
       503,
       MULTIPART_COMPLETION_RETRYABLE,
@@ -890,35 +905,35 @@ export const completeMultipartUpload = async (req: Request, res: Response) => {
   }
 };
 
-export const abortMultipartUpload = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const abortMultipartUpload = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { uploadId } = req.body;
 
   if (!uploadId) {
-    return res.status(400).json({ error: 'Missing uploadId' });
+    return res.code(400).send({ error: 'Missing uploadId' });
   }
 
   try {
     let session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
-    if (!session) return res.status(404).json({ error: 'Multipart upload session not found' });
+    if (!session) return res.code(404).send({ error: 'Multipart upload session not found' });
     if (session.status === 'completed' || session.status === 'completing') {
-      return res.status(409).json({ error: 'Multipart upload completion already won' });
+      return res.code(409).send({ error: 'Multipart upload completion already won' });
     }
-    if (session.status === 'cancelled') return res.json({ success: true });
+    if (session.status === 'cancelled') return res.send({ success: true });
     if (!['initiated', 'uploading', 'cancelling'].includes(session.status)) {
-      return res.status(409).json({ error: 'Multipart upload is not cancellable' });
+      return res.code(409).send({ error: 'Multipart upload is not cancellable' });
     }
 
     if (session.status !== 'cancelling') {
       const claimed = await claimMultipartUploadAbort(uploadId, req.user.id);
       if (!claimed) {
         session = await findMultipartUploadSessionForUser(uploadId, req.user.id);
-        if (session?.status === 'cancelled') return res.json({ success: true });
+        if (session?.status === 'cancelled') return res.send({ success: true });
         if (session?.status === 'completed' || session?.status === 'completing') {
-          return res.status(409).json({ error: 'Multipart upload completion already won' });
+          return res.code(409).send({ error: 'Multipart upload completion already won' });
         }
         if (session?.status !== 'cancelling') {
-          return res.status(409).json({ error: 'Multipart abort state changed' });
+          return res.code(409).send({ error: 'Multipart abort state changed' });
         }
       } else {
         session = claimed;
@@ -932,7 +947,7 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
       if (isMultipartUploadMissingError(error)) {
         try {
           const upload = await findFileForUser(uploadId, req.user.id);
-          if (!upload) return res.status(404).json({ error: 'Upload session not found' });
+          if (!upload) return res.code(404).send({ error: 'Upload session not found' });
           const object = await inspectCompletedMultipartObject(session, upload);
           if (object.exists) {
             const result = await finalizeMultipartUploadCompletion(
@@ -943,7 +958,7 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
             );
             if (result.transitioned || result.session?.status === 'completed') {
               if (result.transitioned) fileQueue.trigger();
-              return res.status(409).json({ error: 'Multipart upload was already completed' });
+              return res.code(409).send({ error: 'Multipart upload was already completed' });
             }
             throw new Error('Multipart completion reconciliation did not transition');
           }
@@ -954,10 +969,10 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
             message
           );
           if (result.transitioned || result.session?.status === 'cancelled') {
-            return res.json({ success: true });
+            return res.send({ success: true });
           }
           if (result.session?.status === 'completed') {
-            return res.status(409).json({ error: 'Multipart upload was already completed' });
+            return res.code(409).send({ error: 'Multipart upload was already completed' });
           }
         } catch (reconciliationError) {
           await markMultipartUploadAbortRetryable(
@@ -966,6 +981,7 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
             MULTIPART_ABORT_RETRYABLE
           ).catch(() => undefined);
           return sendUploadError(
+            req,
             res,
             503,
             MULTIPART_ABORT_RETRYABLE,
@@ -987,7 +1003,7 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
               );
               if (result.transitioned || result.session?.status === 'completed') {
                 if (result.transitioned) fileQueue.trigger();
-                return res.status(409).json({ error: 'Multipart upload was already completed' });
+                return res.code(409).send({ error: 'Multipart upload was already completed' });
               }
               throw new Error('Multipart completion reconciliation did not transition');
             }
@@ -1003,6 +1019,7 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
         MULTIPART_ABORT_RETRYABLE
       ).catch(() => undefined);
       return sendUploadError(
+        req,
         res,
         503,
         MULTIPART_ABORT_RETRYABLE,
@@ -1014,44 +1031,44 @@ export const abortMultipartUpload = async (req: Request, res: Response) => {
     const result = await finalizeMultipartUploadAbort(uploadId, req.user.id, message);
     if (!result.transitioned && result.session?.status !== 'cancelled') {
       if (result.session?.status === 'completed') {
-        return res.status(409).json({ error: 'Multipart upload was already completed' });
+        return res.code(409).send({ error: 'Multipart upload was already completed' });
       }
-      return res.status(409).json({ error: 'Multipart abort state changed' });
+      return res.code(409).send({ error: 'Multipart abort state changed' });
     }
 
-    return res.json({ success: true });
+    return res.send({ success: true });
   } catch (err) {
     await markMultipartUploadAbortRetryable(
       uploadId,
       req.user.id,
       MULTIPART_ABORT_RETRYABLE
     ).catch(() => undefined);
-    return sendUploadError(res, 503, MULTIPART_ABORT_RETRYABLE, err, 'Multipart abort');
+    return sendUploadError(req, res, 503, MULTIPART_ABORT_RETRYABLE, err, 'Multipart abort');
   }
 };
 
-export const uploadChunk = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const uploadChunk = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const { uploadId, chunkIndex } = req.body;
-  const file = req.file;
+  const file = req.uploadFile;
   const parsedChunkIndex = parseUploadChunkIndex(chunkIndex);
 
   if (!uploadId || parsedChunkIndex === null || !file) {
-    return res.status(400).json({ error: 'Missing parameters' });
+    return res.code(400).send({ error: 'Missing parameters' });
   }
 
   try {
     const upload = await findFileForUser(uploadId, req.user.id);
     if (!upload || upload.status !== 'uploading') {
-      return res.status(404).json({ error: 'Upload session not found' });
+      return res.code(404).send({ error: 'Upload session not found' });
     }
 
     const declaredSize = Number(upload.file_size);
     const chunkStart = parsedChunkIndex * DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES;
     const chunkEnd = chunkStart + file.buffer.byteLength;
     if (!Number.isSafeInteger(declaredSize) || chunkStart >= declaredSize || chunkEnd > declaredSize) {
-      return res.status(413).json({ error: 'Chunk exceeds the reserved document size' });
+      return res.code(413).send({ error: 'Chunk exceeds the reserved document size' });
     }
 
     // uploadId passed the strict UUID mutation schema and the owner-scoped database lookup above.
@@ -1062,14 +1079,14 @@ export const uploadChunk = async (req: Request, res: Response) => {
     const chunkPath = path.join(chunkDir, parsedChunkIndex.toString()); // nosemgrep
     await fs.writeFile(chunkPath, file.buffer);
 
-    res.json({ success: true });
+    res.send({ success: true });
   } catch (err) {
-    return sendUploadError(res, 500, 'Chunk upload failed', err, 'Chunk upload');
+    return sendUploadError(req, res, 500, 'Chunk upload failed', err, 'Chunk upload');
   }
 };
 
-export const mergeChunks = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const mergeChunks = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { uploadId, filename, totalChunks } = req.body;
   const expectedChunks = parseUploadTotalChunks(totalChunks);
   let chunkDirToCleanup: string | null = null;
@@ -1078,7 +1095,7 @@ export const mergeChunks = async (req: Request, res: Response) => {
   let completedStorageBytes: number | null = null;
 
   if (!uploadId || !filename || expectedChunks === null) {
-    return res.status(400).json({ error: 'Missing parameters' });
+    return res.code(400).send({ error: 'Missing parameters' });
   }
 
   try {
@@ -1086,26 +1103,26 @@ export const mergeChunks = async (req: Request, res: Response) => {
 
     const upload = await findFileForUser(uploadId, req.user.id);
     if (!upload || upload.status !== 'uploading') {
-      return res.status(404).json({ error: 'Upload session not found' });
+      return res.code(404).send({ error: 'Upload session not found' });
     }
 
     // uploadId passed the strict UUID mutation schema and the owner-scoped database lookup above.
     const chunkDir = path.join(UPLOAD_DIR, uploadId); // nosemgrep
     chunkDirToCleanup = chunkDir;
     if (!await fs.pathExists(chunkDir)) {
-      return res.status(400).json({ error: 'Upload session not found' });
+      return res.code(400).send({ error: 'Upload session not found' });
     }
 
     const files = await fs.readdir(chunkDir);
     if (files.length !== expectedChunks) {
-      return res.status(400).json({ error: `Missing chunks. Expected ${expectedChunks}, found ${files.length}` });
+      return res.code(400).send({ error: `Missing chunks. Expected ${expectedChunks}, found ${files.length}` });
     }
 
     files.sort((a, b) => Number.parseInt(a, 10) - Number.parseInt(b, 10));
 
     for (let i = 0; i < expectedChunks; i++) {
       if (!files.includes(i.toString())) {
-        return res.status(400).json({ error: `Missing chunk ${i}` });
+        return res.code(400).send({ error: `Missing chunk ${i}` });
       }
     }
 
@@ -1152,12 +1169,12 @@ export const mergeChunks = async (req: Request, res: Response) => {
     if (!updatedFile) {
       artifactCleanupQueue.trigger();
       const message = 'Upload was deleted while finalizing';
-      return sendUploadError(res, 409, message, new Error(message), 'Merge');
+      return sendUploadError(req, res, 409, message, new Error(message), 'Merge');
     }
 
     fileQueue.trigger();
 
-    res.json({ success: true, message: 'File merged and queued for processing' });
+    res.send({ success: true, message: 'File merged and queued for processing' });
   } catch (err) {
     const inputMessage = getUploadInputMessage(err);
     const integrityMessage = getMergeIntegrityMessage(err);
@@ -1187,98 +1204,100 @@ export const mergeChunks = async (req: Request, res: Response) => {
       }).catch(() => undefined);
     }
     const isPublicFailure = Boolean(inputMessage || integrityMessage);
-    return sendUploadError(res, isPublicFailure ? 400 : 500, failureMessage, err, 'Merge');
+    return sendUploadError(req, res, isPublicFailure ? 400 : 500, failureMessage, err, 'Merge');
   }
 };
 
-export const listFiles = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const listFiles = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const requestedProjectSpaceId = readProjectSpaceId(req.query.projectSpaceId || req.query.project_space_id);
     if (requestedProjectSpaceId) {
       const space = await findProjectSpaceForUser(requestedProjectSpaceId, req.user.id);
-      if (!space) return res.status(404).json({ error: 'Project space not found' });
+      if (!space) return res.code(404).send({ error: 'Project space not found' });
     }
 
     const files = await listFilesForUser(req.user.id, requestedProjectSpaceId);
-    res.json(files);
+    res.send(files);
   } catch (err) {
-    return sendUploadError(res, 500, 'Failed to fetch files', err, 'File listing');
+    return sendUploadError(req, res, 500, 'Failed to fetch files', err, 'File listing');
   }
 };
 
-export const getFileContent = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getFileContent = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { id } = req.params;
 
   try {
     const file = await findFileForUser(id, req.user.id);
     if (!file || file.status !== 'completed' || !file.object_key) {
-      return res.status(404).json({ error: 'File content not found' });
+      return res.code(404).send({ error: 'File content not found' });
     }
 
     const { stream } = await getObjectStream(file.object_key);
 
-    res.setHeader('Content-Type', 'text/markdown; charset=utf-8');
-    res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
-    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.header('Content-Type', 'text/markdown; charset=utf-8');
+    res.header('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`);
+    res.header('Cache-Control', 'private, max-age=60');
 
-    stream.on('error', (error) => {
-      console.error('Failed to stream file content:', toSafeError(error, res.locals.requestId));
-      if (!res.headersSent) {
-        res.status(500).json({ error: 'Failed to read file content' });
-      } else {
-        res.end();
+    try {
+      await streamReadableReply(stream, res);
+    } catch (error) {
+      console.error('Failed to stream file content:', toSafeError(error, req.requestId));
+      if (!sendHijackedJson(res, 500, { error: 'Failed to read file content' })) {
+        endHijackedReply(res);
       }
-    });
-
-    stream.pipe(res);
+    }
   } catch (err) {
-    console.warn('[Upload] File content lookup failed:', toSafeError(err, res.locals?.requestId));
-    return res.status(404).json({ error: 'File content not found', details: 'File content not found' });
+    console.warn('[Upload] File content lookup failed:', toSafeError(err, req.requestId));
+    if (res.raw.headersSent || res.sent) {
+      endHijackedReply(res);
+      return;
+    }
+    return res.code(404).send({ error: 'File content not found', details: 'File content not found' });
   }
 };
 
-export const retryFileProcessing = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const retryFileProcessing = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { id } = req.params;
 
   try {
     const file = await retryFailedFileForUser(id, req.user.id);
-    if (!file) return res.status(404).json({ error: 'Failed file not found' });
+    if (!file) return res.code(404).send({ error: 'Failed file not found' });
 
     fileQueue.trigger();
-    res.json(file);
+    res.send(file);
   } catch (err) {
-    return sendUploadError(res, 500, 'Retry failed', err, 'File processing retry');
+    return sendUploadError(req, res, 500, 'Retry failed', err, 'File processing retry');
   }
 };
 
-export const deleteFile = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deleteFile = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { id } = req.params;
 
   try {
     const cleanup = await enqueueFileCleanup(id, req.user.id);
-    if (!cleanup) return res.status(404).json({ error: 'File not found' });
+    if (!cleanup) return res.code(404).send({ error: 'File not found' });
     artifactCleanupQueue.trigger();
-    res.status(202).json({
+    res.code(202).send({
       status: 'deleting',
       cleanup_job_id: cleanup.id,
     });
   } catch (err) {
-    return sendUploadError(res, 500, 'Internal server error', err, 'File deletion');
+    return sendUploadError(req, res, 500, 'Internal server error', err, 'File deletion');
   }
 };
 
-export const uploadAvatar = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
-  const file = req.file;
+export const uploadAvatar = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
+  const file = req.uploadFile;
 
-  if (!file) return res.status(400).json({ error: 'Avatar file is required' });
+  if (!file) return res.code(400).send({ error: 'Avatar file is required' });
   if (!file.mimetype.startsWith('image/')) {
-    return res.status(400).json({ error: 'Only image files are supported' });
+    return res.code(400).send({ error: 'Only image files are supported' });
   }
 
   const objectKey = buildAvatarKey(req.user.id, file.originalname);
@@ -1303,12 +1322,12 @@ export const uploadAvatar = async (req: Request, res: Response) => {
         } catch (queueError) {
           console.error(
             '[Upload] Failed to queue new avatar compensation:',
-            toSafeError(queueError, res.locals.requestId)
+            toSafeError(queueError, req.requestId)
           );
         }
         console.warn(
           '[Upload] Failed to delete uncommitted avatar object:',
-          toSafeError(deleteError, res.locals.requestId)
+          toSafeError(deleteError, req.requestId)
         );
       }
       throw updateError;
@@ -1320,38 +1339,49 @@ export const uploadAvatar = async (req: Request, res: Response) => {
       } catch (deleteError) {
         console.warn(
           '[Upload] Failed to delete old avatar object:',
-          toSafeError(deleteError, res.locals.requestId)
+          toSafeError(deleteError, req.requestId)
         );
       }
       artifactCleanupQueue.trigger();
     }
 
-    res.json({ url: avatarUrl, user: replacement.user });
+    res.send({ url: avatarUrl, user: replacement.user });
   } catch (err) {
-    return sendUploadError(res, 500, 'Avatar upload failed', err, 'Avatar upload');
+    return sendUploadError(req, res, 500, 'Avatar upload failed', err, 'Avatar upload');
   }
 };
 
-export const getAvatar = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getAvatar = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { userId } = req.params;
 
   if (userId !== req.user.id) {
-    return res.status(403).json({ error: 'Forbidden' });
+    return res.code(403).send({ error: 'Forbidden' });
   }
 
   try {
     const user = await findUserById(userId);
     if (!user?.avatar_object_key) {
-      return res.status(404).json({ error: 'Avatar not found' });
+      return res.code(404).send({ error: 'Avatar not found' });
     }
 
     const { stream, contentType } = await getObjectStream(user.avatar_object_key);
-    if (contentType) res.setHeader('Content-Type', contentType);
-    res.setHeader('Cache-Control', 'private, max-age=300');
-    stream.pipe(res);
+    if (contentType) res.header('Content-Type', contentType);
+    res.header('Cache-Control', 'private, max-age=300');
+    await streamReadableReply(stream, res);
   } catch (err) {
-    console.warn('[Upload] Avatar lookup failed:', toSafeError(err, res.locals?.requestId));
-    return res.status(404).json({ error: 'Avatar not found', details: 'Avatar not found' });
+    console.warn('[Upload] Avatar lookup failed:', toSafeError(err, req.requestId));
+    if (res.sent && sendHijackedJson(
+      res,
+      404,
+      { error: 'Avatar not found', details: 'Avatar not found' },
+    )) {
+      return;
+    }
+    if (res.raw.headersSent || res.sent) {
+      endHijackedReply(res);
+      return;
+    }
+    return res.code(404).send({ error: 'Avatar not found', details: 'Avatar not found' });
   }
 };

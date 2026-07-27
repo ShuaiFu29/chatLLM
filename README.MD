@@ -5,7 +5,7 @@ ChatLLM 是一个前后端分离的 AI 聊天与 Agentic RAG 知识工作台。�
 当前架构已经移除 Supabase，改为本地 Docker Compose 栈：
 
 - React + Vite 前端
-- Express + TypeScript 后端
+- NestJS + Fastify + TypeScript 后端
 - PostgreSQL 业务数据库
 - Redis 7 + BullMQ 唤醒队列与原子限流
 - MinIO 文件存储
@@ -18,7 +18,7 @@ ChatLLM 是一个前后端分离的 AI 聊天与 Agentic RAG 知识工作台。�
 
 ```mermaid
 flowchart LR
-  Client["React/Vite Client"] -->|HTTP + Cookies| Server["Express API Server"]
+  Client["React/Vite Client"] -->|HTTP + Cookies| Server["NestJS/Fastify API Server"]
   Server -->|SQL| Postgres["PostgreSQL"]
   Server -->|BullMQ jobs / rate limits| Redis["Redis 7"]
   Server -->|S3 API| MinIO["MinIO Documents Bucket"]
@@ -37,7 +37,7 @@ flowchart LR
 ```text
 chatLLM/
   client/        React 前端
-  server/        Express 后端
+  server/        NestJS + Fastify 后端
   rag-service/   Python RAG 服务
   docker-compose.yml
 ```
@@ -55,7 +55,7 @@ chatLLM/
 
 ### Server
 
-- Express 5
+- NestJS 11 + Fastify 5
 - TypeScript
 - PostgreSQL via `pg`
 - Redis 7（BullMQ 投递与原子限流；共享实例使用 `noeviction`）
@@ -94,7 +94,7 @@ cd D:\project\chatLLM
 npm run dev
 ```
 
-这个命令会自动检查配置和本地端口占用，启动 Docker 基础设施，并同时启动 Express 后端、Python RAG 服务和 React 前端。
+这个命令会自动检查配置和本地端口占用，启动 Docker 基础设施，并同时启动 NestJS/Fastify 后端、Python RAG 服务和 React 前端。
 
 如果 `npm run dev` 提示 `Port check failed`，说明后端、前端或 RAG 端口已经被其他项目或旧进程占用。先关闭占用 `3000` / `5173` / `8000` 的进程，再重新启动。也可以单独执行：
 
@@ -226,7 +226,7 @@ Graph LLM 抽取默认关闭。启用时必须显式配置 `GRAPH_EXTRACTION_ENA
 - MinIO Console：`http://localhost:9001`
 - Attu / Milvus 管理界面：`http://localhost:3001`
 
-Docker 首次创建空 PostgreSQL 数据库时会使用 `server/migrations/0001_init.sql` 初始化基础表结构。Express 后端启动时会自动执行 `server/migrations` 目录里尚未应用的 SQL 迁移，因此已有本地数据库也会补齐后续表结构。
+Docker 首次创建空 PostgreSQL 数据库时会使用 `server/migrations/0001_init.sql` 初始化基础表结构。NestJS 后端启动时会自动执行 `server/migrations` 目录里尚未应用的 SQL 迁移，因此已有本地数据库也会补齐后续表结构。
 
 删除文件、项目空间或账户是跨 PostgreSQL、MinIO、Milvus、Elasticsearch 与 Neo4j 的持久化清理流程。删除接口返回 `202 Accepted` 后，资源进入 `deletion_status=pending` 或 `deleting`，并不表示外部对象已经全部删除；运维端应持续观察队列，失败任务可在租约恢复后重试。
 

@@ -13,13 +13,17 @@ const readSource = (relativePath) => readFileSync(path.join(serverRoot, relative
 const readJson = (relativePath) => JSON.parse(readSource(relativePath));
 
 test('usage API exposes per-user file queue state for document processing traceability', () => {
-  const routeSource = readSource('src/routes/usage.ts');
+  const nestControllerSource = readSource('src/modules/usage/usage.controller.ts');
   const controllerSource = readSource('src/controllers/usage.ts');
   const repositorySource = readSource('src/repositories/usage.ts');
   const migrationSource = readSource('migrations/0021_file_ingestion_jobs.sql');
 
-  assert.match(routeSource, /getUsageFileQueue/);
-  assert.match(routeSource, /router\.get\('\/file-queue', requireAuth, getUsageFileQueue\)/);
+  assert.match(nestControllerSource, /@Controller\('usage'\)/);
+  assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
+  assert.match(
+    nestControllerSource,
+    /@Get\('file-queue'\)[\s\S]*?return getUsageFileQueue\(request, reply\)/,
+  );
 
   assert.match(controllerSource, /getUsageFileQueue/);
   assert.match(controllerSource, /getFileQueueSummaryForUser\(req\.user\.id, fileLimit\)/);
@@ -188,7 +192,7 @@ test('reconciliation rejects a late terminal write from a replaced ingestion lea
   assert.equal(queries.some((sql) => /update files/i.test(sql)), false);
 });
 
-test('Express alone publishes completed file state from the current ingestion job', async () => {
+test('the application publishes completed file state only from the current ingestion job', async () => {
   const files = require(path.join(serverRoot, 'dist', 'repositories', 'files.js'));
   assert.equal(typeof files.reconcileFileIngestionAttempt, 'function');
 

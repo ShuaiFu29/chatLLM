@@ -112,19 +112,40 @@ export const cleanupAbandonedUploadRecords = async () => {
 
 class MaintenanceService {
   private interval: NodeJS.Timeout | null = null;
+  private activeRun: Promise<void> | null = null;
+  private started = false;
 
   start() {
-    if (this.interval) return;
+    if (this.started) return;
 
-    this.runOnce();
-    this.interval = setInterval(() => this.runOnce(), serverEnv.MAINTENANCE_INTERVAL_MS);
+    this.started = true;
+    void this.runScheduledTasks();
+    this.interval = setInterval(() => {
+      void this.runScheduledTasks();
+    }, serverEnv.MAINTENANCE_INTERVAL_MS);
     this.interval.unref();
   }
 
-  stop() {
-    if (!this.interval) return;
-    clearInterval(this.interval);
-    this.interval = null;
+  async stop() {
+    this.started = false;
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    await this.activeRun;
+  }
+
+  private runScheduledTasks() {
+    if (!this.started) return Promise.resolve();
+    if (this.activeRun) return this.activeRun;
+    this.activeRun = this.runOnce()
+      .catch((error) => {
+        console.warn('[Maintenance] Cleanup run failed:', toSafeError(error));
+      })
+      .finally(() => {
+        this.activeRun = null;
+      });
+    return this.activeRun;
   }
 
   private async runOnce() {

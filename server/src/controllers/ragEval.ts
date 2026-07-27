@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { AppReply, AppRequest } from '../common/http/app-request';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { ragEvalQueue } from '../services/ragEvalQueue';
@@ -39,20 +39,20 @@ const readProjectSpaceId = (value: unknown) => {
   return trimmed || null;
 };
 
-export const listRagEvalDatasets = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const listRagEvalDatasets = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const datasets = await listRagEvalDatasetsForUser(req.user.id);
-    res.json(datasets);
+    res.send(datasets);
   } catch (error) {
-    console.error('Error listing RAG eval datasets:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to list RAG eval datasets' });
+    console.error('Error listing RAG eval datasets:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to list RAG eval datasets' });
   }
 };
 
-export const listRagEvalHistory = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const listRagEvalHistory = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const historyLimit = parseBoundedLimit(
     req.query.limit,
     DEFAULT_RAG_EVAL_HISTORY_LIMIT,
@@ -61,15 +61,15 @@ export const listRagEvalHistory = async (req: Request, res: Response) => {
 
   try {
     const history = await listHistoricalRagRunsForUser(req.user.id, historyLimit);
-    res.json({ items: history });
+    res.send({ items: history });
   } catch (error) {
-    console.error('Error listing historical RAG runs:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to list historical RAG runs' });
+    console.error('Error listing historical RAG runs:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to list historical RAG runs' });
   }
 };
 
-export const createRagEvalDataset = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const createRagEvalDataset = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const name = req.body.name as string;
   const description = (req.body.description ?? '') as string;
@@ -81,15 +81,15 @@ export const createRagEvalDataset = async (req: Request, res: Response) => {
       name,
       description,
     });
-    res.status(201).json(dataset);
+    res.code(201).send(dataset);
   } catch (error) {
-    console.error('Error creating RAG eval dataset:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to create RAG eval dataset' });
+    console.error('Error creating RAG eval dataset:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to create RAG eval dataset' });
   }
 };
 
-export const updateRagEvalDataset = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const updateRagEvalDataset = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const name = req.body.name as string;
   const description = (req.body.description ?? '') as string;
@@ -102,38 +102,38 @@ export const updateRagEvalDataset = async (req: Request, res: Response) => {
       name,
       description,
     });
-    if (!dataset) return res.status(404).json({ error: 'Dataset not found' });
-    res.json(dataset);
+    if (!dataset) return res.code(404).send({ error: 'Dataset not found' });
+    res.send(dataset);
   } catch (error) {
-    console.error('Error updating RAG eval dataset:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to update RAG eval dataset' });
+    console.error('Error updating RAG eval dataset:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to update RAG eval dataset' });
   }
 };
 
-export const deleteRagEvalDataset = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deleteRagEvalDataset = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const deleted = await deleteRagEvalDatasetForUser(req.params.datasetId, req.user.id);
-    if (!deleted) return res.status(404).json({ error: 'Dataset not found' });
-    res.json({ success: true });
+    if (!deleted) return res.code(404).send({ error: 'Dataset not found' });
+    res.send({ success: true });
   } catch (error) {
-    console.error('Error deleting RAG eval dataset:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to delete RAG eval dataset' });
+    console.error('Error deleting RAG eval dataset:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to delete RAG eval dataset' });
   }
 };
 
-export const createRagEvalCase = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const createRagEvalCase = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const { datasetId } = req.params;
   const question = req.body.question as string;
 
   try {
     const dataset = await getRagEvalDatasetWithCasesForUser(datasetId, req.user.id);
-    if (!dataset) return res.status(404).json({ error: 'Dataset not found' });
+    if (!dataset) return res.code(404).send({ error: 'Dataset not found' });
     if (dataset.cases.length >= MAX_RAG_EVAL_CASES_PER_DATASET) {
-      return res.status(400).json({ error: 'Dataset has too many eval cases' });
+      return res.code(400).send({ error: 'Dataset has too many eval cases' });
     }
 
     const testCase = await createRagEvalCaseForUser({
@@ -147,64 +147,64 @@ export const createRagEvalCase = async (req: Request, res: Response) => {
       maxCases: MAX_RAG_EVAL_CASES_PER_DATASET,
     });
 
-    if (!testCase) return res.status(400).json({ error: 'Dataset has too many eval cases' });
-    res.status(201).json(testCase);
+    if (!testCase) return res.code(400).send({ error: 'Dataset has too many eval cases' });
+    res.code(201).send(testCase);
   } catch (error) {
-    console.error('Error creating RAG eval case:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to create RAG eval case' });
+    console.error('Error creating RAG eval case:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to create RAG eval case' });
   }
 };
 
-export const deleteRagEvalCase = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const deleteRagEvalCase = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const deleted = await deleteRagEvalCaseForUser(req.params.caseId, req.user.id);
-    if (!deleted) return res.status(404).json({ error: 'Eval case not found' });
-    res.json({ success: true });
+    if (!deleted) return res.code(404).send({ error: 'Eval case not found' });
+    res.send({ success: true });
   } catch (error) {
-    console.error('Error deleting RAG eval case:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to delete RAG eval case' });
+    console.error('Error deleting RAG eval case:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to delete RAG eval case' });
   }
 };
 
-export const getRagEvalRun = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getRagEvalRun = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const run = await getRagEvalRunForUser(req.params.runId, req.user.id);
-    if (!run) return res.status(404).json({ error: 'Eval run not found' });
-    res.json(run);
+    if (!run) return res.code(404).send({ error: 'Eval run not found' });
+    res.send(run);
   } catch (error) {
-    console.error('Error loading RAG eval run:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to load RAG eval run' });
+    console.error('Error loading RAG eval run:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to load RAG eval run' });
   }
 };
 
-export const getRagEvalQualitySummary = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getRagEvalQualitySummary = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const summary = await getRagEvalQualitySummaryForUser(req.params.datasetId, req.user.id);
-    if (!summary) return res.status(404).json({ error: 'Dataset not found' });
-    res.json(summary);
+    if (!summary) return res.code(404).send({ error: 'Dataset not found' });
+    res.send(summary);
   } catch (error) {
-    console.error('Error loading RAG eval quality summary:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to load RAG eval quality summary' });
+    console.error('Error loading RAG eval quality summary:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to load RAG eval quality summary' });
   }
 };
 
-export const runRagEvalDataset = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const runRagEvalDataset = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const dataset = await getRagEvalDatasetWithCasesForUser(req.params.datasetId, req.user.id);
-    if (!dataset) return res.status(404).json({ error: 'Dataset not found' });
+    if (!dataset) return res.code(404).send({ error: 'Dataset not found' });
     if (!dataset.cases || dataset.cases.length === 0) {
-      return res.status(400).json({ error: 'Dataset has no eval cases' });
+      return res.code(400).send({ error: 'Dataset has no eval cases' });
     }
     if (dataset.cases.length > MAX_RAG_EVAL_CASES_PER_RUN) {
-      return res.status(400).json({ error: 'Dataset has too many eval cases for one run' });
+      return res.code(400).send({ error: 'Dataset has too many eval cases for one run' });
     }
 
     const run = await createRunningRagEvalRunForUser({
@@ -220,25 +220,25 @@ export const runRagEvalDataset = async (req: Request, res: Response) => {
       metrics.recordRagEvalRunReused();
     }
 
-    res.status(202).json(run);
+    res.code(202).send(run);
   } catch (error) {
-    console.error('Error running RAG eval dataset:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to run RAG eval dataset' });
+    console.error('Error running RAG eval dataset:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to run RAG eval dataset' });
   }
 };
 
-export const cancelRagEvalRun = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const cancelRagEvalRun = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const run = await cancelRagEvalRunForUser(req.params.runId, req.user.id);
-    if (!run) return res.status(404).json({ error: 'Running eval run not found' });
+    if (!run) return res.code(404).send({ error: 'Running eval run not found' });
 
     ragEvalQueue.abortRun(run.id);
     metrics.recordRagEvalRunCompleted('cancelled');
-    res.json(run);
+    res.send(run);
   } catch (error) {
-    console.error('Error cancelling RAG eval run:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to cancel RAG eval run' });
+    console.error('Error cancelling RAG eval run:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to cancel RAG eval run' });
   }
 };

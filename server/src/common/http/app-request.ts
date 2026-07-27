@@ -19,7 +19,7 @@ export interface BufferedUpload {
 export type AppRequest = FastifyRequest<AppRequestGeneric> & {
   user?: User;
   requestId?: string;
-  file?: BufferedUpload;
+  uploadFile?: BufferedUpload;
 };
 
 export type AppReply = FastifyReply;

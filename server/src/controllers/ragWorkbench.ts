@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { AppReply, AppRequest } from '../common/http/app-request';
 import { normalizeChatMessageContent } from '../lib/chatInput';
 import { listRagGraphDocuments, retrieveAgenticRagDocuments, searchRagGraphDocuments } from '../lib/ragClient';
 import { toSafeError } from '../lib/safeError';
@@ -10,7 +10,7 @@ const readProjectSpaceId = (value: unknown) => {
   return trimmed || undefined;
 };
 
-const resolveProjectSpaceId = async (req: Request) => {
+const resolveProjectSpaceId = async (req: AppRequest) => {
   if (!req.user) return undefined;
   const requestedProjectSpaceId = readProjectSpaceId(req.body.project_space_id ?? req.body.projectSpaceId);
   if (!requestedProjectSpaceId) return undefined;
@@ -19,17 +19,17 @@ const resolveProjectSpaceId = async (req: Request) => {
   return space?.id || null;
 };
 
-export const inspectRagRetrieval = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const inspectRagRetrieval = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const normalizedQuery = normalizeChatMessageContent(req.body.query);
   if (!normalizedQuery.ok) {
-    return res.status(normalizedQuery.statusCode).json({ error: normalizedQuery.error });
+    return res.code(normalizedQuery.statusCode).send({ error: normalizedQuery.error });
   }
 
   try {
     const projectSpaceId = await resolveProjectSpaceId(req);
-    if (projectSpaceId === null) return res.status(404).json({ error: 'Project space not found' });
+    if (projectSpaceId === null) return res.code(404).send({ error: 'Project space not found' });
 
     const result = await retrieveAgenticRagDocuments({
       query: normalizedQuery.content,
@@ -39,24 +39,24 @@ export const inspectRagRetrieval = async (req: Request, res: Response) => {
       threshold: req.body.threshold ?? 0.1,
     });
 
-    res.json(result);
+    res.send(result);
   } catch (error) {
-    console.error('Error inspecting RAG retrieval:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to inspect RAG retrieval' });
+    console.error('Error inspecting RAG retrieval:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to inspect RAG retrieval' });
   }
 };
 
-export const searchRagGraph = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const searchRagGraph = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   const normalizedQuery = normalizeChatMessageContent(req.body.query);
   if (!normalizedQuery.ok) {
-    return res.status(normalizedQuery.statusCode).json({ error: normalizedQuery.error });
+    return res.code(normalizedQuery.statusCode).send({ error: normalizedQuery.error });
   }
 
   try {
     const projectSpaceId = await resolveProjectSpaceId(req);
-    if (projectSpaceId === null) return res.status(404).json({ error: 'Project space not found' });
+    if (projectSpaceId === null) return res.code(404).send({ error: 'Project space not found' });
 
     const results = await searchRagGraphDocuments({
       query: normalizedQuery.content,
@@ -66,19 +66,19 @@ export const searchRagGraph = async (req: Request, res: Response) => {
       threshold: 0,
     });
 
-    res.json({ results });
+    res.send({ results });
   } catch (error) {
-    console.error('Error searching RAG graph:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to search RAG graph' });
+    console.error('Error searching RAG graph:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to search RAG graph' });
   }
 };
 
-export const listRagGraph = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const listRagGraph = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
   try {
     const projectSpaceId = await resolveProjectSpaceId(req);
-    if (projectSpaceId === null) return res.status(404).json({ error: 'Project space not found' });
+    if (projectSpaceId === null) return res.code(404).send({ error: 'Project space not found' });
 
     const results = await listRagGraphDocuments({
       user_id: req.user.id,
@@ -86,9 +86,9 @@ export const listRagGraph = async (req: Request, res: Response) => {
       limit: req.body.limit ?? 30,
     });
 
-    res.json({ results });
+    res.send({ results });
   } catch (error) {
-    console.error('Error listing RAG graph:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to list RAG graph' });
+    console.error('Error listing RAG graph:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to list RAG graph' });
   }
 };

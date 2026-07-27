@@ -1,4 +1,4 @@
-import { Request, Response } from 'express';
+import { AppReply, AppRequest } from '../common/http/app-request';
 import { getModelProviderHealth } from '../lib/llmProviders';
 import { toSafeError } from '../lib/safeError';
 import {
@@ -29,14 +29,14 @@ const parseBoundedLimit = (value: unknown, defaultValue: number, maxValue: numbe
   return Math.min(parsed, maxValue);
 };
 
-export const getProviderHealth = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getProviderHealth = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
 
-  res.json(getModelProviderHealth());
+  res.send(getModelProviderHealth());
 };
 
-export const getUsageOverview = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getUsageOverview = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const conversationLimit = parseBoundedLimit(
     req.query.limit,
     DEFAULT_USAGE_CONVERSATION_LIMIT,
@@ -49,15 +49,15 @@ export const getUsageOverview = async (req: Request, res: Response) => {
       listUsageConversationsForUser(req.user.id, conversationLimit),
     ]);
 
-    res.json({ summary, conversations });
+    res.send({ summary, conversations });
   } catch (error) {
-    console.error('Error fetching usage overview:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to fetch usage overview' });
+    console.error('Error fetching usage overview:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to fetch usage overview' });
   }
 };
 
-export const getUsageConversation = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getUsageConversation = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const { conversationId } = req.params;
   const messageLimit = parseBoundedLimit(
     req.query.messageLimit,
@@ -72,22 +72,22 @@ export const getUsageConversation = async (req: Request, res: Response) => {
 
   try {
     const conversation = await findUsageConversationForUser(conversationId, req.user.id);
-    if (!conversation) return res.status(404).json({ error: 'Conversation not found' });
+    if (!conversation) return res.code(404).send({ error: 'Conversation not found' });
 
     const [messages, ragRuns] = await Promise.all([
       listUsageConversationMessagesForUser(conversationId, req.user.id, messageLimit),
       listUsageRagRunsForConversation(conversationId, req.user.id, ragRunLimit),
     ]);
 
-    res.json({ conversation, messages, ragRuns });
+    res.send({ conversation, messages, ragRuns });
   } catch (error) {
-    console.error('Error fetching usage conversation:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to fetch usage conversation' });
+    console.error('Error fetching usage conversation:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to fetch usage conversation' });
   }
 };
 
-export const getUsageFileQueue = async (req: Request, res: Response) => {
-  if (!req.user) return res.status(401).json({ error: 'Unauthorized' });
+export const getUsageFileQueue = async (req: AppRequest, res: AppReply) => {
+  if (!req.user) return res.code(401).send({ error: 'Unauthorized' });
   const fileLimit = parseBoundedLimit(
     req.query.limit,
     DEFAULT_USAGE_FILE_LIMIT,
@@ -96,9 +96,9 @@ export const getUsageFileQueue = async (req: Request, res: Response) => {
 
   try {
     const fileQueue = await getFileQueueSummaryForUser(req.user.id, fileLimit);
-    res.json(fileQueue);
+    res.send(fileQueue);
   } catch (error) {
-    console.error('Error fetching usage file queue:', toSafeError(error, res.locals.requestId));
-    res.status(500).json({ error: 'Failed to fetch file queue status' });
+    console.error('Error fetching usage file queue:', toSafeError(error, req.requestId));
+    res.code(500).send({ error: 'Failed to fetch file queue status' });
   }
 };

@@ -64,6 +64,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
       return;
     }
 
+    if ((error as StatusError)?.code === 'FST_REQ_FILE_TOO_LARGE') {
+      reply.code(413).send({ error: 'Uploaded file is too large' });
+      return;
+    }
+
     const statusCode = getStatusCode(error);
     const requestId = request.requestId;
     const httpResponse = error instanceof HttpException ? error.getResponse() : null;
@@ -78,7 +83,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
       error: toSafeError(error, requestId),
     }));
 
-    if (explicitBody?.error && typeof explicitBody.error === 'string') {
+    const isExplicitPublicBody = explicitBody?.error
+      && typeof explicitBody.error === 'string'
+      && !Object.prototype.hasOwnProperty.call(explicitBody, 'statusCode')
+      && !Object.prototype.hasOwnProperty.call(explicitBody, 'message');
+    if (isExplicitPublicBody) {
       reply.code(statusCode).send(explicitBody);
       return;
     }

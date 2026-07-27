@@ -1,6 +1,4 @@
-import { Request, Response } from 'express';
 import { query } from './db';
-import { toSafeError } from './safeError';
 
 export interface QueueHealthCounts {
   cleanup_pending: number;
@@ -13,7 +11,6 @@ export interface QueueHealthCounts {
 type QueueHealthRow = {
   [K in keyof QueueHealthCounts]: number | string;
 };
-
 const asCount = (value: number | string) => {
   const count = typeof value === 'number' ? value : Number.parseInt(value, 10);
   return Number.isSafeInteger(count) && count >= 0 ? count : 0;
@@ -65,7 +62,6 @@ export const readQueueHealthCounts = async (): Promise<QueueHealthCounts> => {
     eval_expired_leases: asCount(row.eval_expired_leases),
   };
 };
-
 export const classifyQueueHealth = (counts: QueueHealthCounts) => {
   const cleanupDegraded = counts.cleanup_exhausted > 0 || counts.cleanup_expired_leases > 0;
   const ingestionDegraded = counts.ingestion_expired_leases > 0;
@@ -92,26 +88,3 @@ export const classifyQueueHealth = (counts: QueueHealthCounts) => {
     },
   };
 };
-
-export const createQueueHealthHandler = (
-  readCounts: () => Promise<QueueHealthCounts> = readQueueHealthCounts,
-) => async (_req: Request, res: Response) => {
-  try {
-    const result = classifyQueueHealth(await readCounts());
-    res.status(result.status === 'ok' ? 200 : 503).json(result);
-  } catch (error) {
-    const requestId = res.locals.requestId as string | undefined;
-    console.warn('[Health] Queue health check failed:', toSafeError(error, requestId));
-    res.status(503).json({
-      status: 'unavailable',
-      checks: {
-        cleanup: { status: 'error' },
-        ingestion_leases: { status: 'error' },
-        eval_leases: { status: 'error' },
-      },
-      ...(requestId ? { requestId } : {}),
-    });
-  }
-};
-
-export const queueHealthHandler = createQueueHealthHandler();

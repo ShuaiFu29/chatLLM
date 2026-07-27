@@ -10,24 +10,62 @@ const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 
-const uploadMiddleware = require(path.join(serverRoot, 'dist', 'lib', 'uploadMiddleware.js'));
-const uploadErrors = require(path.join(serverRoot, 'dist', 'middleware', 'uploadErrors.js'));
-const multer = require(path.join(serverRoot, 'node_modules', 'multer'));
+const uploadLimits = require(path.join(serverRoot, 'dist', 'lib', 'uploadLimits.js'));
+const { HttpExceptionFilter } = require(
+  path.join(serverRoot, 'dist', 'common', 'filters', 'http-exception.filter.js'),
+);
 const uploadControllerSource = readFileSync(path.join(serverRoot, 'src', 'controllers', 'upload.ts'), 'utf8');
+const multipartInterceptorSource = readFileSync(
+  path.join(serverRoot, 'src', 'common', 'interceptors', 'multipart-upload.interceptor.ts'),
+  'utf8',
+);
+const httpExceptionFilterSource = readFileSync(
+  path.join(serverRoot, 'src', 'common', 'filters', 'http-exception.filter.ts'),
+  'utf8',
+);
 
 function createResponse() {
   return {
     statusCode: undefined,
     body: undefined,
-    status(code) {
+    sent: false,
+    headers: {},
+    raw: { headersSent: false },
+    code(code) {
       this.statusCode = code;
       return this;
     },
-    json(body) {
+    send(body) {
       this.body = body;
+      this.sent = true;
+      return this;
+    },
+    header(name, value) {
+      this.headers[name.toLowerCase()] = value;
       return this;
     },
   };
+}
+
+function createArgumentsHost(request, response) {
+  return {
+    switchToHttp: () => ({
+      getRequest: () => request,
+      getResponse: () => response,
+    }),
+  };
+}
+
+function buildMultipartPayload(boundary, byteLength) {
+  return Buffer.concat([
+    Buffer.from(
+      `--${boundary}\r\n`
+      + 'Content-Disposition: form-data; name="chunk"; filename="chunk.bin"\r\n'
+      + 'Content-Type: application/octet-stream\r\n\r\n',
+    ),
+    Buffer.alloc(byteLength, 0x61),
+    Buffer.from(`\r\n--${boundary}--\r\n`),
+  ]);
 }
 
 function withMockedUploadController(overrides = {}) {
@@ -115,47 +153,93 @@ function withMockedUploadController(overrides = {}) {
 }
 
 test('document chunk upload is capped to the client chunk size', () => {
-  assert.equal(uploadMiddleware.DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES, 2 * 1024 * 1024);
-  assert.equal(
-    uploadMiddleware.chunkUpload.limits.fileSize,
-    uploadMiddleware.DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES
-  );
+  assert.equal(uploadLimits.DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES, 2 * 1024 * 1024);
+  assert.match(multipartInterceptorSource, /fileSize: options\.maxBytes/);
+  assert.match(multipartInterceptorSource, /part\.file\.truncated/);
+  assert.match(multipartInterceptorSource, /request\.uploadFile = file/);
 });
 
 test('avatar upload has an explicit bounded image size limit', () => {
-  assert.equal(uploadMiddleware.AVATAR_UPLOAD_LIMIT_BYTES, 5 * 1024 * 1024);
-  assert.equal(uploadMiddleware.avatarUpload.limits.fileSize, uploadMiddleware.AVATAR_UPLOAD_LIMIT_BYTES);
-});
-
-test('oversized uploads return a 413 JSON response', () => {
-  const response = createResponse();
-  let nextCalled = false;
-
-  uploadErrors.handleUploadError(
-    new multer.MulterError('LIMIT_FILE_SIZE'),
-    {},
-    response,
-    () => {
-      nextCalled = true;
-    }
+  assert.equal(uploadLimits.AVATAR_UPLOAD_LIMIT_BYTES, 5 * 1024 * 1024);
+  const uploadControllerSource = readFileSync(
+    path.join(serverRoot, 'src', 'modules', 'upload', 'upload.controller.ts'),
+    'utf8',
   );
-
-  assert.equal(nextCalled, false);
-  assert.equal(response.statusCode, 413);
-  assert.equal(response.body.error, 'Uploaded file is too large');
+  assert.match(uploadControllerSource, /@MultipartUpload\([\s\S]*maxBytes: AVATAR_UPLOAD_LIMIT_BYTES/);
 });
 
-test('non-upload errors are delegated to the next handler', () => {
-  const response = createResponse();
-  const error = new Error('Unexpected failure');
-  let nextError;
+test('real Fastify multipart parsing accepts the exact chunk limit and rejects one byte more', async () => {
+  const Fastify = require('fastify');
+  const fastifyMultipart = require('@fastify/multipart');
+  const app = Fastify();
+  const maxBytes = uploadLimits.DOCUMENT_CHUNK_UPLOAD_LIMIT_BYTES;
 
-  uploadErrors.handleUploadError(error, {}, response, (err) => {
-    nextError = err;
+  await app.register(fastifyMultipart);
+  app.post('/upload', async (request) => {
+    const part = await request.file({ limits: { fileSize: maxBytes } });
+    const buffer = await part.toBuffer();
+    return { size: buffer.byteLength };
   });
 
-  assert.equal(nextError, error);
-  assert.equal(response.statusCode, undefined);
+  try {
+    const boundary = 'chatllm-upload-limit-boundary';
+    const exact = await app.inject({
+      method: 'POST',
+      url: '/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: buildMultipartPayload(boundary, maxBytes),
+    });
+    assert.equal(exact.statusCode, 200);
+    assert.deepEqual(exact.json(), { size: maxBytes });
+
+    const overflow = await app.inject({
+      method: 'POST',
+      url: '/upload',
+      headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
+      payload: buildMultipartPayload(boundary, maxBytes + 1),
+    });
+    assert.equal(overflow.statusCode, 413);
+    assert.equal(overflow.json().code, 'FST_REQ_FILE_TOO_LARGE');
+  } finally {
+    await app.close();
+  }
+});
+
+test('Fastify multipart overflow errors return a 413 JSON response', () => {
+  const response = createResponse();
+  const error = Object.assign(new Error('request file too large'), {
+    code: 'FST_REQ_FILE_TOO_LARGE',
+  });
+  new HttpExceptionFilter().catch(
+    error,
+    createArgumentsHost({ requestId: 'upload-limit-request' }, response),
+  );
+
+  assert.equal(response.statusCode, 413);
+  assert.deepEqual(response.body, { error: 'Uploaded file is too large' });
+  assert.match(httpExceptionFilterSource, /FST_REQ_FILE_TOO_LARGE/);
+});
+
+test('non-upload errors are handled by the global filter without leaking details', () => {
+  const response = createResponse();
+  const secret = 'Unexpected failure at postgres://secret-host/chatllm';
+  const originalConsoleError = console.error;
+  console.error = () => undefined;
+  try {
+    new HttpExceptionFilter().catch(
+      new Error(secret),
+      createArgumentsHost({ requestId: 'upload-limit-request' }, response),
+    );
+  } finally {
+    console.error = originalConsoleError;
+  }
+
+  assert.equal(response.statusCode, 500);
+  assert.deepEqual(response.body, {
+    error: 'Internal server error',
+    requestId: 'upload-limit-request',
+  });
+  assert.doesNotMatch(JSON.stringify(response.body), /secret-host/);
 });
 
 test('merged upload integrity is verified with server-side sha256 and size checks', async () => {
@@ -258,7 +342,7 @@ test('chunk upload rejects bytes outside the file reservation before writing to 
     await controller.uploadChunk({
       user: { id: 'user-1' },
       body: { uploadId, chunkIndex: '1' },
-      file: { buffer: Buffer.from('overflow') },
+      uploadFile: { buffer: Buffer.from('overflow') },
     }, response);
 
     assert.equal(response.statusCode, 413);

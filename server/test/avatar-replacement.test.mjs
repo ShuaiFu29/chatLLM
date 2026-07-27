@@ -12,20 +12,28 @@ const serverRoot = path.resolve(__dirname, '..');
 const createResponse = () => ({
   statusCode: undefined,
   body: undefined,
-  locals: { requestId: 'avatar-test-request' },
-  status(code) {
+  sent: false,
+  headers: {},
+  raw: { headersSent: false },
+  code(code) {
     this.statusCode = code;
     return this;
   },
-  json(body) {
+  send(body) {
     this.body = body;
+    this.sent = true;
+    return this;
+  },
+  header(name, value) {
+    this.headers[name.toLowerCase()] = value;
     return this;
   },
 });
 
 const avatarRequest = () => ({
   user: { id: 'user-1' },
-  file: {
+  requestId: 'avatar-test-request',
+  uploadFile: {
     originalname: 'avatar.png',
     mimetype: 'image/png',
     buffer: Buffer.from('new-avatar'),

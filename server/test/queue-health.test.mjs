@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,32 +16,53 @@ Object.assign(process.env, {
   S3_SECRET_KEY: 'queue-health-test-secret-key',
   JWT_SECRET: 'queue-health-test-jwt-secret-at-least-32-characters',
   RAG_SERVICE_TOKEN: 'queue-health-test-rag-token-at-least-32-characters',
+  METRICS_TOKEN: 'queue-health-test-metrics-token-at-least-32-characters',
 });
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const require = createRequire(import.meta.url);
 const queueHealthDistPath = path.join(serverRoot, 'dist', 'lib', 'queueHealth.js');
-const queueHealth = existsSync(queueHealthDistPath)
-  ? await import(pathToFileURL(queueHealthDistPath).href)
-  : null;
+const queueHealth = existsSync(queueHealthDistPath) ? require(queueHealthDistPath) : null;
+const { OperationsController } = require(path.join(
+  serverRoot,
+  'dist',
+  'modules',
+  'operations',
+  'operations.controller.js',
+));
 const queueHealthSourcePath = path.join(serverRoot, 'src', 'lib', 'queueHealth.ts');
 const queueHealthSource = existsSync(queueHealthSourcePath)
   ? readFileSync(queueHealthSourcePath, 'utf8')
   : '';
-const indexSource = readFileSync(path.join(serverRoot, 'src', 'index.ts'), 'utf8');
+const operationsSource = readFileSync(
+  path.join(serverRoot, 'src', 'modules', 'operations', 'operations.controller.ts'),
+  'utf8',
+);
 const integrationEnabled = process.env.QUEUE_HEALTH_INTEGRATION === '1'
   && Boolean(process.env.TEST_DATABASE_URL);
 
 const createResponse = () => ({
-  locals: { requestId: 'request-queue-health' },
   statusCode: 200,
   body: undefined,
-  status(code) {
+  contentType: undefined,
+  code(code) {
     this.statusCode = code;
     return this;
   },
-  json(body) {
+  type(contentType) {
+    this.contentType = contentType;
+    return this;
+  },
+  send(body) {
     this.body = body;
     return this;
+  },
+});
+
+const createRequest = () => ({
+  requestId: 'request-queue-health',
+  headers: {
+    authorization: `Bearer ${process.env.METRICS_TOKEN}`,
   },
 });
 
@@ -71,16 +93,19 @@ test('queue health classifies pending work as healthy and exhausted or stale lea
   }).status, 'degraded');
 });
 
-test('queue health handler returns 503 for degraded queues and stable public errors', async () => {
+test('OperationsController returns 503 for degraded queues and stable public errors', async () => {
   assert.ok(queueHealth, 'dist/lib/queueHealth.js must exist');
+  const controller = new OperationsController();
+  const originalReadQueueHealthCounts = queueHealth.readQueueHealthCounts;
   const degradedResponse = createResponse();
-  await queueHealth.createQueueHealthHandler(async () => ({
+  queueHealth.readQueueHealthCounts = async () => ({
     cleanup_pending: 1,
     cleanup_exhausted: 1,
     cleanup_expired_leases: 0,
     ingestion_expired_leases: 0,
     eval_expired_leases: 0,
-  }))({}, degradedResponse);
+  });
+  await controller.queues(createRequest(), degradedResponse);
 
   assert.equal(degradedResponse.statusCode, 503);
   assert.equal(degradedResponse.body.status, 'degraded');
@@ -91,9 +116,10 @@ test('queue health handler returns 503 for degraded queues and stable public err
   console.warn = (...args) => warnings.push(args);
   try {
     const errorResponse = createResponse();
-    await queueHealth.createQueueHealthHandler(async () => {
+    queueHealth.readQueueHealthCounts = async () => {
       throw Object.assign(new Error('postgres-password-leak'), { code: 'QUERY_FAILED' });
-    })({}, errorResponse);
+    };
+    await controller.queues(createRequest(), errorResponse);
 
     assert.equal(errorResponse.statusCode, 503);
     assert.deepEqual(errorResponse.body, {
@@ -107,6 +133,7 @@ test('queue health handler returns 503 for degraded queues and stable public err
     });
     assert.doesNotMatch(JSON.stringify({ body: errorResponse.body, warnings }), /postgres-password-leak/);
   } finally {
+    queueHealth.readQueueHealthCounts = originalReadQueueHealthCounts;
     console.warn = originalWarn;
   }
 });
@@ -122,7 +149,8 @@ test('queue health query checks cleanup exhaustion and only active expired lease
   assert.match(queueHealthSource, /status\s*=\s*'processing'[\s\S]*lease_expires_at\s*<=\s*now\(\)/i);
   assert.match(queueHealthSource, /from file_ingestion_jobs[\s\S]*status\s+in\s*\('queued',\s*'processing'\)[\s\S]*lease_expires_at\s*<=\s*now\(\)/i);
   assert.match(queueHealthSource, /from rag_eval_runs[\s\S]*status\s*=\s*'running'[\s\S]*lease_expires_at\s*<=\s*now\(\)/i);
-  assert.match(indexSource, /app\.get\('\/health\/queues', metricsAuthMiddleware, queueHealthHandler\)/);
+  assert.match(operationsSource, /@Get\('health\/queues'\)/);
+  assert.match(operationsSource, /classifyQueueHealth\(await readQueueHealthCounts\(\)\)/);
 });
 
 test('PostgreSQL executes the queue health snapshot query against the migrated schema', {

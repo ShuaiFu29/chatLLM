@@ -224,27 +224,34 @@ test('controllers accept durable deletion before external cleanup and queue star
   const upload = readSource('src/controllers/upload.ts');
   const projects = readSource('src/controllers/projectSpaces.ts');
   const auth = readSource('src/controllers/auth.ts');
-  const index = readSource('src/index.ts');
-  const shutdown = readSource('src/lib/gracefulShutdown.ts');
+  const uploadController = readSource('src/modules/upload/upload.controller.ts');
+  const projectController = readSource('src/modules/project-spaces/project-spaces.controller.ts');
+  const authController = readSource('src/modules/auth/auth.controller.ts');
+  const lifecycle = readSource('src/infrastructure/runtime-lifecycle.service.ts');
 
   assert.match(upload, /enqueueFileCleanup/);
   assert.match(projects, /enqueueProjectSpaceCleanup/);
   assert.match(auth, /enqueueAccountCleanup/);
-  assert.match(upload, /status\(202\)/);
-  assert.match(projects, /status\(202\)/);
-  assert.match(auth, /status\(202\)/);
+  assert.match(upload, /code\(202\)\.send/);
+  assert.match(projects, /code\(202\)\.send/);
+  assert.match(auth, /code\(202\)\.send/);
   assert.doesNotMatch(upload, /cleanupRagFileVectors/);
   assert.doesNotMatch(projects, /cleanupRagFileVectors/);
   assert.doesNotMatch(auth, /cleanupUserExternalArtifacts/);
-  assert.match(index, /artifactCleanupQueue\.start\(\)/);
-  assert.match(shutdown, /artifactCleanupQueue\.stop\(\)/);
+  assert.match(uploadController, /@Delete\('files\/:id'\)[\s\S]*return deleteFile\(request, reply\)/);
+  assert.match(projectController, /@Delete\(':projectSpaceId'\)[\s\S]*return deleteProjectSpace\(request, reply\)/);
+  assert.match(authController, /@Delete\('me'\)[\s\S]*return deleteAccount\(request, reply\)/);
+  assert.match(lifecycle, /const queues = \[fileQueue, ragEvalQueue, artifactCleanupQueue\]/);
+  assert.match(lifecycle, /async onApplicationBootstrap\(\)[\s\S]*queues\.map\(\(queue\) => queue\.start\(\)\)/);
+  assert.match(lifecycle, /shutdownRuntime\(\)[\s\S]*queues\.map\(\(queue\) => queue\.stop\(\)\)/);
 });
 
 test('authentication and refresh paths reject deletion-pending users', () => {
   const migration = readSource('migrations/0026_file_lifecycle_cleanup.sql');
   const users = readSource('src/repositories/users.ts');
   const sessions = readSource('src/repositories/sessions.ts');
-  const authMiddleware = readSource('src/middleware/auth.ts');
+  const authentication = readSource('src/services/authentication.ts');
+  const authGuard = readSource('src/common/guards/auth.guard.ts');
 
   assert.match(migration, /deletion_status/);
   assert.match(users, /deletion_status/);
@@ -253,5 +260,6 @@ test('authentication and refresh paths reject deletion-pending users', () => {
     sessions,
     /select user_id[\s\S]*from sessions[\s\S]*from users[\s\S]*for update[\s\S]*delete from sessions/i,
   );
-  assert.match(authMiddleware, /deletion_status !== 'active'/);
+  assert.match(authentication, /deletion_status !== 'active'/);
+  assert.match(authGuard, /resolveAuthenticatedUser\(accessToken\)/);
 });

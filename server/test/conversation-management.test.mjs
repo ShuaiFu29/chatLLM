@@ -13,7 +13,7 @@ const managementMigration = readFileSync(path.join(serverRoot, 'migrations', '00
 const repositorySource = readFileSync(path.join(serverRoot, 'src/repositories/conversations.ts'), 'utf8');
 const messageRepositorySource = readFileSync(path.join(serverRoot, 'src/repositories/messages.ts'), 'utf8');
 const controllerSource = readFileSync(path.join(serverRoot, 'src/controllers/chat.ts'), 'utf8');
-const routeSource = readFileSync(path.join(serverRoot, 'src/routes/chat.ts'), 'utf8');
+const nestControllerSource = readFileSync(path.join(serverRoot, 'src/modules/chat/chat.controller.ts'), 'utf8');
 
 test('conversation schema supports pinning and archiving for new and existing databases', () => {
   assert.match(initMigration, /is_pinned boolean not null default false/i);
@@ -94,12 +94,14 @@ test('regeneration truncation stops before reading messages when the conversatio
 });
 
 test('regeneration endpoint is authenticated, validated, and delegates to the atomic repository', () => {
+  assert.match(nestControllerSource, /@Controller\('chat'\)/);
+  assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
   assert.match(
-    routeSource,
-    /router\.delete\('\/conversations\/:conversationId\/messages\/:messageId\/truncate',[\s\S]*?requireAuth,[\s\S]*?validateMutation\(mutationSchemas\.chatTruncateConversation\),[\s\S]*?truncateConversation/,
+    nestControllerSource,
+    /@Delete\('conversations\/:conversationId\/messages\/:messageId\/truncate'\)[\s\S]*?@ValidateMutation\(mutationSchemas\.chatTruncateConversation\)[\s\S]*?return truncateConversation\(request, reply\)/,
   );
   assert.match(controllerSource, /truncateConversationFromUserMessage\(conversationId, messageId, req\.user\.id\)/);
-  assert.match(controllerSource, /if \(!result\) return res\.status\(404\)/);
+  assert.match(controllerSource, /if \(!result\) return res\.code\(404\)\.send/);
   assert.match(messageRepositorySource, /export const truncateConversationFromUserMessage/);
 });
 

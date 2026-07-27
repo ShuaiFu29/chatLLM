@@ -12,6 +12,7 @@ import {
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { registerHttpHooks } from './common/http/http-hooks';
+import { registerGlobalRateLimitHook } from './common/http/global-rate-limit-hook';
 import { RuntimeLifecycleService } from './infrastructure/runtime-lifecycle.service';
 import { serverEnv } from './lib/env';
 import {
@@ -36,51 +37,138 @@ export const createApplication = async () => {
     bodyLimit: JSON_REQUEST_LIMIT_BYTES,
     trustProxy: serverEnv.TRUST_PROXY_HOPS,
     disableRequestLogging: true,
+    ignoreTrailingSlash: true,
+    caseSensitive: false,
   });
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter);
-  const fastify = app.getHttpAdapter().getInstance();
+  try {
+    const fastify = app.getHttpAdapter().getInstance();
 
-  registerHttpHooks(fastify);
-  await app.register(cookie);
-  await app.register(formbody, { bodyLimit: URLENCODED_REQUEST_LIMIT_BYTES });
-  await app.register(multipart, {
-    limits: {
-      fileSize: AVATAR_UPLOAD_LIMIT_BYTES,
-      files: 1,
-      fields: 8,
-      parts: 9,
-    },
-  });
-  await app.register(cors, {
-    credentials: true,
-    exposedHeaders: [
-      'x-chatllm-has-more',
-      'x-chatllm-next-cursor',
-      'x-chatllm-page-limit',
-    ],
-    origin: (origin, callback) => {
-      if (!origin || serverEnv.CORS_ALLOWED_ORIGINS.includes(origin)) {
-        callback(null, true);
-        return;
+    registerHttpHooks(fastify);
+    await app.register(cors, {
+      credentials: true,
+      exposedHeaders: [
+        'x-chatllm-has-more',
+        'x-chatllm-next-cursor',
+        'x-chatllm-page-limit',
+      ],
+      origin: (origin, callback) => {
+        if (!origin || serverEnv.CORS_ALLOWED_ORIGINS.includes(origin)) {
+          callback(null, true);
+          return;
+        }
+        const error = new Error('Not allowed by CORS') as Error & { statusCode?: number };
+        error.statusCode = 403;
+        callback(error, false);
+      },
+    });
+    await app.register(cookie);
+    registerGlobalRateLimitHook(fastify);
+    await app.register(formbody, { bodyLimit: URLENCODED_REQUEST_LIMIT_BYTES });
+    await app.register(multipart, {
+      limits: {
+        fileSize: AVATAR_UPLOAD_LIMIT_BYTES,
+        files: 1,
+        fields: 8,
+        parts: 9,
+      },
+    });
+
+    app.setGlobalPrefix('api', { exclude: operationalRoutes });
+    app.useGlobalFilters(new HttpExceptionFilter());
+    return app;
+  } catch (error) {
+    await app.close().catch((closeError) => {
+      console.error('[Server] Failed to close after application setup error:', toSafeError(closeError));
+    });
+    throw error;
+  }
+};
+
+interface ShutdownSignalTarget {
+  once(signal: NodeJS.Signals, listener: () => void): unknown;
+  off(signal: NodeJS.Signals, listener: () => void): unknown;
+}
+
+interface ShutdownHandlerOptions {
+  signalTarget?: ShutdownSignalTarget;
+  timeoutMs?: number;
+  exit?: (code: number) => void;
+}
+
+export const installShutdownHandlers = (
+  app: Pick<NestFastifyApplication, 'close'>,
+  options: ShutdownHandlerOptions = {},
+) => {
+  const signalTarget = options.signalTarget ?? process;
+  const timeoutMs = options.timeoutMs ?? serverEnv.SHUTDOWN_TIMEOUT_MS;
+  const exit = options.exit ?? ((code: number) => process.exit(code));
+  let shutdownPromise: Promise<void> | null = null;
+  let timeout: NodeJS.Timeout | null = null;
+  let exited = false;
+
+  const exitOnce = (code: number) => {
+    if (exited) return;
+    exited = true;
+    exit(code);
+  };
+  const onSigint = () => { void shutdown('SIGINT'); };
+  const onSigterm = () => { void shutdown('SIGTERM'); };
+  const dispose = () => {
+    signalTarget.off('SIGINT', onSigint);
+    signalTarget.off('SIGTERM', onSigterm);
+    if (timeout) {
+      clearTimeout(timeout);
+      timeout = null;
+    }
+  };
+  const shutdown = (signal: NodeJS.Signals): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+
+    console.log(`[Server] ${signal} received; closing application`);
+    timeout = setTimeout(() => {
+      console.error('[Server] Graceful shutdown timed out');
+      dispose();
+      exitOnce(1);
+    }, timeoutMs);
+    timeout.unref();
+
+    shutdownPromise = (async () => {
+      try {
+        await app.close();
+        dispose();
+        console.log('[Server] Shutdown complete');
+        exitOnce(0);
+      } catch (error) {
+        dispose();
+        console.error('[Server] Shutdown failed:', toSafeError(error));
+        exitOnce(1);
       }
-      const error = new Error('Not allowed by CORS') as Error & { statusCode?: number };
-      error.statusCode = 403;
-      callback(error, false);
-    },
-  });
+    })();
+    return shutdownPromise;
+  };
 
-  app.setGlobalPrefix('api', { exclude: operationalRoutes });
-  app.useGlobalFilters(new HttpExceptionFilter());
-  app.enableShutdownHooks(['SIGINT', 'SIGTERM']);
-  return app;
+  signalTarget.once('SIGINT', onSigint);
+  signalTarget.once('SIGTERM', onSigterm);
+  return { dispose, shutdown };
 };
 
 export const bootstrap = async () => {
   const app = await createApplication();
-  await app.listen(serverEnv.PORT, '0.0.0.0');
-  app.get(RuntimeLifecycleService).startMaintenance();
-  console.log(`Server running on port ${serverEnv.PORT}`);
-  return app;
+  let shutdownHandlers: ReturnType<typeof installShutdownHandlers> | null = null;
+  try {
+    await app.listen(serverEnv.PORT, '0.0.0.0');
+    shutdownHandlers = installShutdownHandlers(app);
+    app.get(RuntimeLifecycleService).startMaintenance();
+    console.log(`Server running on port ${serverEnv.PORT}`);
+    return app;
+  } catch (error) {
+    shutdownHandlers?.dispose();
+    await app.close().catch((closeError) => {
+      console.error('[Server] Failed to close after startup error:', toSafeError(closeError));
+    });
+    throw error;
+  }
 };
 
 if (require.main === module) {
