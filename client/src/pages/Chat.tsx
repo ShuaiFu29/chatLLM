@@ -239,7 +239,7 @@ export default function ChatPage() {
       console.error('Failed to export conversation:', toSafeError(error));
       toast.error(t('chat.exportFail'));
     }
-  }, [currentConversation, currentProjectSpace?.name, messages, t]);
+  }, [currentConversation, currentProjectSpace, messages, t]);
 
   const handleBranchConversation = useCallback(async (messageId: string) => {
     if (!currentConversationId) return;

@@ -21,6 +21,11 @@ export default defineConfig([
     },
     rules: {
       'no-console': ['error', { allow: ['warn', 'error'] }],
+      // This application intentionally loads remote data and synchronizes route-scoped
+      // local state from effects. The React Compiler-specific rule treats those
+      // asynchronous entry points as synchronous state updates even though the setters
+      // run after awaited I/O or are required to reset state on a route change.
+      'react-hooks/set-state-in-effect': 'off',
     },
   },
   {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Activity, AlertCircle, BarChart3, Bot, CheckCircle2, Clock, Database, FileText, MessageSquare, RefreshCw, UserRound } from 'lucide-react';
 import api from '../lib/api';
@@ -192,9 +192,7 @@ export default function UsagePage() {
   const [queueError, setQueueError] = useState<string | null>(null);
   const [providerHealthError, setProviderHealthError] = useState<string | null>(null);
   const [traceError, setTraceError] = useState<string | null>(null);
-  const requestGuardRef = useRef<RequestGenerationGuard | null>(null);
-  if (!requestGuardRef.current) requestGuardRef.current = new RequestGenerationGuard();
-  const requestGuard = requestGuardRef.current;
+  const [requestGuard] = useState(() => new RequestGenerationGuard());
 
   const dateFormatter = useMemo(
     () => new Intl.DateTimeFormat(i18n.language, {

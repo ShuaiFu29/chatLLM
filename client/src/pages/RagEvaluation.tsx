@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   Ban,
@@ -602,9 +602,7 @@ export default function RagEvaluationPage() {
   const [isHistoryBrowserOpen, setIsHistoryBrowserOpen] = useState(false);
   const [isBenchmarkModalOpen, setIsBenchmarkModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const requestGuardRef = useRef<RequestGenerationGuard | null>(null);
-  if (!requestGuardRef.current) requestGuardRef.current = new RequestGenerationGuard();
-  const requestGuard = requestGuardRef.current;
+  const [requestGuard] = useState(() => new RequestGenerationGuard());
 
   const selectedDataset = useMemo(
     () => datasets.find((dataset) => dataset.id === selectedDatasetId) || datasets[0] || null,

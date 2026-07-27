@@ -5,7 +5,7 @@
   "main": "dist/main.js",
   "scripts": {
     "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
-    "dev": "nodemon src/main.ts",
+    "dev": "node --watch -r ts-node/register src/main.ts",
     "build": "npm run clean && tsc",
     "start": "node dist/main.js",
     "check:types": "tsc --noEmit",
@@ -45,16 +45,18 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@eslint/js": "^9.39.5",
+    "@eslint/js": "^10.0.1",
     "@nestjs/testing": "^11.1.28",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^25.0.2",
     "@types/pg": "^8.20.0",
-    "eslint": "^9.39.5",
+    "eslint": "^10.8.0",
     "globals": "^16.5.0",
-    "nodemon": "^3.1.11",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.65.0"
+  },
+  "overrides": {
+    "find-my-way": "9.7.0"
   }
 }

@@ -960,7 +960,9 @@ export const abortMultipartUpload = async (req: AppRequest, res: AppReply) => {
               if (result.transitioned) fileQueue.trigger();
               return res.code(409).send({ error: 'Multipart upload was already completed' });
             }
-            throw new Error('Multipart completion reconciliation did not transition');
+            throw new Error('Multipart completion reconciliation did not transition', {
+              cause: error,
+            });
           }
 
           const result = await finalizeMultipartUploadAbort(
@@ -1005,7 +1007,9 @@ export const abortMultipartUpload = async (req: AppRequest, res: AppReply) => {
                 if (result.transitioned) fileQueue.trigger();
                 return res.code(409).send({ error: 'Multipart upload was already completed' });
               }
-              throw new Error('Multipart completion reconciliation did not transition');
+              throw new Error('Multipart completion reconciliation did not transition', {
+                cause: error,
+              });
             }
           }
         } catch {
