@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { ragEvalQueue } from '../services/ragEvalQueue';
 import { toSafeError } from '../lib/safeError';
@@ -17,8 +18,8 @@ import {
   updateRagEvalDatasetForUser,
 } from '../repositories/ragEval';
 
-const MAX_RAG_EVAL_CASES_PER_RUN = 50;
-const MAX_RAG_EVAL_CASES_PER_DATASET = 50;
+const MAX_RAG_EVAL_CASES_PER_RUN = serverEnv.RAG_EVAL_MAX_CASES_PER_RUN;
+const MAX_RAG_EVAL_CASES_PER_DATASET = serverEnv.RAG_EVAL_MAX_CASES_PER_DATASET;
 const DEFAULT_RAG_EVAL_HISTORY_LIMIT = 50;
 const MAX_RAG_EVAL_HISTORY_LIMIT = 200;
 
@@ -142,6 +143,7 @@ export const createRagEvalCase = async (req: Request, res: Response) => {
       expectedAnswer: req.body.expected_answer ?? req.body.expectedAnswer ?? '',
       expectedKeywords: req.body.expected_keywords ?? req.body.expectedKeywords ?? [],
       expectedSourceFiles: req.body.expected_source_files ?? req.body.expectedSourceFiles ?? [],
+      evaluationSpec: req.body.evaluation_spec ?? req.body.evaluationSpec ?? {},
       maxCases: MAX_RAG_EVAL_CASES_PER_DATASET,
     });
 

@@ -213,7 +213,8 @@ test('RAG eval queue worker claims persisted jobs and retries safely', () => {
   const metricsSource = readOptionalSource('src/lib/metrics.ts');
 
   assert.match(queueSource, /class RagEvalQueueService/);
-  assert.match(queueSource, /claimNextRagEvalRunJob/);
+  assert.match(queueSource, /claimRagEvalRunJobById/);
+  assert.match(queueSource, /listDispatchableRagEvalRunIds/);
   assert.match(queueSource, /runRagEvaluation/);
   assert.match(queueSource, /completeRagEvalRunWithResults/);
   assert.match(queueSource, /markRagEvalRunAttemptFailed/);
@@ -230,9 +231,6 @@ test('RAG eval queue worker claims persisted jobs and retries safely', () => {
   assert.match(repositorySource, /next_attempt_at/);
   assert.match(repositorySource, /last_error/);
   assert.match(repositorySource, /status = 'running'/);
-  assert.match(repositorySource, /worker_id = \$20/);
-  assert.match(repositorySource, /worker_id = \$8/);
-
   assert.match(maintenanceSource, /resetStaleRagEvalRunJobs/);
   assert.match(metricsSource, /recordRagEvalRunRetried/);
   assert.match(metricsSource, /recordRagEvalRunQueueClaimed/);
@@ -291,6 +289,13 @@ test('RAG eval request execution forwards the claim and stops its heartbeat', as
     },
   };
   const expectedOutput = { case_count: 1, failed_count: 0, results: [] };
+  const preparedCases = [{
+    id: 'case-1',
+    question: 'What is fenced?',
+    expected_answer: 'By a lease.',
+    expected_keywords: ['lease'],
+    expected_source_files: ['lease.md'],
+  }];
   const calls = [];
   let stopped = false;
   let unregistered = false;
@@ -300,6 +305,10 @@ test('RAG eval request execution forwards the claim and stops its heartbeat', as
     runEvaluation: async (input, signal, timeoutMs) => {
       calls.push({ input, signal, timeoutMs });
       return expectedOutput;
+    },
+    prepareCases: async (_job, signal) => {
+      assert.equal(signal.aborted, false);
+      return preparedCases;
     },
     startHeartbeat: (_job, _onLeaseLost) => async () => { stopped = true; },
     registerController: (runId, leaseToken, controller) => {
@@ -319,13 +328,7 @@ test('RAG eval request execution forwards the claim and stops its heartbeat', as
     case_timeout_ms: 45000,
     user_id: 'user-1',
     project_space_id: 'space-1',
-    cases: [{
-      id: 'case-1',
-      question: 'What is fenced?',
-      expected_answer: 'By a lease.',
-      expected_keywords: ['lease'],
-      expected_source_files: ['lease.md'],
-    }],
+    cases: preparedCases,
     limit: 10,
     threshold: 0.1,
   });
@@ -357,10 +360,86 @@ test('RAG eval request execution aborts before transport work after lease loss',
       onLeaseLost();
       return () => { stopped = true; };
     },
+    prepareCases: async (_job, signal) => {
+      assert.equal(signal.aborted, true);
+      throw new Error('evaluation aborted');
+    },
     registerController: () => () => undefined,
   }), /evaluation aborted/);
 
   assert.equal(stopped, true);
+});
+
+test('RAG eval answer preparation enforces the timeout for each generated case', async () => {
+  const { prepareRagEvalCases } = require(path.join(serverRoot, 'dist', 'services', 'ragEvalQueue.js'));
+  const controller = new AbortController();
+  const job = {
+    id: '77777777-7777-4777-8777-777777777777',
+    user_id: 'user-1',
+    case_timeout_ms: 20,
+    dataset: {
+      project_space_id: null,
+      cases: [
+        { id: 'case-timeout', question: 'slow question' },
+        { id: 'case-next', question: 'next question' },
+      ],
+    },
+  };
+  const generatedSignals = [];
+  const cases = await prepareRagEvalCases(job, controller.signal, async ({ question, signal }) => {
+    generatedSignals.push(signal);
+    if (question === 'slow question') {
+      return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('case aborted')), { once: true });
+      });
+    }
+    return {
+      actualAnswer: 'answer',
+      promptVersion: 'prompt-v1',
+      modelVersion: 'model-v1',
+      provider: 'test',
+      tokenUsage: undefined,
+      claimEvaluation: { verifier_version: 'verifier-v1' },
+      prepared: {
+        ragRun: { results: [] },
+        answerContextDocuments: [],
+        traceSummary: { trace_steps: [] },
+      },
+    };
+  });
+
+  assert.equal(cases[0].preparation_error, 'Answer generation case timeout');
+  assert.equal(cases[1].actual_answer, 'answer');
+  assert.equal(generatedSignals[0].aborted, true);
+  assert.equal(generatedSignals[1].aborted, false);
+});
+
+test('RAG eval deadline aborts answer preparation before transport', async () => {
+  const queue = require(path.join(serverRoot, 'dist', 'services', 'ragEvalQueue.js'));
+  const deadline = Date.now() + 30;
+  let transportCalled = false;
+
+  await assert.rejects(queue.executeRagEvalRequest({
+    id: '55555555-5555-4555-8555-555555555555',
+    user_id: 'user-1',
+    worker_id: 'worker-1',
+    lease_token: '66666666-6666-4666-8666-666666666666',
+    deadline_at: new Date(deadline).toISOString(),
+    case_timeout_ms: 60000,
+    dataset: { project_space_id: null, cases: [{ id: 'case-1', question: 'Timeout?' }] },
+  }, {
+    runEvaluation: async () => {
+      transportCalled = true;
+      return {};
+    },
+    startHeartbeat: () => () => undefined,
+    prepareCases: async (_job, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(new Error('answer preparation deadline aborted')), { once: true });
+    }),
+    registerController: () => () => undefined,
+  }), /answer preparation deadline aborted/);
+
+  assert.equal(transportCalled, false);
 });
 
 test('RAG eval runs are bounded before calling the RAG service', () => {
@@ -368,8 +447,8 @@ test('RAG eval runs are bounded before calling the RAG service', () => {
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
   const queueSource = readOptionalSource('src/services/ragEvalQueue.ts');
 
-  assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_RUN = 50/);
-  assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_DATASET = 50/);
+  assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_RUN = serverEnv\.RAG_EVAL_MAX_CASES_PER_RUN/);
+  assert.match(controllerSource, /MAX_RAG_EVAL_CASES_PER_DATASET = serverEnv\.RAG_EVAL_MAX_CASES_PER_DATASET/);
   assert.match(controllerSource, /dataset\.cases\.length >= MAX_RAG_EVAL_CASES_PER_DATASET/);
   assert.match(controllerSource, /dataset\.cases\.length > MAX_RAG_EVAL_CASES_PER_RUN/);
   assert.match(

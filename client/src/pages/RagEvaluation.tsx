@@ -36,6 +36,80 @@ interface RagEvalCase {
   expected_answer: string;
   expected_keywords: string[];
   expected_source_files: string[];
+  evaluation_spec?: RagEvalEvaluationSpec;
+}
+
+interface RagEvalEvaluationSpec {
+  tags?: string[];
+  category?: string;
+  difficulty?: 'easy' | 'medium' | 'hard';
+  expected_chunk_ids?: string[];
+  expected_evidence?: string[];
+  expected_answerable?: boolean | null;
+  expected_graph_relations?: Array<{
+    source: string;
+    relation: string;
+    target: string;
+  }>;
+  human_scores?: Partial<Record<'correctness' | 'completeness' | 'faithfulness', number>>;
+}
+
+interface RagEvalAdvancedMetricGroup {
+  applicable?: boolean;
+  case_count?: number;
+  average_recall_at_k?: number | null;
+  average_mrr_at_k?: number | null;
+  average_precision_at_k?: number | null;
+  accuracy?: number | null;
+  false_answer_rate?: number | null;
+  false_abstention_rate?: number | null;
+  mae?: number | null;
+  agreement_rate?: number | null;
+}
+
+interface RagEvalTokenUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+}
+
+interface RagEvalAdvancedMetrics {
+  latency_ms?: {
+    applicable?: boolean;
+    p50?: number | null;
+    p95?: number | null;
+    max?: number | null;
+  };
+  chunk_retrieval?: RagEvalAdvancedMetricGroup;
+  evidence_retrieval?: RagEvalAdvancedMetricGroup;
+  graph_retrieval?: RagEvalAdvancedMetricGroup;
+  answerability?: RagEvalAdvancedMetricGroup;
+  judge_human_calibration?: RagEvalAdvancedMetricGroup;
+  token_usage?: {
+    applicable?: boolean;
+    answer?: RagEvalTokenUsage;
+    judge?: RagEvalTokenUsage;
+  };
+  cost?: {
+    applicable?: boolean;
+    reason?: string;
+  };
+  confidence_intervals?: Record<string, {
+    applicable?: boolean;
+    case_count?: number;
+    mean?: number;
+    lower?: number;
+    upper?: number;
+    confidence_level?: number;
+  }>;
+  slices?: Array<{
+    slice: string;
+    case_count: number;
+    successful_case_count: number;
+    average_retrieval_score?: number | null;
+    average_answer_score?: number | null;
+    average_grounding_score?: number | null;
+  }>;
 }
 
 interface RagEvalMatchedSource {
@@ -54,14 +128,43 @@ interface RagEvalTraceStep {
   output?: Record<string, unknown>;
 }
 
+interface RagEvalMetricApplicability {
+  retrieval?: boolean;
+  answer?: boolean;
+  faithfulness?: boolean;
+  overall?: boolean;
+  expected_answer_support?: boolean;
+  keyword_retrieval?: boolean;
+  correctness?: boolean;
+  completeness?: boolean;
+  judge_faithfulness?: boolean;
+  citation_precision?: boolean;
+  citation_coverage?: boolean;
+  citation_f1?: boolean;
+  hallucination_rate?: boolean;
+}
+
+interface RagEvalClaimEvaluation {
+  verifier_version?: string;
+  claims?: Array<{
+    claim_index?: number;
+    text?: string;
+    supported?: boolean;
+    citation_labels?: number[];
+    reasons?: string[];
+  }>;
+}
+
 interface RagEvalTraceSummary {
   planned_queries?: string[];
   trace_steps?: RagEvalTraceStep[];
+  metric_applicability?: RagEvalMetricApplicability;
 }
 
 interface RagEvalResult {
   id: string;
   question: string;
+  actual_answer?: string;
   status: 'success' | 'failed';
   overall_score: number;
   retrieval_score: number;
@@ -71,8 +174,20 @@ interface RagEvalResult {
   source_precision_score?: number;
   citation_accuracy_score?: number;
   keyword_score: number;
-  answer_keyword_score?: number;
+  answer_keyword_score?: number | null;
   grounding_score?: number;
+  correctness_score?: number;
+  completeness_score?: number;
+  faithfulness_score?: number;
+  citation_precision?: number;
+  citation_coverage?: number;
+  citation_f1?: number;
+  hallucination_rate?: number;
+  prompt_version?: string;
+  model_version?: string;
+  judge_version?: string;
+  verifier_version?: string;
+  claim_evaluation?: RagEvalClaimEvaluation;
   expected_answer_support_score?: number;
   expected_answer_support_label?: string;
   verification_score?: number;
@@ -82,7 +197,9 @@ interface RagEvalResult {
   risk_level?: string;
   matched_sources?: RagEvalMatchedSource[];
   trace_summary?: RagEvalTraceSummary;
+  metric_applicability?: RagEvalMetricApplicability;
   error_message: string;
+  advanced_metrics?: RagEvalAdvancedMetrics;
 }
 
 interface RagEvalRun {
@@ -98,7 +215,7 @@ interface RagEvalRun {
   average_source_precision_score?: number;
   average_citation_accuracy_score?: number;
   average_keyword_score: number;
-  average_answer_keyword_score?: number;
+  average_answer_keyword_score?: number | null;
   average_grounding_score?: number;
   average_judge_score?: number;
   average_expected_answer_support_score?: number;
@@ -106,6 +223,10 @@ interface RagEvalRun {
   duration_ms: number;
   created_at: string;
   results?: RagEvalResult[];
+  metric_applicability?: RagEvalMetricApplicability;
+  advanced_metrics?: RagEvalAdvancedMetrics;
+  execution_snapshot?: Record<string, unknown>;
+  baseline_run_id?: string | null;
 }
 
 interface RagEvalQualityTrendRun {
@@ -121,12 +242,13 @@ interface RagEvalQualityTrendRun {
   average_source_precision_score?: number;
   average_citation_accuracy_score?: number;
   average_keyword_score: number;
-  average_answer_keyword_score?: number;
+  average_answer_keyword_score?: number | null;
   average_grounding_score?: number;
   average_expected_answer_support_score?: number;
   average_verification_score?: number;
   duration_ms: number;
   created_at: string;
+  metric_applicability?: RagEvalMetricApplicability;
 }
 
 interface RagEvalLowScoreCase {
@@ -142,7 +264,7 @@ interface RagEvalLowScoreCase {
   source_precision_score?: number;
   citation_accuracy_score?: number;
   keyword_score: number;
-  answer_keyword_score?: number;
+  answer_keyword_score?: number | null;
   grounding_score?: number;
   expected_answer_support_score?: number;
   expected_answer_support_label?: string;
@@ -150,6 +272,7 @@ interface RagEvalLowScoreCase {
   evidence_label: string;
   support_label?: string;
   error_message: string;
+  metric_applicability?: RagEvalMetricApplicability;
 }
 
 interface RagEvalQualitySummary {
@@ -165,12 +288,21 @@ interface RagEvalQualitySummary {
   average_source_precision_score?: number;
   average_citation_accuracy_score?: number;
   average_keyword_score: number;
-  average_answer_keyword_score?: number;
+  average_answer_keyword_score?: number | null;
   average_grounding_score?: number;
   average_expected_answer_support_score?: number;
   average_verification_score?: number;
   trend: RagEvalQualityTrendRun[];
   low_score_cases: RagEvalLowScoreCase[];
+  metric_applicability?: RagEvalMetricApplicability;
+  paired_comparison?: {
+    baseline_run_id: string;
+    current_run_id: string;
+    matched_case_count: number;
+    retrieval: { case_count: number; mean_delta: number | null; wins: number; ties: number; losses: number };
+    answer: { case_count: number; mean_delta: number | null; wins: number; ties: number; losses: number };
+    grounding: { case_count: number; mean_delta: number | null; wins: number; ties: number; losses: number };
+  } | null;
 }
 
 interface RagEvalHistoryQuality {
@@ -230,9 +362,19 @@ const emptyCaseDraft = {
   expected_answer: '',
   expected_keywords: '',
   expected_source_files: '',
+  tags: '',
+  category: '',
+  difficulty: 'unknown' as 'unknown' | 'easy' | 'medium' | 'hard',
+  expected_chunk_ids: '',
+  expected_evidence: '',
+  expected_answerable: 'unknown' as 'unknown' | 'true' | 'false',
+  expected_graph_relations: '',
+  human_correctness: '',
+  human_completeness: '',
+  human_faithfulness: '',
 };
 
-const MAX_RAG_EVAL_CASES_PER_DATASET = 50;
+const MAX_RAG_EVAL_CASES_PER_DATASET = 500;
 
 type DatasetModalMode = 'create' | 'edit' | null;
 
@@ -241,7 +383,50 @@ const splitList = (value: string) => value
   .map((item) => item.trim())
   .filter(Boolean);
 
+const splitLines = (value: string) => value
+  .split(/\r?\n/)
+  .map((item) => item.trim())
+  .filter(Boolean);
+
+const parseGraphRelations = (value: string) => splitLines(value).map((line) => {
+  const parts = line.split('|').map((part) => part.trim());
+  if (parts.length !== 3 || parts.some((part) => !part)) return null;
+  return { source: parts[0], relation: parts[1], target: parts[2] };
+});
+
+const parseOptionalScore = (value: string) => {
+  if (!value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : null;
+};
+
 const formatScore = (value?: number) => `${Math.round((value || 0) * 100)}%`;
+
+type RagEvalMetric = 'retrieval' | 'answer' | 'faithfulness' | 'overall'
+  | 'expected_answer_support' | 'keyword_retrieval' | 'correctness' | 'completeness'
+  | 'judge_faithfulness' | 'citation_precision' | 'citation_coverage' | 'citation_f1'
+  | 'hallucination_rate';
+
+const resultMetricApplicability = (result: RagEvalResult, metric: RagEvalMetric) =>
+  result.metric_applicability?.[metric] ?? result.trace_summary?.metric_applicability?.[metric];
+
+const runMetricApplicability = (run: RagEvalRun, metric: RagEvalMetric) => {
+  const aggregate = run.metric_applicability?.[metric];
+  if (typeof aggregate === 'boolean') return aggregate;
+  const values = (run.results || [])
+    .map((result) => resultMetricApplicability(result, metric))
+    .filter((value): value is boolean => typeof value === 'boolean');
+  return values.length > 0 ? values.some(Boolean) : undefined;
+};
+
+const formatMetricScore = (value: number | undefined, applicable: boolean | undefined) =>
+  applicable === true ? formatScore(value) : 'N/A';
+
+const formatAdvancedScore = (group: RagEvalAdvancedMetricGroup | undefined, value: number | null | undefined) =>
+  group?.applicable === true && typeof value === 'number' ? formatScore(value) : 'N/A';
+
+const formatAdvancedCount = (applicable: boolean | undefined, value: number | null | undefined, suffix = '') =>
+  applicable === true && typeof value === 'number' ? `${Math.round(value)}${suffix}` : 'N/A';
 
 const formatDate = (value?: string | Date) => {
   if (!value) return 'Unknown';
@@ -280,27 +465,46 @@ const buildRagEvalRunMarkdown = (
     `- Dataset: ${dataset?.name || 'Untitled dataset'}`,
     `- Description: ${dataset?.description || 'None'}`,
     `- Run ID: ${run.id}`,
+    `- Baseline Run ID: ${run.baseline_run_id || 'N/A'}`,
     `- Status: ${run.status}`,
     `- Created: ${formatDate(run.created_at)}`,
     `- Exported: ${formatDate(exportedAt)}`,
     `- Cases: ${run.case_count}`,
     `- Failed cases: ${run.failed_count}`,
-    `- Overall score: ${formatScore(run.average_overall_score)}`,
-    `- Retrieval score: ${formatScore(run.average_retrieval_score)}`,
-    `- Answer score: ${formatScore(run.average_answer_score)}`,
-    `- Source score: ${formatScore(run.average_source_score)}`,
-    `- Source recall: ${formatScore(run.average_source_recall_score ?? run.average_source_score)}`,
-    `- Source precision: ${formatScore(run.average_source_precision_score)}`,
-    `- Citation accuracy: ${formatScore(run.average_citation_accuracy_score)}`,
-    `- Keyword score: ${formatScore(run.average_keyword_score)}`,
-    `- Grounding score: ${formatScore(run.average_grounding_score)}`,
-    `- Expected answer support: ${formatScore(run.average_expected_answer_support_score)}`,
-    `- Verification score: ${formatScore(run.average_verification_score)}`,
+    `- Retrieval benchmark: ${formatMetricScore(run.average_overall_score, runMetricApplicability(run, 'overall'))}`,
+    `- Retrieval score: ${formatMetricScore(run.average_retrieval_score, runMetricApplicability(run, 'retrieval'))}`,
+    `- Answer score: ${formatMetricScore(run.average_answer_score, runMetricApplicability(run, 'answer'))}`,
+    `- Source score: ${formatMetricScore(run.average_source_score, runMetricApplicability(run, 'retrieval'))}`,
+    `- Source recall: ${formatMetricScore(run.average_source_recall_score ?? run.average_source_score, runMetricApplicability(run, 'retrieval'))}`,
+    `- Source precision: ${formatMetricScore(run.average_source_precision_score, runMetricApplicability(run, 'retrieval'))}`,
+    `- Citation accuracy: ${formatMetricScore(run.average_citation_accuracy_score, runMetricApplicability(run, 'faithfulness'))}`,
+    `- Keyword score: ${formatMetricScore(run.average_keyword_score, runMetricApplicability(run, 'keyword_retrieval'))}`,
+    `- Grounding score: ${formatMetricScore(run.average_grounding_score, runMetricApplicability(run, 'faithfulness'))}`,
+    `- Expected answer support: ${formatMetricScore(run.average_expected_answer_support_score, runMetricApplicability(run, 'expected_answer_support'))}`,
+    `- Verification score: ${formatMetricScore(run.average_verification_score, runMetricApplicability(run, 'faithfulness'))}`,
+    `- Chunk Recall@K: ${formatAdvancedScore(run.advanced_metrics?.chunk_retrieval, run.advanced_metrics?.chunk_retrieval?.average_recall_at_k)}`,
+    `- Evidence Recall@K: ${formatAdvancedScore(run.advanced_metrics?.evidence_retrieval, run.advanced_metrics?.evidence_retrieval?.average_recall_at_k)}`,
+    `- Graph Recall@K: ${formatAdvancedScore(run.advanced_metrics?.graph_retrieval, run.advanced_metrics?.graph_retrieval?.average_recall_at_k)}`,
+    `- Answerability accuracy: ${formatAdvancedScore(run.advanced_metrics?.answerability, run.advanced_metrics?.answerability?.accuracy)}`,
+    `- Judge-human MAE: ${formatAdvancedScore(run.advanced_metrics?.judge_human_calibration, run.advanced_metrics?.judge_human_calibration?.mae)}`,
+    `- Latency P50/P95: ${formatAdvancedCount(run.advanced_metrics?.latency_ms?.applicable, run.advanced_metrics?.latency_ms?.p50, 'ms')} / ${formatAdvancedCount(run.advanced_metrics?.latency_ms?.applicable, run.advanced_metrics?.latency_ms?.p95, 'ms')}`,
+    `- Token usage: ${run.advanced_metrics?.token_usage?.applicable === true ? (run.advanced_metrics.token_usage.answer?.total_tokens || 0) + (run.advanced_metrics.token_usage.judge?.total_tokens || 0) : 'N/A'}`,
+    '- Currency cost: N/A unless provider pricing is explicitly configured',
     `- Duration: ${run.duration_ms}ms`,
     '',
-    '---',
-    '',
   ];
+
+  if (run.execution_snapshot && Object.keys(run.execution_snapshot).length > 0) {
+    lines.push('## Execution Snapshot');
+    lines.push('');
+    lines.push('```json');
+    lines.push(JSON.stringify(run.execution_snapshot, null, 2));
+    lines.push('```');
+    lines.push('');
+  }
+
+  lines.push('---');
+  lines.push('');
 
   for (const result of run.results || []) {
     const traceSteps = result.trace_summary?.trace_steps || [];
@@ -310,23 +514,38 @@ const buildRagEvalRunMarkdown = (
     lines.push(`## ${result.question}`);
     lines.push('');
     lines.push(`- Status: ${result.status}`);
-    lines.push(`- Overall: ${formatScore(result.overall_score)}`);
-    lines.push(`- Retrieval: ${formatScore(result.retrieval_score)}`);
-    lines.push(`- Answer: ${formatScore(result.answer_score)}`);
-    lines.push(`- Sources: ${formatScore(result.source_score)}`);
-    lines.push(`- Source recall: ${formatScore(result.source_recall_score ?? result.source_score)}`);
-    lines.push(`- Source precision: ${formatScore(result.source_precision_score)}`);
-    lines.push(`- Citation accuracy: ${formatScore(result.citation_accuracy_score)}`);
-    lines.push(`- Keywords: ${formatScore(result.keyword_score)}`);
-    lines.push(`- Grounding: ${formatScore(result.grounding_score)}`);
-    lines.push(`- Expected answer support: ${formatScore(result.expected_answer_support_score)}`);
-    lines.push(`- Verification: ${formatScore(result.verification_score)}`);
+    const applicability = result.trace_summary?.metric_applicability;
+    lines.push(`- Overall: ${formatMetricScore(result.overall_score, applicability?.overall)}`);
+    lines.push(`- Retrieval: ${formatMetricScore(result.retrieval_score, applicability?.retrieval)}`);
+    lines.push(`- Answer: ${formatMetricScore(result.answer_score, applicability?.answer)}`);
+    lines.push(`- Correctness: ${formatMetricScore(result.correctness_score, applicability?.correctness)}`);
+    lines.push(`- Completeness: ${formatMetricScore(result.completeness_score, applicability?.completeness)}`);
+    lines.push(`- Judge faithfulness: ${formatMetricScore(result.faithfulness_score, applicability?.judge_faithfulness)}`);
+    lines.push(`- Sources: ${formatMetricScore(result.source_score, applicability?.retrieval)}`);
+    lines.push(`- Source recall: ${formatMetricScore(result.source_recall_score ?? result.source_score, applicability?.retrieval)}`);
+    lines.push(`- Source precision: ${formatMetricScore(result.source_precision_score, applicability?.retrieval)}`);
+    lines.push(`- Citation accuracy: ${formatMetricScore(result.citation_accuracy_score, applicability?.faithfulness)}`);
+    lines.push(`- Citation precision: ${formatMetricScore(result.citation_precision, applicability?.citation_precision)}`);
+    lines.push(`- Citation coverage: ${formatMetricScore(result.citation_coverage, applicability?.citation_coverage)}`);
+    lines.push(`- Citation F1: ${formatMetricScore(result.citation_f1, applicability?.citation_f1)}`);
+    lines.push(`- Hallucination rate: ${formatMetricScore(result.hallucination_rate, applicability?.hallucination_rate)}`);
+    lines.push(`- Keywords: ${formatMetricScore(result.keyword_score, applicability?.keyword_retrieval)}`);
+    lines.push(`- Grounding: ${formatMetricScore(result.grounding_score, applicability?.faithfulness)}`);
+    lines.push(`- Expected answer support: ${formatMetricScore(result.expected_answer_support_score, applicability?.expected_answer_support)}`);
+    lines.push(`- Verification: ${formatMetricScore(result.verification_score, applicability?.faithfulness)}`);
     lines.push(`- Latency: ${result.latency_ms ?? 0}ms`);
     lines.push(`- Evidence: ${result.evidence_label}`);
     lines.push(`- Expected answer support label: ${result.expected_answer_support_label || 'unknown'}`);
     lines.push(`- Support: ${result.support_label || 'unknown'}`);
     if (result.error_message) lines.push(`- Error: ${result.error_message}`);
     lines.push('');
+
+    if (result.actual_answer) {
+      lines.push('### Actual Answer');
+      lines.push('');
+      lines.push(result.actual_answer);
+      lines.push('');
+    }
 
     if (plannedQueries.length > 0) {
       lines.push('### Planned Queries');
@@ -603,7 +822,7 @@ export default function RagEvaluationPage() {
 
     const sourceNames = Array.from(new Set(
       (item.retrieved_sources || [])
-        .map((source) => formatHistorySourceName(source))
+        .map((source) => source.file_id || formatHistorySourceName(source))
         .filter(Boolean)
     )).slice(0, 12);
 
@@ -613,6 +832,16 @@ export default function RagEvaluationPage() {
       expected_answer: item.answer_preview || '',
       expected_keywords: (item.planned_queries || []).slice(0, 8).join(', '),
       expected_source_files: sourceNames.join(', '),
+      tags: '',
+      category: '',
+      difficulty: 'unknown',
+      expected_chunk_ids: '',
+      expected_evidence: '',
+      expected_answerable: 'unknown',
+      expected_graph_relations: '',
+      human_correctness: '',
+      human_completeness: '',
+      human_faithfulness: '',
     });
     setIsCaseModalOpen(true);
   };
@@ -674,6 +903,45 @@ export default function RagEvaluationPage() {
       return;
     }
 
+    const graphRelations = parseGraphRelations(caseDraft.expected_graph_relations);
+    if (graphRelations.some((relation) => relation === null)) {
+      setError(t('ragEval.invalidGraphRelations'));
+      return;
+    }
+    const humanScores = {
+      correctness: parseOptionalScore(caseDraft.human_correctness),
+      completeness: parseOptionalScore(caseDraft.human_completeness),
+      faithfulness: parseOptionalScore(caseDraft.human_faithfulness),
+    };
+    if (Object.values(humanScores).some((score) => score === null)) {
+      setError(t('ragEval.invalidHumanScores'));
+      return;
+    }
+
+    const evaluationSpec: RagEvalEvaluationSpec = {};
+    const tags = splitList(caseDraft.tags);
+    if (tags.length > 0) evaluationSpec.tags = tags;
+    if (caseDraft.category.trim()) evaluationSpec.category = caseDraft.category.trim();
+    if (caseDraft.difficulty !== 'unknown') evaluationSpec.difficulty = caseDraft.difficulty;
+    const expectedChunkIds = splitList(caseDraft.expected_chunk_ids);
+    const expectedEvidence = splitLines(caseDraft.expected_evidence);
+    if (expectedChunkIds.length > 0) evaluationSpec.expected_chunk_ids = expectedChunkIds;
+    if (expectedEvidence.length > 0) evaluationSpec.expected_evidence = expectedEvidence;
+    if (caseDraft.expected_answerable !== 'unknown') {
+      evaluationSpec.expected_answerable = caseDraft.expected_answerable === 'true';
+    }
+    if (graphRelations.length > 0) {
+      evaluationSpec.expected_graph_relations = graphRelations.filter(
+        (relation): relation is NonNullable<typeof relation> => relation !== null,
+      );
+    }
+    const normalizedHumanScores = Object.fromEntries(
+      Object.entries(humanScores).filter(([, score]) => typeof score === 'number'),
+    ) as RagEvalEvaluationSpec['human_scores'];
+    if (Object.keys(normalizedHumanScores || {}).length > 0) {
+      evaluationSpec.human_scores = normalizedHumanScores;
+    }
+
     setIsSaving(true);
     setError(null);
 
@@ -683,6 +951,7 @@ export default function RagEvaluationPage() {
         expected_answer: caseDraft.expected_answer.trim(),
         expected_keywords: splitList(caseDraft.expected_keywords),
         expected_source_files: splitList(caseDraft.expected_source_files),
+        evaluation_spec: evaluationSpec,
       });
 
       invalidateDatasetRequests();
@@ -1086,7 +1355,7 @@ export default function RagEvaluationPage() {
                   </div>
                   <div className="rounded-lg border border-border bg-bg-base p-3">
                     <p className="text-xs text-text-muted">{t('ragEval.latestOverall')}</p>
-                    <p className="mt-1 text-lg font-semibold">{formatScore(qualitySummary?.average_overall_score)}</p>
+                    <p className="mt-1 text-lg font-semibold">{formatMetricScore(qualitySummary?.average_overall_score, qualitySummary?.metric_applicability?.overall)}</p>
                   </div>
                   <div className="rounded-lg border border-border bg-bg-base p-3">
                     <p className="text-xs text-text-muted">{t('ragEval.trendDelta')}</p>
@@ -1202,11 +1471,11 @@ export default function RagEvaluationPage() {
                       </div>
                       <div className="rounded-lg border border-border bg-bg-base p-3">
                         <p className="text-xs text-text-muted">{t('ragEval.latestOverall')}</p>
-                        <p className="mt-1 text-lg font-semibold">{formatScore(qualitySummary?.average_overall_score)}</p>
+                        <p className="mt-1 text-lg font-semibold">{formatMetricScore(qualitySummary?.average_overall_score, qualitySummary?.metric_applicability?.overall)}</p>
                       </div>
                       <div className="rounded-lg border border-border bg-bg-base p-3">
                         <p className="text-xs text-text-muted">{t('ragEval.retrievalScore')}</p>
-                        <p className="mt-1 text-lg font-semibold">{formatScore(qualitySummary?.average_retrieval_score)}</p>
+                        <p className="mt-1 text-lg font-semibold">{formatMetricScore(qualitySummary?.average_retrieval_score, qualitySummary?.metric_applicability?.retrieval)}</p>
                       </div>
                       <div className="rounded-lg border border-border bg-bg-base p-3">
                         <p className="text-xs text-text-muted">{t('ragEval.trendDelta')}</p>
@@ -1238,10 +1507,14 @@ export default function RagEvaluationPage() {
                               <div className="h-2 overflow-hidden rounded-full bg-bg-surface">
                                 <div
                                   className="h-full rounded-full bg-primary"
-                                  style={{ width: `${Math.max(Math.round(run.average_overall_score * 100), 4)}%` }}
+                                  style={{
+                                    width: run.metric_applicability?.overall === false
+                                      ? '0%'
+                                      : `${Math.max(Math.round(run.average_overall_score * 100), 4)}%`,
+                                  }}
                                 />
                               </div>
-                              <span className="text-right text-text-muted">{formatScore(run.average_overall_score)}</span>
+                              <span className="text-right text-text-muted">{formatMetricScore(run.average_overall_score, run.metric_applicability?.overall)}</span>
                             </div>
                           ))}
                         </div>
@@ -1249,6 +1522,32 @@ export default function RagEvaluationPage() {
                         <p className="text-sm text-text-muted">{t('ragEval.noRunResults')}</p>
                       )}
                     </div>
+                    {qualitySummary?.paired_comparison && (
+                      <div className="rounded-lg border border-border bg-bg-base p-3">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-text-muted">
+                          {t('ragEval.pairedComparison')}
+                        </p>
+                        <div className="mt-2 grid gap-2 text-xs sm:grid-cols-3">
+                          {(['retrieval', 'answer', 'grounding'] as const).map((metric) => {
+                            const comparison = qualitySummary.paired_comparison?.[metric];
+                            return (
+                              <div key={metric} className="rounded border border-border bg-bg-sidebar p-2">
+                                <p className="font-medium">{t(`ragEval.pairedMetric.${metric}`)}</p>
+                                <p className="mt-1 text-text-muted">
+                                  {comparison?.mean_delta === null || comparison?.mean_delta === undefined
+                                    ? 'N/A'
+                                    : `${comparison.mean_delta >= 0 ? '+' : ''}${Math.round(comparison.mean_delta * 100)}%`}
+                                  {' · '}{comparison?.wins || 0}/{comparison?.ties || 0}/{comparison?.losses || 0}
+                                </p>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        <p className="mt-2 text-[11px] text-text-muted">
+                          {t('ragEval.pairedComparisonHint', { count: qualitySummary.paired_comparison.matched_case_count })}
+                        </p>
+                      </div>
+                    )}
                   </div>
 
                   <div className="rounded-lg border border-border bg-bg-base p-3">
@@ -1268,14 +1567,14 @@ export default function RagEvaluationPage() {
                             <div className="flex items-start justify-between gap-3">
                               <p className="line-clamp-2 text-sm font-medium">{testCase.question}</p>
                               <span className="shrink-0 rounded-full border border-border px-2 py-1 text-xs text-text-muted">
-                                {formatScore(testCase.overall_score)}
+                                {formatMetricScore(testCase.overall_score, testCase.metric_applicability?.overall)}
                               </span>
                             </div>
                             <div className="mt-2 grid grid-cols-2 gap-2 text-[11px] text-text-muted">
-                              <span>{t('ragEval.retrievalScore')}: {formatScore(testCase.retrieval_score)}</span>
-                              <span>{t('ragEval.answerScore')}: {formatScore(testCase.answer_score)}</span>
-                              <span>{t('ragEval.sourceScore')}: {formatScore(testCase.source_score)}</span>
-                              <span>{t('ragEval.keywordScore')}: {formatScore(testCase.keyword_score)}</span>
+                              <span>{t('ragEval.retrievalScore')}: {formatMetricScore(testCase.retrieval_score, testCase.metric_applicability?.retrieval)}</span>
+                              <span>{t('ragEval.answerScore')}: {formatMetricScore(testCase.answer_score, testCase.metric_applicability?.answer)}</span>
+                              <span>{t('ragEval.sourceScore')}: {formatMetricScore(testCase.source_score, testCase.metric_applicability?.retrieval)}</span>
+                              <span>{t('ragEval.keywordScore')}: {formatMetricScore(testCase.keyword_score, testCase.metric_applicability?.keyword_retrieval)}</span>
                             </div>
                           </button>
                         ))}
@@ -1316,31 +1615,31 @@ export default function RagEvaluationPage() {
                   <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.overallScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_overall_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_overall_score, runMetricApplicability(latestRun, 'overall'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.retrievalScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_retrieval_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_retrieval_score, runMetricApplicability(latestRun, 'retrieval'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.answerScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_answer_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_answer_score, runMetricApplicability(latestRun, 'answer'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.sourceScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_source_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_source_score, runMetricApplicability(latestRun, 'retrieval'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.keywordScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_keyword_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_keyword_score, runMetricApplicability(latestRun, 'keyword_retrieval'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.expectedAnswerSupportScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_expected_answer_support_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_expected_answer_support_score, runMetricApplicability(latestRun, 'expected_answer_support'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.verificationScore')}</p>
-                      <p className="mt-1 text-lg font-semibold">{formatScore(latestRun.average_verification_score)}</p>
+                      <p className="mt-1 text-lg font-semibold">{formatMetricScore(latestRun.average_verification_score, runMetricApplicability(latestRun, 'faithfulness'))}</p>
                     </div>
                     <div className="rounded-lg border border-border bg-bg-base p-3">
                       <p className="text-xs text-text-muted">{t('ragEval.failedCases')}</p>
@@ -1362,7 +1661,7 @@ export default function RagEvaluationPage() {
                           {latestRun.results.map((result) => (
                             <tr key={result.id || result.question}>
                               <td className="truncate px-3 py-2">{result.question}</td>
-                              <td className="px-3 py-2">{formatScore(result.overall_score)}</td>
+                              <td className="px-3 py-2">{formatMetricScore(result.overall_score, resultMetricApplicability(result, 'overall'))}</td>
                               <td className="px-3 py-2">{result.evidence_label}</td>
                               <td className="px-3 py-2">{result.status}</td>
                             </tr>
@@ -1392,7 +1691,7 @@ export default function RagEvaluationPage() {
                         {selectedDataset.runs.map((run) => (
                           <tr key={run.id}>
                             <td className="truncate px-3 py-2 text-xs text-text-muted">{formatDate(run.created_at)}</td>
-                            <td className="px-3 py-2">{formatScore(run.average_overall_score)}</td>
+                            <td className="px-3 py-2">{formatMetricScore(run.average_overall_score, runMetricApplicability(run, 'overall'))}</td>
                             <td className="px-3 py-2">{run.failed_count}/{run.case_count}</td>
                             <td className="px-3 py-2">{getRunStatusLabel(run.status)}</td>
                             <td className="px-3 py-2 text-right">
@@ -1452,6 +1751,43 @@ export default function RagEvaluationPage() {
                                 {source}
                               </span>
                             ))}
+                            {(testCase.evaluation_spec?.tags || []).map((tag) => (
+                              <span key={`tag:${tag}`} className="rounded-full border border-sky-500/30 px-2 py-1 text-[11px] text-sky-300">
+                                #{tag}
+                              </span>
+                            ))}
+                            {testCase.evaluation_spec?.category && (
+                              <span className="rounded-full border border-sky-500/30 px-2 py-1 text-[11px] text-sky-300">
+                                {testCase.evaluation_spec.category}
+                              </span>
+                            )}
+                            {testCase.evaluation_spec?.difficulty && (
+                              <span className="rounded-full border border-amber-500/30 px-2 py-1 text-[11px] text-amber-200">
+                                {t(`ragEval.difficulty.${testCase.evaluation_spec.difficulty}`)}
+                              </span>
+                            )}
+                            {(testCase.evaluation_spec?.expected_chunk_ids?.length || 0) > 0 && (
+                              <span className="rounded-full border border-primary/30 px-2 py-1 text-[11px] text-primary">
+                                {t('ragEval.chunkGoldCount', { count: testCase.evaluation_spec?.expected_chunk_ids?.length || 0 })}
+                              </span>
+                            )}
+                            {(testCase.evaluation_spec?.expected_evidence?.length || 0) > 0 && (
+                              <span className="rounded-full border border-primary/30 px-2 py-1 text-[11px] text-primary">
+                                {t('ragEval.evidenceGoldCount', { count: testCase.evaluation_spec?.expected_evidence?.length || 0 })}
+                              </span>
+                            )}
+                            {typeof testCase.evaluation_spec?.expected_answerable === 'boolean' && (
+                              <span className="rounded-full border border-primary/30 px-2 py-1 text-[11px] text-primary">
+                                {testCase.evaluation_spec.expected_answerable
+                                  ? t('ragEval.answerable')
+                                  : t('ragEval.unanswerable')}
+                              </span>
+                            )}
+                            {(testCase.evaluation_spec?.expected_graph_relations?.length || 0) > 0 && (
+                              <span className="rounded-full border border-primary/30 px-2 py-1 text-[11px] text-primary">
+                                {t('ragEval.graphGoldCount', { count: testCase.evaluation_spec?.expected_graph_relations?.length || 0 })}
+                              </span>
+                            )}
                           </div>
                         </div>
                         <button
@@ -1818,6 +2154,98 @@ export default function RagEvaluationPage() {
             className="min-h-20 w-full rounded-lg border border-border bg-bg-base px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
             placeholder={t('ragEval.expectedAnswer')}
           />
+          <div className="rounded-lg border border-border bg-bg-base p-3">
+            <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-text-muted">
+              {t('ragEval.advancedGold')}
+            </p>
+            <div className="space-y-3">
+              <input
+                value={caseDraft.tags}
+                onChange={(event) => setCaseDraft((draft) => ({ ...draft, tags: event.target.value }))}
+                className="w-full rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder={t('ragEval.tags')}
+              />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <input
+                  value={caseDraft.category}
+                  onChange={(event) => setCaseDraft((draft) => ({ ...draft, category: event.target.value }))}
+                  className="w-full rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  placeholder={t('ragEval.category')}
+                />
+                <SelectField
+                  value={caseDraft.difficulty}
+                  onChange={(event) => setCaseDraft((draft) => ({
+                    ...draft,
+                    difficulty: event.target.value as typeof draft.difficulty,
+                  }))}
+                  className="w-full"
+                  selectClassName="bg-bg-sidebar"
+                  aria-label={t('ragEval.difficultyLabel')}
+                >
+                  <option value="unknown">{t('ragEval.difficulty.unknown')}</option>
+                  <option value="easy">{t('ragEval.difficulty.easy')}</option>
+                  <option value="medium">{t('ragEval.difficulty.medium')}</option>
+                  <option value="hard">{t('ragEval.difficulty.hard')}</option>
+                </SelectField>
+              </div>
+              <input
+                value={caseDraft.expected_chunk_ids}
+                onChange={(event) => setCaseDraft((draft) => ({ ...draft, expected_chunk_ids: event.target.value }))}
+                className="w-full rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder={t('ragEval.expectedChunkIds')}
+              />
+              <textarea
+                value={caseDraft.expected_evidence}
+                onChange={(event) => setCaseDraft((draft) => ({ ...draft, expected_evidence: event.target.value }))}
+                className="min-h-20 w-full rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder={t('ragEval.expectedEvidence')}
+              />
+              <label className="block text-xs text-text-muted">
+                <span className="mb-1 block">{t('ragEval.expectedAnswerable')}</span>
+                <SelectField
+                  value={caseDraft.expected_answerable}
+                  onChange={(event) => setCaseDraft((draft) => ({
+                    ...draft,
+                    expected_answerable: event.target.value as typeof draft.expected_answerable,
+                  }))}
+                  className="w-full"
+                  selectClassName="bg-bg-sidebar"
+                >
+                  <option value="unknown">{t('ragEval.notLabeled')}</option>
+                  <option value="true">{t('ragEval.answerable')}</option>
+                  <option value="false">{t('ragEval.unanswerable')}</option>
+                </SelectField>
+              </label>
+              <textarea
+                value={caseDraft.expected_graph_relations}
+                onChange={(event) => setCaseDraft((draft) => ({ ...draft, expected_graph_relations: event.target.value }))}
+                className="min-h-20 w-full rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                placeholder={t('ragEval.expectedGraphRelations')}
+              />
+              <div>
+                <p className="mb-2 text-xs text-text-muted">{t('ragEval.humanScores')}</p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {(['correctness', 'completeness', 'faithfulness'] as const).map((dimension) => (
+                    <input
+                      key={dimension}
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.01"
+                      value={caseDraft[`human_${dimension}`]}
+                      onChange={(event) => setCaseDraft((draft) => ({
+                        ...draft,
+                        [`human_${dimension}`]: event.target.value,
+                      }))}
+                      className="w-full rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm outline-none focus:border-primary focus:ring-2 focus:ring-primary/20"
+                      placeholder={t(`ragEval.${dimension}HumanScore`)}
+                    />
+                  ))}
+                </div>
+              </div>
+              <p className="text-xs leading-5 text-text-muted">{t('ragEval.advancedGoldHint')}</p>
+            </div>
+          </div>
         </div>
       </Modal>
 
@@ -1895,51 +2323,193 @@ export default function RagEvaluationPage() {
           </div>
         ) : selectedRun ? (
             <div className="max-h-[70vh] space-y-4 overflow-y-auto pr-1">
-              <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-8">
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.overallScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_overall_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_overall_score, runMetricApplicability(selectedRun, 'overall'))}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('ragEval.retrievalScore')}</p>
-                <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_retrieval_score)}</p>
+                <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_retrieval_score, runMetricApplicability(selectedRun, 'retrieval'))}</p>
               </div>
               <div className="rounded-lg border border-border bg-bg-base p-3">
                 <p className="text-xs text-text-muted">{t('ragEval.answerScore')}</p>
-                <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_answer_score)}</p>
+                <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_answer_score, runMetricApplicability(selectedRun, 'answer'))}</p>
               </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.sourceScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_source_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_source_score, runMetricApplicability(selectedRun, 'retrieval'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.sourceRecallScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_source_recall_score ?? selectedRun.average_source_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_source_recall_score ?? selectedRun.average_source_score, runMetricApplicability(selectedRun, 'retrieval'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.citationAccuracyScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_citation_accuracy_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_citation_accuracy_score, runMetricApplicability(selectedRun, 'faithfulness'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.keywordScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_keyword_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_keyword_score, runMetricApplicability(selectedRun, 'keyword_retrieval'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.groundingScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_grounding_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_grounding_score, runMetricApplicability(selectedRun, 'faithfulness'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.expectedAnswerSupportScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_expected_answer_support_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_expected_answer_support_score, runMetricApplicability(selectedRun, 'expected_answer_support'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.verificationScore')}</p>
-                  <p className="mt-1 text-lg font-semibold">{formatScore(selectedRun.average_verification_score)}</p>
+                  <p className="mt-1 text-lg font-semibold">{formatMetricScore(selectedRun.average_verification_score, runMetricApplicability(selectedRun, 'faithfulness'))}</p>
                 </div>
                 <div className="rounded-lg border border-border bg-bg-base p-3">
                   <p className="text-xs text-text-muted">{t('ragEval.duration')}</p>
                   <p className="mt-1 text-lg font-semibold">{selectedRun.duration_ms}ms</p>
               </div>
+            </div>
+
+            {(selectedRun.baseline_run_id || Object.keys(selectedRun.execution_snapshot || {}).length > 0) && (
+              <details className="rounded-lg border border-border bg-bg-base p-4">
+                <summary className="cursor-pointer text-sm font-semibold text-text-main">
+                  {t('ragEval.executionSnapshot')}
+                </summary>
+                <p className="mt-2 text-xs leading-5 text-text-muted">
+                  {t('ragEval.executionSnapshotHint')}
+                </p>
+                <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+                  <p className="break-all rounded border border-border bg-bg-sidebar p-2">
+                    <span className="text-text-muted">{t('ragEval.runId')}:</span> {selectedRun.id}
+                  </p>
+                  <p className="break-all rounded border border-border bg-bg-sidebar p-2">
+                    <span className="text-text-muted">{t('ragEval.baselineRunId')}:</span> {selectedRun.baseline_run_id || 'N/A'}
+                  </p>
+                </div>
+                {Object.keys(selectedRun.execution_snapshot || {}).length > 0 && (
+                  <pre className="mt-3 max-h-72 overflow-auto rounded border border-border bg-bg-sidebar p-3 text-[11px] leading-5 text-text-muted">
+                    {JSON.stringify(selectedRun.execution_snapshot, null, 2)}
+                  </pre>
+                )}
+              </details>
+            )}
+
+            <div className="rounded-lg border border-border bg-bg-base p-4">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <h4 className="text-sm font-semibold">{t('ragEval.advancedMetrics')}</h4>
+                  <p className="mt-1 text-xs text-text-muted">{t('ragEval.advancedMetricsHint')}</p>
+                </div>
+                <span className="rounded-full border border-border px-2 py-1 text-xs text-text-muted">
+                  {t('ragEval.cost')}: {selectedRun.advanced_metrics?.cost?.applicable === true ? t('ragEval.available') : 'N/A'}
+                </span>
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <div className="rounded-lg border border-border bg-bg-sidebar p-3">
+                  <p className="text-xs font-medium">{t('ragEval.chunkRetrieval')}</p>
+                  <p className="mt-2 text-sm">Recall@K: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.chunk_retrieval,
+                    selectedRun.advanced_metrics?.chunk_retrieval?.average_recall_at_k,
+                  )}</p>
+                  <p className="text-xs text-text-muted">MRR@K: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.chunk_retrieval,
+                    selectedRun.advanced_metrics?.chunk_retrieval?.average_mrr_at_k,
+                  )}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-sidebar p-3">
+                  <p className="text-xs font-medium">{t('ragEval.evidenceRetrieval')}</p>
+                  <p className="mt-2 text-sm">Recall@K: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.evidence_retrieval,
+                    selectedRun.advanced_metrics?.evidence_retrieval?.average_recall_at_k,
+                  )}</p>
+                  <p className="text-xs text-text-muted">MRR@K: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.evidence_retrieval,
+                    selectedRun.advanced_metrics?.evidence_retrieval?.average_mrr_at_k,
+                  )}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-sidebar p-3">
+                  <p className="text-xs font-medium">{t('ragEval.graphRetrieval')}</p>
+                  <p className="mt-2 text-sm">Recall@K: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.graph_retrieval,
+                    selectedRun.advanced_metrics?.graph_retrieval?.average_recall_at_k,
+                  )}</p>
+                  <p className="text-xs text-text-muted">Precision@K: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.graph_retrieval,
+                    selectedRun.advanced_metrics?.graph_retrieval?.average_precision_at_k,
+                  )}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-sidebar p-3">
+                  <p className="text-xs font-medium">{t('ragEval.answerability')}</p>
+                  <p className="mt-2 text-sm">{t('ragEval.accuracy')}: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.answerability,
+                    selectedRun.advanced_metrics?.answerability?.accuracy,
+                  )}</p>
+                  <p className="text-xs text-text-muted">{t('ragEval.falseAnswerRate')}: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.answerability,
+                    selectedRun.advanced_metrics?.answerability?.false_answer_rate,
+                  )}</p>
+                </div>
+                <div className="rounded-lg border border-border bg-bg-sidebar p-3">
+                  <p className="text-xs font-medium">{t('ragEval.judgeCalibration')}</p>
+                  <p className="mt-2 text-sm">MAE: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.judge_human_calibration,
+                    selectedRun.advanced_metrics?.judge_human_calibration?.mae,
+                  )}</p>
+                  <p className="text-xs text-text-muted">{t('ragEval.agreementRate')}: {formatAdvancedScore(
+                    selectedRun.advanced_metrics?.judge_human_calibration,
+                    selectedRun.advanced_metrics?.judge_human_calibration?.agreement_rate,
+                  )}</p>
+                </div>
+              </div>
+              <div className="mt-3 grid gap-3 text-xs text-text-muted sm:grid-cols-2">
+                <p>
+                  {t('ragEval.latencyPercentiles')}: P50 {formatAdvancedCount(
+                    selectedRun.advanced_metrics?.latency_ms?.applicable,
+                    selectedRun.advanced_metrics?.latency_ms?.p50,
+                    'ms',
+                  )} · P95 {formatAdvancedCount(
+                    selectedRun.advanced_metrics?.latency_ms?.applicable,
+                    selectedRun.advanced_metrics?.latency_ms?.p95,
+                    'ms',
+                  )}
+                </p>
+                <p>
+                  {t('ragEval.tokenUsage')}: {selectedRun.advanced_metrics?.token_usage?.applicable === true
+                    ? `${t('ragEval.answerTokens')} ${selectedRun.advanced_metrics.token_usage.answer?.total_tokens || 0} · ${t('ragEval.judgeTokens')} ${selectedRun.advanced_metrics.token_usage.judge?.total_tokens || 0}`
+                    : 'N/A'}
+                </p>
+                <p>
+                  {t('ragEval.retrievalConfidenceInterval')}: {selectedRun.advanced_metrics?.confidence_intervals?.retrieval_score?.applicable === true
+                    ? `${formatScore(selectedRun.advanced_metrics.confidence_intervals.retrieval_score.lower)} – ${formatScore(selectedRun.advanced_metrics.confidence_intervals.retrieval_score.upper)}`
+                    : 'N/A'}
+                </p>
+              </div>
+              {(selectedRun.advanced_metrics?.slices?.length || 0) > 0 && (
+                <div className="mt-3 overflow-x-auto rounded-lg border border-border">
+                  <table className="min-w-full text-xs">
+                    <thead className="bg-bg-sidebar text-text-muted">
+                      <tr>
+                        <th className="px-3 py-2 text-left">{t('ragEval.slice')}</th>
+                        <th className="px-3 py-2 text-right">N</th>
+                        <th className="px-3 py-2 text-right">{t('ragEval.retrievalScore')}</th>
+                        <th className="px-3 py-2 text-right">{t('ragEval.answerScore')}</th>
+                        <th className="px-3 py-2 text-right">{t('ragEval.groundingScore')}</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {selectedRun.advanced_metrics?.slices?.map((slice) => (
+                        <tr key={slice.slice}>
+                          <td className="px-3 py-2 font-medium">{slice.slice}</td>
+                          <td className="px-3 py-2 text-right text-text-muted">{slice.case_count}</td>
+                          <td className="px-3 py-2 text-right">{formatMetricScore(slice.average_retrieval_score ?? undefined, slice.average_retrieval_score != null)}</td>
+                          <td className="px-3 py-2 text-right">{formatMetricScore(slice.average_answer_score ?? undefined, slice.average_answer_score != null)}</td>
+                          <td className="px-3 py-2 text-right">{formatMetricScore(slice.average_grounding_score ?? undefined, slice.average_grounding_score != null)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
             {selectedRun.status === 'running' ? (
@@ -1956,7 +2526,9 @@ export default function RagEvaluationPage() {
                 {selectedRun.results.map((result) => {
                   const matchedSources = result.matched_sources || [];
                   const plannedQueries = result.trace_summary?.planned_queries || [];
-                  const traceSteps = result.trace_summary?.trace_steps || [];
+                   const traceSteps = result.trace_summary?.trace_steps || [];
+                   const applicability = result.trace_summary?.metric_applicability;
+                   const claims = result.claim_evaluation?.claims || [];
 
                   return (
                     <div key={result.id || result.question} className="rounded-lg border border-border bg-bg-base p-4">
@@ -1969,28 +2541,49 @@ export default function RagEvaluationPage() {
                         </div>
                         <div className="flex shrink-0 flex-wrap gap-2 text-xs text-text-muted">
                           <span className="rounded-full border border-border px-2 py-1">
-                            {t('ragEval.overallScore')}: {formatScore(result.overall_score)}
+                            {t('ragEval.overallScore')}: {formatMetricScore(result.overall_score, applicability?.overall)}
                           </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.answerScore')}: {formatScore(result.answer_score)}
+                                {t('ragEval.answerScore')}: {formatMetricScore(result.answer_score, applicability?.answer)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.sourceRecallScore')}: {formatScore(result.source_recall_score ?? result.source_score)}
+                                {t('ragEval.correctnessScore')}: {formatMetricScore(result.correctness_score, applicability?.correctness)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.sourcePrecisionScore')}: {formatScore(result.source_precision_score)}
+                                {t('ragEval.completenessScore')}: {formatMetricScore(result.completeness_score, applicability?.completeness)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.citationAccuracyScore')}: {formatScore(result.citation_accuracy_score)}
+                                {t('ragEval.faithfulnessScore')}: {formatMetricScore(result.faithfulness_score, applicability?.judge_faithfulness)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.groundingScore')}: {formatScore(result.grounding_score)}
+                                {t('ragEval.sourceRecallScore')}: {formatMetricScore(result.source_recall_score ?? result.source_score, applicability?.retrieval)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.expectedAnswerSupportScore')}: {formatScore(result.expected_answer_support_score)}
+                                {t('ragEval.sourcePrecisionScore')}: {formatMetricScore(result.source_precision_score, applicability?.retrieval)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
-                                {t('ragEval.verificationScore')}: {formatScore(result.verification_score)}
+                                {t('ragEval.citationAccuracyScore')}: {formatMetricScore(result.citation_accuracy_score, applicability?.faithfulness)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.citationPrecision')}: {formatMetricScore(result.citation_precision, applicability?.citation_precision)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.citationCoverage')}: {formatMetricScore(result.citation_coverage, applicability?.citation_coverage)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.citationF1')}: {formatMetricScore(result.citation_f1, applicability?.citation_f1)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.hallucinationRate')}: {formatMetricScore(result.hallucination_rate, applicability?.hallucination_rate)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.groundingScore')}: {formatMetricScore(result.grounding_score, applicability?.faithfulness)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.expectedAnswerSupportScore')}: {formatMetricScore(result.expected_answer_support_score, applicability?.expected_answer_support)}
+                              </span>
+                              <span className="rounded-full border border-border px-2 py-1">
+                                {t('ragEval.verificationScore')}: {formatMetricScore(result.verification_score, applicability?.faithfulness)}
                               </span>
                               <span className="rounded-full border border-border px-2 py-1">
                                 {t('ragEval.expectedAnswerSupportLabel')}: {getSupportLabel(result.expected_answer_support_label)}
@@ -2006,6 +2599,48 @@ export default function RagEvaluationPage() {
                           </span>
                         </div>
                       </div>
+
+                      {result.actual_answer && (
+                        <div className="mt-3 rounded-lg border border-border p-3">
+                          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                            {t('ragEval.actualAnswer')}
+                          </p>
+                          <p className="whitespace-pre-wrap break-words text-sm text-text-main">{result.actual_answer}</p>
+                        </div>
+                      )}
+
+                      {(result.prompt_version || result.model_version || result.judge_version || result.verifier_version) && (
+                        <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-muted">
+                          {result.prompt_version && <span>{t('ragEval.promptVersion')}: {result.prompt_version}</span>}
+                          {result.model_version && <span>{t('ragEval.modelVersion')}: {result.model_version}</span>}
+                          {result.judge_version && <span>{t('ragEval.judgeVersion')}: {result.judge_version}</span>}
+                          {result.verifier_version && <span>{t('ragEval.verifierVersion')}: {result.verifier_version}</span>}
+                        </div>
+                      )}
+
+                      {claims.length > 0 && (
+                        <div className="mt-3 rounded-lg border border-border p-3">
+                          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-muted">
+                            {t('ragEval.claimCitationMapping')}
+                          </p>
+                          <div className="space-y-2">
+                            {claims.map((claim, claimIndex) => (
+                              <div key={`${claim.claim_index || claimIndex}-${claim.text || ''}`} className="text-xs">
+                                <div className="flex items-start gap-2">
+                                  <span className={claim.supported ? 'text-emerald-300' : 'text-red-300'}>
+                                    {claim.supported ? t('ragEval.claimSupported') : t('ragEval.claimUnsupported')}
+                                  </span>
+                                  <span className="min-w-0 break-words text-text-main">{claim.text}</span>
+                                </div>
+                                <p className="mt-1 text-text-muted">
+                                  {t('ragEval.citationLabels')}: {claim.citation_labels?.length ? claim.citation_labels.map((label) => `[Source ${label}]`).join(', ') : 'N/A'}
+                                  {claim.reasons?.length ? ` · ${claim.reasons.join(', ')}` : ''}
+                                </p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                       <div className="mt-3 grid gap-3 lg:grid-cols-2">
                         <div className="rounded-lg border border-border p-3">

@@ -17,6 +17,7 @@ const readOptionalSource = (relativePath) => {
 
 const baseEnv = {
   DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+  REDIS_URL: 'redis://localhost:6379/0',
   S3_ENDPOINT: 'http://localhost:9000',
   S3_ACCESS_KEY: 'minioadmin',
   S3_SECRET_KEY: 'minioadmin',
@@ -290,20 +291,6 @@ test('chat streaming aborts upstream model requests when the client disconnects'
   assert.match(chatSource, /res\.destroyed/);
   assert.match(providerSource, /signal\?:\s*AbortSignal/);
   assert.match(providerSource, /signal:\s*params\.signal/);
-});
-
-test('RAG retrieval uses a circuit-breaker client instead of inline axios calls', () => {
-  const chatSource = readSource('src/controllers/chat.ts');
-  const ragClientSource = readOptionalSource('src/lib/ragClient.ts');
-
-  assert.doesNotMatch(chatSource, /axios\.post\(`\$\{serverEnv\.RAG_SERVICE_URL\}\/retrieve`/);
-  assert.match(chatSource, /retrieveAgenticRagDocuments/);
-  assert.match(ragClientSource, /\/agentic-retrieve/);
-  assert.match(ragClientSource, /RAG_RETRIEVE_TIMEOUT_MS/);
-  assert.match(ragClientSource, /RAG_CIRCUIT_FAILURE_THRESHOLD/);
-  assert.match(ragClientSource, /RAG_CIRCUIT_RESET_MS/);
-  assert.match(ragClientSource, /recordRagRetrieve/);
-  assert.match(ragClientSource, /recordRagCircuitOpen/);
 });
 
 test('RAG-routed retrieval failure stops generation instead of falling back to an ungrounded answer', () => {

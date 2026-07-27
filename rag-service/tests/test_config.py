@@ -138,6 +138,30 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f"('{TEST_RAG_SERVICE_TOKEN}', 9, 1200)", result.stdout)
 
+    def test_graph_extraction_does_not_reuse_judge_provider_configuration(self):
+        result = import_config({
+            "DATABASE_URL": "postgres://chatllm:chatllm@localhost:5432/chatllm",
+            "S3_ENDPOINT": "http://localhost:9000",
+            "S3_ACCESS_KEY": "minioadmin",
+            "S3_SECRET_KEY": "minioadmin",
+            "MILVUS_URI": "http://localhost:19530",
+            "MILVUS_COLLECTION": "document_chunks",
+            "EMBEDDING_API_KEY": "embedding-key",
+            "EMBEDDING_BASE_URL": "https://example.invalid/v1",
+            "EMBEDDING_MODEL": "text-embedding-v4",
+            "EMBEDDING_DIMENSION": "1024",
+            "GRAPH_EXTRACTION_ENABLED": "true",
+            "GRAPH_EXTRACTION_API_KEY": "",
+            "GRAPH_EXTRACTION_BASE_URL": "",
+            "GRAPH_EXTRACTION_MODEL": "",
+            "RAG_JUDGE_API_KEY": "judge-key",
+            "RAG_JUDGE_BASE_URL": "https://judge.invalid/v1",
+            "RAG_JUDGE_MODEL": "judge-model",
+        })
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr, r"GRAPH_EXTRACTION_API_KEY, GRAPH_EXTRACTION_BASE_URL, and GRAPH_EXTRACTION_MODEL")
+
 
 if __name__ == "__main__":
     unittest.main()

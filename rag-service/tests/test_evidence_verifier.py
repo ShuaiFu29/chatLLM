@@ -8,22 +8,22 @@ class EvidenceVerifierTests(unittest.TestCase):
         documents = [
             {
                 "id": "cached-default-rule",
-                "content": "2026 修订版规定默认响应确认窗口是 T+5 分钟，但没有覆盖华东 E-2 特例。",
-                "metadata": {"filename": "current-rule.md", "file_id": "rule", "chunk_index": 0},
+                "content": "API v2.4 currently uses a 500ms request timeout.",
+                "metadata": {"filename": "api-reference.md", "file_id": "api", "chunk_index": 0},
                 "agentic_score": 0.88,
                 "source_role": "primary",
             }
         ]
 
         verification = verify_evidence_support(
-            "华东 E-2 紧急等级下，响应确认窗口应按 T+5 还是 T+3？",
+            "Must API v2.4 use a 250ms or 500ms timeout?",
             documents,
             cache_hit_type="exact",
             query_similarity=1.0,
         )
 
         self.assertEqual(verification["risk_level"], "high")
-        self.assertIn("T+3", verification["missing_markers"])
+        self.assertIn("250MS", verification["missing_markers"])
         self.assertEqual(verification["support_label"], "partial")
         self.assertFalse(verification["cache_reuse_allowed"])
         self.assertTrue(verification["must_retrieve"])
@@ -32,15 +32,15 @@ class EvidenceVerifierTests(unittest.TestCase):
         documents = [
             {
                 "id": "current-e2-rule",
-                "content": "华东 E-2 紧急等级需要并读区域附件；响应确认窗口按 T+3，不能沿用默认 T+5。",
-                "metadata": {"filename": "regional-appendix.md", "file_id": "regional", "chunk_index": 2},
+                "content": "API v2.4 must use a 250ms timeout and must not use the legacy 500ms timeout.",
+                "metadata": {"filename": "api-reference.md", "file_id": "api", "chunk_index": 2},
                 "agentic_score": 0.91,
                 "source_role": "primary",
             }
         ]
 
         verification = verify_evidence_support(
-            "华东 E-2 紧急等级下，响应确认窗口应按 T+5 还是 T+3？",
+            "Must API v2.4 use a 250ms or 500ms timeout?",
             documents,
             cache_hit_type="exact",
             query_similarity=1.0,
@@ -52,12 +52,30 @@ class EvidenceVerifierTests(unittest.TestCase):
         self.assertTrue(verification["cache_reuse_allowed"])
         self.assertFalse(verification["must_retrieve"])
 
-    def test_risk_assessment_detects_regulatory_and_numeric_questions(self):
-        risk = assess_query_risk("CN 患者原始诊疗文本是否能同步到 EU 分析域？需要满足哪条合规要求？")
+    def test_risk_assessment_uses_query_structure_instead_of_domain_terms(self):
+        risk = assess_query_risk("Must client v2.4 use a 250ms timeout, and why?")
 
         self.assertEqual(risk["risk_level"], "high")
-        self.assertIn("regulatory", risk["risk_factors"])
-        self.assertIn("cross_region", risk["risk_factors"])
+        self.assertIn("constraint", risk["risk_factors"])
+        self.assertIn("exact_marker", risk["risk_factors"])
+
+    def test_question_only_passage_cannot_approve_exact_cache_reuse(self):
+        verification = verify_evidence_support(
+            "What are the refund conditions?",
+            [{
+                "id": "faq-heading",
+                "content": "FAQ: What are the refund conditions?",
+                "metadata": {"filename": "billing.md", "file_id": "billing", "chunk_index": 0},
+                "agentic_score": 0.95,
+            }],
+            cache_hit_type="exact",
+            query_similarity=1.0,
+        )
+
+        self.assertNotEqual(verification["support_label"], "supported")
+        self.assertIn("no_answer_bearing_evidence", verification["reasons"])
+        self.assertFalse(verification["cache_reuse_allowed"])
+        self.assertTrue(verification["must_retrieve"])
 
 
 if __name__ == "__main__":

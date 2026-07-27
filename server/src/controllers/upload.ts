@@ -54,6 +54,7 @@ import {
 import { fileQueue } from '../services/fileQueue';
 import { artifactCleanupQueue } from '../services/cleanupQueue';
 import { verifyMergedUploadFile } from '../lib/uploadIntegrity';
+import { assertCompletedMultipartObject } from '../lib/multipartCompletion';
 import {
   MAX_MULTIPART_UPLOAD_PARTS,
   SUPPORTED_DOCUMENT_ERROR,
@@ -295,28 +296,6 @@ const assertCompletePartSet = (
   }
 
   return uploadedSize;
-};
-
-const assertCompletedMultipartObject = (
-  object: { size: number; metadata: Record<string, string | undefined> },
-  upload: Pick<FileRow, 'file_hash' | 'file_size'>
-) => {
-  const expectedSize = Number(upload.file_size);
-  const expectedHash = upload.file_hash.toLowerCase();
-  const metadataHash = object.metadata.sha256?.toLowerCase();
-  const metadataSize = Number(object.metadata.size);
-
-  if (!Number.isSafeInteger(expectedSize) || object.size !== expectedSize) {
-    throw new Error(`Completed multipart object size mismatch: expected ${expectedSize}, got ${object.size}`);
-  }
-  if (metadataHash !== expectedHash) {
-    throw new Error('Completed multipart object hash metadata mismatch');
-  }
-  if (!Number.isSafeInteger(metadataSize) || metadataSize !== expectedSize) {
-    throw new Error('Completed multipart object size metadata mismatch');
-  }
-
-  return object.size;
 };
 
 const inspectCompletedMultipartObject = async (

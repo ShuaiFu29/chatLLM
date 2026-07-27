@@ -1,186 +1,200 @@
 import unittest
+from unittest.mock import patch
 
-from reranker import classify_source_role, extract_exact_markers, query_requests_evaluation_guide, rerank_documents
+from config import settings
+from reranker import extract_exact_markers, rerank_documents
+from semantic_reranker import rerank_with_provider, reranker_fingerprint
 
 
 class RerankerTests(unittest.TestCase):
     def test_exact_marker_preserves_full_dotted_version(self):
-        self.assertIn("FW-4.8.2", extract_exact_markers("FW-4.8.2 新增哪些诊断字段？"))
-        self.assertNotIn("FW-4", extract_exact_markers("FW-4.8.2 新增哪些诊断字段？"))
+        markers = extract_exact_markers(
+            "API-V2.4 running v3.1.4 on 2026-07-26 uses a 250 ms timeout and costs $30"
+        )
 
-    def test_default_reranker_preserves_pre_rank_and_scores_overlap(self):
+        self.assertIn("API-V2.4", markers)
+        self.assertNotIn("API-V2", markers)
+        self.assertIn("V3.1.4", markers)
+        self.assertIn("2026-07-26", markers)
+        self.assertIn("250MS", markers)
+        self.assertIn("$30", markers)
+
+    def test_default_reranker_keeps_rrf_confidence_as_primary_signal(self):
         documents = [
             {
-                "id": "chunk-low",
-                "content": "Account settings page.",
-                "retrieval_score": 0.9,
+                "id": "rank-one",
+                "content": "OAuth session rotation guidance.",
+                "retrieval_score": 1.0,
             },
             {
-                "id": "chunk-hit",
-                "content": "JSBridge connects WebView and Native runtime.",
+                "id": "rank-two",
+                "content": "OAuth session rotation guidance with an additional example.",
+                "retrieval_score": 0.4,
+            },
+        ]
+
+        reranked = rerank_documents("OAuth session rotation guidance", documents, top_k=2)
+
+        self.assertEqual(reranked[0]["id"], "rank-one")
+        self.assertEqual(reranked[0]["pre_rerank_rank"], 1)
+        self.assertGreater(reranked[0]["rerank_score"], reranked[1]["rerank_score"])
+        self.assertEqual(reranked[0]["reranker"], "local-evidence-v2")
+        self.assertEqual(reranked[0]["source_role"], "unclassified")
+
+    def test_reranker_rewards_exact_identifiers_without_corpus_rules(self):
+        documents = [
+            {
+                "id": "generic",
+                "content": "The deployment guide describes general timeout settings.",
+                "retrieval_score": 0.7,
+            },
+            {
+                "id": "exact",
+                "content": "API-V2.4 uses a 30% retry budget during deployment.",
                 "retrieval_score": 0.7,
             },
         ]
 
-        reranked = rerank_documents("JSBridge WebView Native", documents, top_k=2)
+        reranked = rerank_documents("What retry budget applies to API-V2.4?", documents)
 
-        self.assertEqual(reranked[0]["id"], "chunk-hit")
-        self.assertEqual(reranked[0]["pre_rerank_rank"], 2)
-        self.assertGreater(reranked[0]["rerank_score"], reranked[1]["rerank_score"])
-        self.assertEqual(reranked[0]["reranker"], "local-evidence")
-        self.assertGreater(reranked[0]["agentic_score"], 0)
-        self.assertEqual(reranked[0]["source_role"], "primary")
+        self.assertEqual(reranked[0]["id"], "exact")
+        self.assertIn("API-V2.4", reranked[0]["matched_terms"])
 
-    def test_reranker_demotes_evaluation_guide_when_primary_sources_match(self):
+    def test_reranker_uses_filename_match_only_as_a_tie_breaker(self):
         documents = [
             {
-                "id": "guide",
-                "content": "建议评测问题：华东 E-2 紧急等级下响应确认窗口按 T+3 还是 T+5？期望来源文档包括 01 和 07。",
-                "metadata": {"filename": "00-corpus-index-and-test-guide.md", "file_id": "guide", "chunk_index": 4},
+                "id": "shared",
+                "content": "Refresh token rotation is required for long-lived sessions.",
+                "metadata": {"filename": "security-overview.md"},
+                "retrieval_score": 0.8,
+            },
+            {
+                "id": "named-source",
+                "content": "Refresh token rotation is required for long-lived sessions.",
+                "metadata": {"filename": "oauth-session-policy.md"},
+                "retrieval_score": 0.8,
+            },
+        ]
+
+        reranked = rerank_documents("OAuth refresh token rotation", documents)
+
+        self.assertEqual(reranked[0]["id"], "named-source")
+        self.assertGreater(reranked[0]["filename_match_score"], 0)
+
+    def test_local_reranker_rewards_heading_and_answer_bearing_evidence(self):
+        documents = [
+            {
+                "id": "question-only",
+                "content": "Redis AOF 损坏后如何恢复？",
+                "metadata": {"filename": "faq.md", "heading_path": ["常见问题"]},
+                "retrieval_score": 0.8,
+            },
+            {
+                "id": "answer",
+                "content": "先运行 redis-check-aof 修复尾部，再从最近一次备份恢复并校验。",
+                "metadata": {"filename": "redis.md", "heading_path": ["Redis", "AOF 损坏恢复"]},
+                "retrieval_score": 0.8,
+            },
+        ]
+
+        reranked = rerank_documents("Redis AOF 损坏后如何恢复？", documents)
+
+        self.assertEqual(reranked[0]["id"], "answer")
+        self.assertGreater(reranked[0]["heading_match_score"], 0)
+        self.assertGreater(reranked[0]["answer_bearing_score"], reranked[1]["answer_bearing_score"])
+
+    def test_local_reranker_suppresses_same_source_duplicate_chunks(self):
+        documents = [
+            {
+                "id": "first",
+                "content": "消费者处理完成后发送 ACK，失败消息进入重试队列。",
+                "metadata": {"file_id": "queue-doc"},
+                "retrieval_score": 1.0,
+            },
+            {
+                "id": "duplicate",
+                "content": "消费者处理完成后发送 ACK，失败消息进入重试队列。",
+                "metadata": {"file_id": "queue-doc"},
                 "retrieval_score": 0.99,
             },
             {
-                "id": "east",
-                "content": "华东区域附件规定，E-2 紧急等级下储能聚合资源响应确认窗口覆盖总规则，按 T+3 分钟执行。",
-                "metadata": {"filename": "07-regional-appendix-east-grid.md", "file_id": "east", "chunk_index": 2},
-                "retrieval_score": 0.42,
-            },
-            {
-                "id": "rule",
-                "content": "2026 修订版总规则默认响应确认窗口为 T+5 分钟，区域附件有更严格要求时优先适用。",
-                "metadata": {"filename": "01-market-rule-2026-revised.md", "file_id": "rule", "chunk_index": 2},
-                "retrieval_score": 0.38,
-            },
-        ]
-
-        reranked = rerank_documents("华东 E-2 紧急等级下，储能聚合资源的响应确认窗口应按 T+5 还是 T+3？", documents)
-
-        self.assertEqual(reranked[0]["id"], "east")
-        self.assertEqual(reranked[0]["source_role"], "primary")
-        self.assertEqual(reranked[-1]["source_role"], "evaluation_guide")
-        self.assertGreater(reranked[0]["agentic_score"], reranked[-1]["agentic_score"])
-        self.assertIn("T+3", reranked[0]["matched_terms"])
-
-    def test_reranker_classifies_and_demotes_real_chinese_evaluation_guide(self):
-        guide = {
-            "id": "guide-cn",
-            "content": "语料索引与测试指南，包含建议问题和期望来源。",
-            "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 2},
-            "retrieval_score": 1.0,
-        }
-        primary = {
-            "id": "policy",
-            "content": "当前政策规定旧政策截图只能作为争议来源，不能作为当前承诺依据。",
-            "metadata": {"filename": "02-2026当前质保与客户索赔政策.md", "file_id": "policy", "chunk_index": 1},
-            "retrieval_score": 0.5,
-        }
-
-        self.assertEqual(classify_source_role(guide), "evaluation_guide")
-        reranked = rerank_documents("旧政策截图还能作为免费换机依据吗？", [guide, primary])
-        self.assertEqual(reranked[0]["id"], "policy")
-        self.assertEqual(reranked[-1]["source_role"], "evaluation_guide")
-
-    def test_reranker_does_not_classify_incidental_guide_reference_as_guide(self):
-        document = {
-            "id": "policy",
-            "content": "本政策另有测试指南用于操作培训，但当前条款本身是正式责任依据。",
-            "metadata": {"filename": "02-2026当前质保与客户索赔政策.md", "file_id": "policy", "chunk_index": 3},
-            "retrieval_score": 0.8,
-        }
-
-        self.assertEqual(classify_source_role(document), "primary")
-
-    def test_reranker_keeps_guide_relevant_for_explicit_guide_query(self):
-        guide = {
-            "id": "guide-cn",
-            "content": "语料索引说明索引只能定位文件，正式答案应引用政策、报告、台账或纪要原文。",
-            "metadata": {"filename": "00-语料索引与测试指南.md", "file_id": "guide", "chunk_index": 5},
-            "retrieval_score": 0.8,
-        }
-        unrelated = {
-            "id": "unrelated",
-            "content": "固件升级记录和客户通知需要保留。",
-            "metadata": {"filename": "06-FW-4.8.2固件变更说明.md", "file_id": "firmware", "chunk_index": 1},
-            "retrieval_score": 0.9,
-        }
-        query = "如果 RAG 只引用索引文件回答，应该如何评价？"
-
-        self.assertTrue(query_requests_evaluation_guide(query))
-        reranked = rerank_documents(query, [unrelated, guide])
-        self.assertEqual(reranked[0]["id"], "guide-cn")
-
-    def test_reranker_rewards_exact_domain_markers_over_generic_overlap(self):
-        documents = [
-            {
-                "id": "generic",
-                "content": "FAQ 简化口径说值班沟通时可以先看可用容量，但不能替代正式结算。",
-                "metadata": {"filename": "09-operator-faq-with-known-simplifications.md", "file_id": "faq", "chunk_index": 3},
+                "id": "independent",
+                "content": "重试超过上限后进入死信队列，由补偿任务处理。",
+                "metadata": {"file_id": "queue-doc"},
                 "retrieval_score": 0.9,
             },
-            {
-                "id": "south",
-                "content": "南网 S-DR-4 快速调节品类的响应窗口为 T+4，结算容量仍需按正式公式确认。",
-                "metadata": {"filename": "08-regional-appendix-south-grid.md", "file_id": "south", "chunk_index": 2},
-                "retrieval_score": 0.3,
-            },
         ]
 
-        reranked = rerank_documents("南网 S-DR-4 快速调节品类中 FAQ 说只看可用容量是否能直接用于结算容量？", documents)
+        reranked = rerank_documents("消息消费失败如何重试？", documents)
 
-        self.assertEqual(reranked[0]["id"], "south")
-        self.assertIn("S-DR-4", reranked[0]["matched_terms"])
-        self.assertGreater(reranked[0]["agentic_score"], reranked[1]["agentic_score"])
+        duplicate = next(item for item in reranked if item["id"] == "duplicate")
+        self.assertEqual(duplicate["duplicate_penalty"], 0.12)
+        self.assertLess(duplicate["rerank_score"], duplicate["base_rerank_score"])
 
-    def test_reranker_prefers_filename_entity_match_over_repeated_shared_chunk(self):
+    def test_semantic_reranker_orders_rrf_candidates_by_provider_result(self):
         documents = [
-            {
-                "id": "shared-directory",
-                "content": "BMS 日志字段中的 PackInsRes 和 CellDevMax 在不同软件版本中阈值不完全相同。技术组要求查询时带出软件版本号，否则报警曲线会被放在同一张图上比较。",
-                "metadata": {"filename": "售后专项材料目录.md", "file_id": "directory", "chunk_index": 11},
-                "retrieval_score": 0.92,
-                "retrieval_channels": ["bm25"],
-            },
-            {
-                "id": "bms-source",
-                "content": "BMS 日志字段中的 PackInsRes 和 CellDevMax 在不同软件版本中阈值不完全相同。技术组要求查询时带出软件版本号，否则老车和新车的报警曲线会被放在同一张图上比较。",
-                "metadata": {"filename": "BMS日志解读说明.md", "file_id": "bms", "chunk_index": 11},
-                "retrieval_score": 0.45,
-                "retrieval_channels": ["vector", "bm25"],
-            },
+            {"id": "rrf-first", "content": "Generic queue notes", "retrieval_score": 1.0},
+            {"id": "semantic-first", "content": "Consumer acknowledgement recovery", "retrieval_score": 0.7},
         ]
 
-        reranked = rerank_documents(
-            "BMS 日志字段 PackInsRes 和 CellDevMax 在查询时为什么要带软件版本号？",
-            documents,
-        )
+        with patch.object(settings, "reranker_enabled", True), patch.object(
+            settings, "reranker_api_key", "test-key"
+        ), patch.object(settings, "reranker_base_url", "https://reranker.invalid/v1"), patch.object(
+            settings, "reranker_model", "test-reranker"
+        ), patch("semantic_reranker.post_json", return_value={
+            "results": [
+                {"index": 1, "relevance_score": 8.1},
+                {"index": 0, "relevance_score": 2.4},
+            ],
+        }):
+            reranked = rerank_with_provider("How are consumers recovered?", documents)
 
-        self.assertEqual(reranked[0]["id"], "bms-source")
-        self.assertGreater(reranked[0]["filename_match_score"], 0)
-        self.assertGreater(reranked[0]["agentic_score"], reranked[1]["agentic_score"])
+        self.assertEqual(reranked[0]["id"], "semantic-first")
+        self.assertEqual(reranked[0]["reranker"], "test-reranker")
+        self.assertEqual(reranked[0]["reranker_score_type"], "provider_relevance_uncalibrated")
+        self.assertEqual(reranked[0]["semantic_rerank_score"], 8.1)
 
-    def test_reranker_demotes_background_boilerplate_when_direct_evidence_exists(self):
+    def test_semantic_reranker_falls_back_without_exposing_provider_error(self):
         documents = [
-            {
-                "id": "boilerplate",
-                "content": "本文件围绕材料索引、版本关系、引用边界整理，资料进入专项夹时已经经过至少一次部门内筛选。材料中提到的 B17、B17-2、B17-2L、B17-2 Plus 并不总是严格按研发平台命名。",
-                "metadata": {"filename": "售后专项材料目录.md", "file_id": "directory", "chunk_index": 1},
-                "retrieval_score": 0.91,
-            },
-            {
-                "id": "direct",
-                "content": "台账中的 B17-2、B17-2L、B17-2 Plus 不是销售配置过滤项，必须同时核对售后系统、包体铭牌和供应商批次表，避免漏掉同一实物批次车辆。",
-                "metadata": {"filename": "B17与B17-2返修台账摘录.md", "file_id": "ledger", "chunk_index": 15},
-                "retrieval_score": 0.52,
-            },
+            {"id": "first", "content": "OAuth rotation", "retrieval_score": 1.0},
+            {"id": "second", "content": "Unrelated notes", "retrieval_score": 0.2},
         ]
 
-        reranked = rerank_documents(
-            "B17、B17-2、B17-2L、B17-2 Plus 为什么不能只按销售配置过滤？",
-            documents,
-        )
+        with patch.object(settings, "reranker_enabled", True), patch.object(
+            settings, "reranker_api_key", "test-key"
+        ), patch.object(settings, "reranker_base_url", "https://reranker.invalid/v1"), patch.object(
+            settings, "reranker_model", "test-reranker"
+        ), patch("semantic_reranker.post_json", side_effect=RuntimeError("secret provider body")):
+            reranked = rerank_with_provider("OAuth rotation", documents)
 
-        self.assertEqual(reranked[0]["id"], "direct")
-        self.assertLess(reranked[1]["evidence_specificity"], reranked[0]["evidence_specificity"])
+        self.assertEqual(reranked[0]["id"], "first")
+        self.assertEqual(reranked[0]["reranker_fallback"], "provider_unavailable")
+        self.assertNotIn("secret provider body", str(reranked))
+
+    def test_reranker_fingerprint_changes_with_result_affecting_configuration(self):
+        with patch.object(settings, "reranker_enabled", True), patch.object(
+            settings, "reranker_base_url", "https://reranker-a.invalid/v1"
+        ), patch.object(settings, "reranker_model", "semantic-v1"), patch.object(
+            settings, "reranker_top_n", 10
+        ), patch.object(settings, "reranker_max_document_chars", 2000):
+            first = reranker_fingerprint()
+            settings.reranker_top_n = 20
+            second = reranker_fingerprint()
+
+        self.assertNotEqual(first, second)
+
+    def test_semantic_reranker_rejects_non_finite_provider_scores(self):
+        documents = [{"id": "first", "content": "OAuth rotation", "retrieval_score": 1.0}]
+        with patch.object(settings, "reranker_enabled", True), patch.object(
+            settings, "reranker_api_key", "test-key"
+        ), patch.object(settings, "reranker_base_url", "https://reranker.invalid/v1"), patch.object(
+            settings, "reranker_model", "test-reranker"
+        ), patch("semantic_reranker.post_json", return_value={
+            "results": [{"index": 0, "relevance_score": "NaN"}],
+        }):
+            reranked = rerank_with_provider("OAuth rotation", documents)
+
+        self.assertEqual(reranked[0]["reranker_fallback"], "provider_unavailable")
 
 
 if __name__ == "__main__":

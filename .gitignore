@@ -39,8 +39,9 @@ venv
 # Runtime files
 server/uploads
 
-# Local planning and working notes
-docs/
+# Local planning and working notes (keep the shipped RAG v2 architecture guide)
+docs/*
+!docs/rag-architecture-v2.md
 issue/
 
 # Local isolated development worktrees

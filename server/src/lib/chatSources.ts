@@ -6,6 +6,17 @@ export interface RagDocument {
     file_id?: string;
     chunk_index?: number;
     retrieval_mode?: string;
+    title?: string;
+    heading?: string;
+    section_path?: string | string[];
+    heading_path?: string | string[];
+    parent_id?: string;
+    parent_chunk_id?: string;
+    parent_title?: string;
+    parent_heading?: string;
+    parent_content?: string;
+    context_truncated?: boolean;
+    original_content_length?: number;
   };
   similarity?: number;
   agentic_score?: number;
@@ -42,7 +53,7 @@ export interface CitationDecision {
   supported: boolean;
   score: number;
   reasons: string[];
-  support_mode?: 'lexical' | 'bilingual_canonical';
+  support_mode?: 'lexical';
   auto_attributed?: boolean;
 }
 
@@ -65,6 +76,55 @@ export interface RagContextBuildResult {
     filename: string;
     chunk_index?: number;
   }>;
+}
+
+export interface RagAnswerContextBuildResult extends RagContextBuildResult {
+  documents: RagDocument[];
+  budget_tokens: number;
+  estimated_tokens: number;
+  truncated: boolean;
+}
+
+export interface AtomicClaimCitation {
+  source_number: number;
+  supported: boolean;
+  score: number;
+  marker_coverage: number;
+  polarity_conflict: boolean;
+  reasons: string[];
+}
+
+export interface AtomicClaimEvaluation {
+  claim_index: number;
+  text: string;
+  citation_labels: number[];
+  citations: AtomicClaimCitation[];
+  supported: boolean;
+  cited: boolean;
+  deterministic_checks: {
+    fact_markers: string[];
+    marker_match: boolean;
+    polarity_match: boolean;
+  };
+  reasons: string[];
+}
+
+export interface AnswerClaimEvaluation {
+  verifier_version: string;
+  claims: AtomicClaimEvaluation[];
+  citation_precision: number;
+  citation_coverage: number;
+  citation_f1: number;
+  hallucination_rate: number;
+  abstained: boolean;
+  retrieval_insufficient_evidence: boolean;
+  metric_applicability: {
+    claim_verification: boolean;
+    citation_precision: boolean;
+    citation_coverage: boolean;
+    citation_f1: boolean;
+    hallucination_rate: boolean;
+  };
 }
 
 export interface RagTraceStep {
@@ -114,6 +174,8 @@ export interface RagTraceSummary {
 
 const MAX_SOURCE_SNIPPET_LENGTH = 500;
 const MAX_RAG_CONTEXT_LENGTH = 12000;
+export const RAG_ANSWER_CONTEXT_BUDGET_TOKENS = 6000;
+export const ANSWER_CLAIM_VERIFIER_VERSION = 'deterministic-claims-v1';
 
 export const buildAnswerTaskGuidance = (question: string) => {
   const normalized = String(question || '').toLowerCase().replace(/\s+/g, '');
@@ -123,9 +185,6 @@ export const buildAnswerTaskGuidance = (question: string) => {
   ];
   if (/(哪些|有哪些|包含|包括|关联|保留什么|what|which|list)/i.test(normalized)) {
     guidance.push('For list or coverage questions, enumerate every distinct directly supported item, identifier, condition, or evidence category found in the relevant sources; do not provide only representative examples.');
-  }
-  if (/(新增|变化|变更|字段|new|changed|fields)/i.test(normalized)) {
-    guidance.push('If the wording could mean either strictly new items or all changed items, separate those categories explicitly: list genuinely new items first, then identify existing items whose meaning, structure, or capacity changed. Do not silently omit either category when the source presents both.');
   }
   if (/\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+(?:\.\d+)*\b/i.test(question)) {
     guidance.push('When the question explicitly names a document, version, case, or other exact identifier and several chunks from its matching source are present, inspect and synthesize all matching chunks before using more general sources.');
@@ -144,9 +203,6 @@ export const buildAnswerTaskGuidance = (question: string) => {
   }
   if (/(哪些文件|哪些材料|哪些来源|文件说明|材料共同|whichfiles|whichdocuments)/i.test(normalized)) {
     guidance.push('For source-set questions, name each directly relevant source and explain the unique role it plays in supporting the conclusion.');
-  }
-  if (/(索引|指南|目录|index|guide|catalog)/i.test(normalized)) {
-    guidance.push('When the question explicitly concerns an index, guide, or catalog, preserve its authority boundary: navigation metadata can locate evidence but is not itself sufficient primary evidence. State which primary policy, report, ledger, record, or minutes must be consulted.');
   }
   return guidance.join('\n');
 };
@@ -256,6 +312,217 @@ export const buildRagContextText = (documents: RagDocument[], maxLength = MAX_RA
   buildRagContext(documents, maxLength).text
 );
 
+export const estimateRagTokens = (value: string = ''): number => {
+  const cjkCount = (value.match(/[\u3400-\u9fff]/g) || []).length;
+  const nonCjk = value.replace(/[\u3400-\u9fff]/g, ' ');
+  const latinWordTokens = (nonCjk.match(/[A-Za-z0-9]+(?:[-_.:/][A-Za-z0-9]+)*/g) || [])
+    .reduce<number>((sum, token) => sum + Math.max(1, Math.ceil(token.length / 4)), 0);
+  const punctuationTokens = Math.ceil((nonCjk.match(/[^\sA-Za-z0-9]/g) || []).length / 2);
+  return cjkCount + latinWordTokens + punctuationTokens;
+};
+
+const truncateToEstimatedTokens = (value: string, tokenBudget: number) => {
+  if (tokenBudget <= 0) return '';
+  if (estimateRagTokens(value) <= tokenBudget) return value;
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (estimateRagTokens(value.slice(0, middle)) <= tokenBudget) low = middle;
+    else high = middle - 1;
+  }
+  return value.slice(0, low).trimEnd();
+};
+
+const normalizedSectionPath = (metadata: RagDocument['metadata']) => {
+  const value = metadata?.section_path || metadata?.heading_path;
+  if (Array.isArray(value)) return value.filter(Boolean).join(' > ');
+  return String(value || '').trim();
+};
+
+const answerContextBody = (document: RagDocument) => {
+  const content = String(document.content || '').trim();
+  const parentContent = String(document.metadata?.parent_content || '').trim();
+  if (!parentContent || parentContent.includes(content)) return content;
+  return `Parent context:\n${parentContent.slice(0, 2000)}\n\nRetrieved passage:\n${content}`;
+};
+
+const diversifyAndDeduplicateDocuments = (documents: RagDocument[]) => {
+  const seenIdentity = new Set<string>();
+  const seenContent = new Set<string>();
+  const groups = new Map<string, RagDocument[]>();
+  for (const document of documents) {
+    const content = String(document.content || '').trim();
+    if (!content) continue;
+    const identity = document.id
+      || `${document.metadata?.file_id || ''}:${document.metadata?.chunk_index ?? ''}:${content.slice(0, 120)}`;
+    const normalizedContent = content.toLowerCase().replace(/\s+/g, ' ');
+    if (seenIdentity.has(identity) || seenContent.has(normalizedContent)) continue;
+    seenIdentity.add(identity);
+    seenContent.add(normalizedContent);
+    const sourceKey = document.metadata?.file_id || document.metadata?.filename || identity;
+    const group = groups.get(sourceKey) || [];
+    group.push(document);
+    groups.set(sourceKey, group);
+  }
+
+  const diversified: RagDocument[] = [];
+  const queues = [...groups.values()];
+  while (queues.some((queue) => queue.length > 0)) {
+    for (const queue of queues) {
+      const document = queue.shift();
+      if (document) diversified.push(document);
+    }
+  }
+  return diversified;
+};
+
+export const packRagAnswerContext = (
+  documents: RagDocument[],
+  budgetTokens = RAG_ANSWER_CONTEXT_BUDGET_TOKENS
+): RagAnswerContextBuildResult => {
+  const boundedBudget = Math.max(1, Math.floor(budgetTokens));
+  const diversified = diversifyAndDeduplicateDocuments(documents);
+  let sourceNumber = 0;
+  let inventoryNumber = 0;
+  const entries = diversified.map((document) => {
+    const isInventory = document.metadata?.retrieval_mode === 'metadata_inventory';
+    const labelNumber = isInventory ? ++inventoryNumber : ++sourceNumber;
+    const filename = document.metadata?.filename || 'Unknown source';
+    const heading = document.metadata?.heading || document.metadata?.title || normalizedSectionPath(document.metadata);
+    const parent = document.metadata?.parent_heading
+      || document.metadata?.parent_title
+      || document.metadata?.parent_chunk_id
+      || document.metadata?.parent_id;
+    const chunkNumber = typeof document.metadata?.chunk_index === 'number'
+      ? document.metadata.chunk_index + 1
+      : undefined;
+    const authority = document.source_role === 'evaluation_guide'
+      ? ' [role: evaluation guide; navigation only, not sufficient primary business evidence]'
+      : document.source_role === 'index'
+        ? ' [role: index; navigation only, not sufficient primary business evidence]'
+        : '';
+    const metadataSuffix = [
+      chunkNumber ? `chunk #${chunkNumber}` : '',
+      heading ? `section: ${heading}` : '',
+      parent ? `parent: ${parent}` : '',
+    ].filter(Boolean).join(', ');
+    const header = isInventory
+      ? `[Inventory ${labelNumber}] ${filename}${metadataSuffix ? `, ${metadataSuffix}` : ''}`
+      : `[Source ${labelNumber}] ${filename}${metadataSuffix ? `, ${metadataSuffix}` : ''}${authority}`;
+    return {
+      document,
+      isInventory,
+      labelNumber,
+      filename,
+      header,
+      body: answerContextBody(document),
+      included: '',
+    };
+  });
+
+  if (entries.length === 0) {
+    return {
+      text: '',
+      allocations: [],
+      source_map: [],
+      documents: [],
+      budget_tokens: boundedBudget,
+      estimated_tokens: 0,
+      truncated: false,
+    };
+  }
+
+  const separator = '\n\n---\n\n';
+  const separatorTokens = estimateRagTokens(separator);
+  const selectedEntries: typeof entries = [];
+  let reservedTokens = 0;
+  for (const entry of entries) {
+    const headerTokens = estimateRagTokens(`${entry.header}\n`);
+    const minimumBodyTokens = Math.min(
+      estimateRagTokens(entry.body),
+      entry.isInventory ? 12 : 32,
+    );
+    const requiredTokens = headerTokens
+      + (selectedEntries.length > 0 ? separatorTokens : 0)
+      + minimumBodyTokens;
+    if (selectedEntries.length > 0 && reservedTokens + requiredTokens > boundedBudget) break;
+    if (reservedTokens + headerTokens >= boundedBudget) break;
+    selectedEntries.push(entry);
+    reservedTokens += requiredTokens;
+  }
+
+  const fixedTokens = selectedEntries.reduce<number>(
+    (sum, entry) => sum + estimateRagTokens(`${entry.header}\n`),
+    0,
+  ) + separatorTokens * Math.max(0, selectedEntries.length - 1);
+  const bodyBudget = Math.max(0, boundedBudget - fixedTokens);
+  const tokenAllocations = selectedEntries.map((entry) => Math.min(
+    estimateRagTokens(entry.body),
+    entry.isInventory ? 12 : 32,
+  ));
+  let remainingTokens = Math.max(0, bodyBudget - tokenAllocations.reduce((sum, value) => sum + value, 0));
+  const weights = selectedEntries.map((entry) => {
+    const score = entry.document.agentic_score ?? entry.document.similarity ?? 0;
+    return Number.isFinite(score) && score > 0 ? score : 0.1;
+  });
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0) || 1;
+  const weightedBudget = remainingTokens;
+  selectedEntries.forEach((entry, index) => {
+    const required = Math.max(0, estimateRagTokens(entry.body) - tokenAllocations[index]);
+    const share = Math.min(required, Math.floor(weightedBudget * (weights[index] / totalWeight)));
+    tokenAllocations[index] += share;
+    remainingTokens -= share;
+  });
+  for (let index = 0; index < selectedEntries.length && remainingTokens > 0; index += 1) {
+    const required = Math.max(0, estimateRagTokens(selectedEntries[index].body) - tokenAllocations[index]);
+    const extra = Math.min(required, remainingTokens);
+    tokenAllocations[index] += extra;
+    remainingTokens -= extra;
+  }
+  selectedEntries.forEach((entry, index) => {
+    entry.included = truncateToEstimatedTokens(entry.body, tokenAllocations[index]);
+  });
+
+  const includedEntries = entries.filter((entry) => entry.included.length > 0);
+  const text = includedEntries.map((entry) => `${entry.header}\n${entry.included}`).join(separator);
+  const packedDocuments = includedEntries.map((entry) => ({
+    ...entry.document,
+    content: entry.included,
+    metadata: {
+      ...entry.document.metadata,
+      context_truncated: entry.included.length < entry.body.length,
+      original_content_length: entry.body.length,
+    },
+  }));
+  const allocations = entries.map((entry) => ({
+    source_number: entry.labelNumber,
+    chunk_id: entry.document.id,
+    filename: entry.filename,
+    included_chars: entry.included.length,
+    total_chars: entry.body.length,
+    truncated: entry.included.length < entry.body.length,
+  }));
+  const source_map = includedEntries
+    .filter((entry) => !entry.isInventory)
+    .map((entry) => ({
+      source_number: entry.labelNumber,
+      chunk_id: entry.document.id,
+      file_id: entry.document.metadata?.file_id,
+      filename: entry.filename,
+      chunk_index: entry.document.metadata?.chunk_index,
+    }));
+  return {
+    text,
+    allocations,
+    source_map,
+    documents: packedDocuments,
+    budget_tokens: boundedBudget,
+    estimated_tokens: estimateRagTokens(text),
+    truncated: allocations.some((entry) => entry.truncated) || packedDocuments.length < diversified.length,
+  };
+};
+
 const STOPWORDS = new Set([
   'the',
   'and',
@@ -334,36 +601,6 @@ const extractGroundingTerms = (value = '') => {
 
   return terms;
 };
-
-const BILINGUAL_GROUNDING_CONCEPTS: Array<[string, RegExp]> = [
-  ['audit', /审计|audit(?:ing)?/i],
-  ['management_review', /管理评审|management\s+review/i],
-  ['close', /关闭|结案|close[ds]?|closure|fully\s+closed|completely\s+closed/i],
-  ['complete', /完成|已完成|complete[ds]?|completion/i],
-  ['upgrade', /升级|更新|upgrad(?:e|ed|ing)|update[ds]?/i],
-  ['customer_compensation', /客户赔付|客户补偿|customer\s+(?:compensation|reimbursement)|compensat(?:e|ed|ion)/i],
-  ['supplier_deduction', /供应商扣款|supplier\s+deduction|supplier\s+chargeback/i],
-  ['notification', /通知|通报|notification|notify|notified/i],
-  ['approval', /审批|批准|approval|approved|authorization|authorized/i],
-  ['evidence', /证据|evidence|proof/i],
-  ['evidence_package', /证据包|evidence\s+package/i],
-  ['policy', /政策|policy|policies/i],
-  ['report', /报告|report/i],
-  ['ledger', /台账|ledger|register/i],
-  ['minutes', /纪要|minutes/i],
-  ['source', /来源|原文|source|primary\s+document/i],
-  ['insufficient', /不足|不充分|insufficient|inadequate|not\s+enough/i],
-  ['historical_equipment', /历史设备|历史所有设备|historical\s+(?:equipment|devices?)/i],
-  ['responsible_person', /责任人|responsible\s+person|owner/i],
-  ['measure_submitted', /提交措施|措施已提交|submitted?\s+(?:the\s+)?measures?/i],
-  ['system_live', /系统上线|systems?\s+(?:has\s+|have\s+)?gone\s+live|system\s+launch/i],
-];
-
-const extractCanonicalGroundingConcepts = (value = '') => new Set(
-  BILINGUAL_GROUNDING_CONCEPTS
-    .filter(([, pattern]) => pattern.test(value))
-    .map(([concept]) => concept)
-);
 
 const overlapRatio = (left: Set<string>, right: Set<string>) => {
   if (left.size === 0 || right.size === 0) return 0;
@@ -475,6 +712,127 @@ const citationPolarityConflict = (claim: string, sourceContent: string) => {
     && sourcePolarity !== claimPolarity;
 };
 
+const splitAtomicClaims = (answer: string) => String(answer || '')
+  .replace(/([。！？!?；;])\s*(\[\s*Source\s+\d+\s*\])/gi, '$2$1')
+  .split(/[。！？!?；;\n]+|\.(?=\s+|$)/)
+  .map((item) => item.replace(/^\s*(?:[-*•]|\d+[.)、])\s*/, '').trim())
+  .filter((item) => item.length >= 4 && !/^#{1,6}\s*\S+$/.test(item));
+
+const evaluateClaimAgainstSource = (claim: string, source: ChatSource | undefined, sourceNumber: number) => {
+  if (!source) {
+    return {
+      source_number: sourceNumber,
+      supported: false,
+      score: 0,
+      marker_coverage: 0,
+      polarity_conflict: false,
+      reasons: ['invalid_citation_label'],
+    } satisfies AtomicClaimCitation;
+  }
+  const evidence = `${source.filename}\n${source.content}`;
+  const claimTerms = extractGroundingTerms(claim);
+  const factMarkers = extractFactMarkers(claim);
+  const termScore = overlapRatio(claimTerms, extractGroundingTerms(evidence));
+  const markerCoverage = factMarkers.size
+    ? overlapRatio(factMarkers, extractFactMarkers(evidence))
+    : 1;
+  const polarityConflict = citationPolarityConflict(claim, evidence);
+  const minimumTermScore = factMarkers.size > 0 ? 0.08 : 0.12;
+  const reasons: string[] = [];
+  if (termScore < minimumTermScore) reasons.push('claim_not_supported');
+  if (markerCoverage < 1) reasons.push('fact_marker_mismatch');
+  if (polarityConflict) reasons.push('polarity_mismatch');
+  return {
+    source_number: sourceNumber,
+    supported: reasons.length === 0,
+    score: clampScore(termScore * 0.75 + markerCoverage * 0.25),
+    marker_coverage: clampScore(markerCoverage),
+    polarity_conflict: polarityConflict,
+    reasons,
+  } satisfies AtomicClaimCitation;
+};
+
+export const evaluateAnswerClaims = (
+  answer: string,
+  sources: ChatSource[],
+  insufficientEvidence = false
+): AnswerClaimEvaluation => {
+  const claims = splitAtomicClaims(answer).map((rawClaim, index) => {
+    const citationLabels = [...new Set([...rawClaim.matchAll(/\[\s*Source\s+(\d+)\s*\]/gi)]
+      .map((match) => Number(match[1])))]
+      .filter((sourceNumber) => Number.isInteger(sourceNumber) && sourceNumber > 0);
+    const claim = rawClaim.replace(/\[\s*Source\s+\d+\s*\]/gi, '').trim();
+    const citedEvaluations = citationLabels.map((sourceNumber) => (
+      evaluateClaimAgainstSource(claim, sources[sourceNumber - 1], sourceNumber)
+    ));
+    const candidateEvaluations = citationLabels.length > 0
+      ? citedEvaluations
+      : sources.map((source, sourceIndex) => evaluateClaimAgainstSource(claim, source, sourceIndex + 1));
+    const bestEvaluation = candidateEvaluations.reduce<AtomicClaimCitation | undefined>(
+      (best, current) => !best || current.score > best.score ? current : best,
+      undefined
+    );
+    const cautiousInsufficientClaim = insufficientEvidence && hasCautiousInsufficientAnswer(claim);
+    const supported = cautiousInsufficientClaim || Boolean(bestEvaluation?.supported);
+    const factMarkers = [...extractFactMarkers(claim)];
+    const reasons = cautiousInsufficientClaim
+      ? []
+      : bestEvaluation?.reasons || ['no_retrieved_sources'];
+    return {
+      claim_index: index + 1,
+      text: claim,
+      citation_labels: citationLabels,
+      citations: citedEvaluations,
+      supported,
+      cited: citationLabels.length > 0,
+      deterministic_checks: {
+        fact_markers: factMarkers,
+        marker_match: cautiousInsufficientClaim || Boolean(bestEvaluation && bestEvaluation.marker_coverage >= 1),
+        polarity_match: cautiousInsufficientClaim || !bestEvaluation?.polarity_conflict,
+      },
+      reasons,
+    } satisfies AtomicClaimEvaluation;
+  });
+
+  const citationDecisions = claims.flatMap((claim) => claim.citations);
+  const supportedCitations = citationDecisions.filter((citation) => citation.supported).length;
+  const supportedCitedClaims = claims.filter((claim) => (
+    claim.cited && claim.citations.some((citation) => citation.supported)
+  )).length;
+  const citationPrecision = citationDecisions.length
+    ? clampScore(supportedCitations / citationDecisions.length)
+    : 0;
+  const citationCoverage = claims.length
+    ? clampScore(supportedCitedClaims / claims.length)
+    : 0;
+  const citationF1 = citationPrecision + citationCoverage > 0
+    ? clampScore((2 * citationPrecision * citationCoverage) / (citationPrecision + citationCoverage))
+    : 0;
+  const hallucinationRate = claims.length
+    ? clampScore(claims.filter((claim) => !claim.supported).length / claims.length)
+    : 0;
+  const claimMetricsApplicable = sources.length > 0 && claims.length > 0;
+  const precisionApplicable = claimMetricsApplicable && citationDecisions.length > 0;
+
+  return {
+    verifier_version: ANSWER_CLAIM_VERIFIER_VERSION,
+    claims,
+    citation_precision: citationPrecision,
+    citation_coverage: citationCoverage,
+    citation_f1: citationF1,
+    hallucination_rate: hallucinationRate,
+    abstained: hasCautiousInsufficientAnswer(answer),
+    retrieval_insufficient_evidence: insufficientEvidence,
+    metric_applicability: {
+      claim_verification: claimMetricsApplicable,
+      citation_precision: precisionApplicable,
+      citation_coverage: claimMetricsApplicable,
+      citation_f1: precisionApplicable,
+      hallucination_rate: claimMetricsApplicable,
+    },
+  };
+};
+
 export const verifyAnswerGrounding = (
   answer: string,
   sources: ChatSource[],
@@ -483,12 +841,20 @@ export const verifyAnswerGrounding = (
   verificationSources: ChatSource[] = sources
 ): AnswerGroundingVerification => {
   if (!sources.length) {
+    const normalizedAnswer = answer.trim();
+    const correctAbstention = Boolean(
+      normalizedAnswer
+      && insufficientEvidence
+      && hasCautiousInsufficientAnswer(normalizedAnswer)
+    );
     return {
-      status: 'not_applicable',
-      score: 1,
+      status: correctAbstention ? 'not_applicable' : 'unsupported',
+      score: 0,
       supported_source_count: 0,
       verified_sources: [],
-      reasons: ['no_sources'],
+      reasons: correctAbstention
+        ? ['no_sources', 'correct_abstention']
+        : ['no_sources', normalizedAnswer ? 'answer_without_evidence' : 'empty_answer'],
     };
   }
 
@@ -520,29 +886,22 @@ export const verifyAnswerGrounding = (
       const sourceEvidence = `${source.filename}\n${source.content}`;
       const sourceTerms = extractGroundingTerms(sourceEvidence);
       const termScore = overlapRatio(claimTerms, sourceTerms);
-      const claimConcepts = extractCanonicalGroundingConcepts(claim);
-      const sourceConcepts = extractCanonicalGroundingConcepts(sourceEvidence);
-      const canonicalScore = overlapRatio(claimConcepts, sourceConcepts);
       const claimMarkers = extractFactMarkers(claim);
       const sourceMarkers = extractFactMarkers(sourceEvidence);
       const markerCoverage = claimMarkers.size ? overlapRatio(claimMarkers, sourceMarkers) : 1;
       const polarityConflict = citationPolarityConflict(claim, sourceEvidence);
       const reasons: string[] = [];
       const minimumTermScore = claimMarkers.size > 0 ? 0.08 : 0.12;
-      const bilingualSupported = claimConcepts.size > 0 && canonicalScore >= 0.5;
-      if (termScore < minimumTermScore && !bilingualSupported) reasons.push('citation_claim_not_supported');
+      if (termScore < minimumTermScore) reasons.push('citation_claim_not_supported');
       if (markerCoverage < 1) reasons.push('missing_claim_markers_in_source');
       if (polarityConflict) reasons.push('citation_polarity_conflict');
-      const semanticScore = Math.max(termScore, canonicalScore);
-      const score = clampScore(semanticScore * 0.75 + markerCoverage * 0.25);
+      const score = clampScore(termScore * 0.75 + markerCoverage * 0.25);
       return {
         source_number: sourceNumber,
         supported: reasons.length === 0,
         score,
         reasons,
-        support_mode: bilingualSupported && termScore < minimumTermScore
-          ? 'bilingual_canonical'
-          : 'lexical',
+        support_mode: 'lexical',
       };
     });
     const supportedLabels = new Set(decisions.filter((item) => item.supported).map((item) => item.source_number));
@@ -550,28 +909,23 @@ export const verifyAnswerGrounding = (
     const autoAttributionDecisions: CitationDecision[] = [];
     for (const claim of uncitedSubstantiveClaims(normalizedAnswer)) {
       const claimTerms = extractGroundingTerms(claim);
-      const claimConcepts = extractCanonicalGroundingConcepts(claim);
       const claimMarkers = extractFactMarkers(claim);
-      let best: { sourceNumber: number; score: number; mode: 'lexical' | 'bilingual_canonical' } | null = null;
+      let best: { sourceNumber: number; score: number } | null = null;
       for (let index = 0; index < completeSources.length; index += 1) {
         const source = completeSources[index];
         const sourceEvidence = `${source.filename}\n${source.content}`;
         const termScore = overlapRatio(claimTerms, extractGroundingTerms(sourceEvidence));
-        const canonicalScore = overlapRatio(claimConcepts, extractCanonicalGroundingConcepts(sourceEvidence));
         const markerCoverage = claimMarkers.size
           ? overlapRatio(claimMarkers, extractFactMarkers(sourceEvidence))
           : 1;
         if (markerCoverage < 1 || citationPolarityConflict(claim, sourceEvidence)) continue;
         const directSupported = termScore >= 0.18;
-        const bilingualSupported = claimConcepts.size > 0 && canonicalScore >= 0.6;
-        if (!directSupported && !bilingualSupported) continue;
-        const semanticScore = Math.max(termScore, canonicalScore);
-        const score = clampScore(semanticScore * 0.75 + markerCoverage * 0.25);
+        if (!directSupported) continue;
+        const score = clampScore(termScore * 0.75 + markerCoverage * 0.25);
         if (!best || score > best.score) {
           best = {
             sourceNumber: index + 1,
             score,
-            mode: bilingualSupported && !directSupported ? 'bilingual_canonical' : 'lexical',
           };
         }
       }
@@ -582,7 +936,7 @@ export const verifyAnswerGrounding = (
           supported: true,
           score: best.score,
           reasons: [],
-          support_mode: best.mode,
+          support_mode: 'lexical',
           auto_attributed: true,
         });
       }

@@ -6,6 +6,7 @@ import { ragEvalQueue } from '../services/ragEvalQueue';
 import { maintenanceService } from '../services/maintenance';
 import { artifactCleanupQueue } from '../services/cleanupQueue';
 import { toSafeError } from './safeError';
+import { closeRedis } from './redis';
 
 const closeHttpServer = (server: Server) => new Promise<void>((resolve, reject) => {
   server.close((error) => {
@@ -22,9 +23,6 @@ export const installGracefulShutdown = (server: Server) => {
     isShuttingDown = true;
 
     console.log(`[Server] ${signal} received; closing HTTP server`);
-    fileQueue.stop();
-    ragEvalQueue.stop();
-    artifactCleanupQueue.stop();
     maintenanceService.stop();
 
     const timeout = setTimeout(() => {
@@ -35,6 +33,12 @@ export const installGracefulShutdown = (server: Server) => {
 
     try {
       await closeHttpServer(server);
+      await Promise.all([
+        fileQueue.stop(),
+        ragEvalQueue.stop(),
+        artifactCleanupQueue.stop(),
+      ]);
+      await closeRedis();
       await closeDatabasePool();
       clearTimeout(timeout);
       console.log('[Server] Shutdown complete');

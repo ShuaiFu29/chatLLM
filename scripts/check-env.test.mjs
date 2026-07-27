@@ -13,6 +13,7 @@ const TEST_INFRA_ENV = {
   POSTGRES_DB: 'chatllm',
   POSTGRES_USER: 'test-postgres-user',
   POSTGRES_PASSWORD: 'test-postgres-password-at-least-32-characters',
+  REDIS_PASSWORD: 'test-redis-password-at-least-32-characters',
   MINIO_ROOT_USER: 'test-minio-root-user',
   MINIO_ROOT_PASSWORD: 'test-minio-password-at-least-32-characters',
   MILVUS_MINIO_ROOT_USER: 'test-milvus-minio-root-user',
@@ -28,6 +29,7 @@ const validateProjectEnvMaps = (envMaps) => validateProjectEnvMapsRaw({
     ...(envMaps['.env'] || {}),
   },
   'server/.env': {
+    REDIS_URL: 'redis://localhost:6379/0',
     RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN,
     ...(envMaps['server/.env'] || {}),
   },
@@ -269,6 +271,7 @@ test('validateProjectEnvMaps rejects audited infrastructure credentials on non-l
 test('validateProjectEnvMaps rejects documented infrastructure password placeholders without echoing values', () => {
   const placeholders = {
     POSTGRES_PASSWORD: 'replace-with-generated-postgres-password',
+    REDIS_PASSWORD: 'replace-with-generated-redis-password',
     MINIO_ROOT_PASSWORD: 'replace-with-generated-minio-password',
     MILVUS_MINIO_ROOT_PASSWORD: 'replace-with-generated-milvus-minio-password',
     NEO4J_PASSWORD: 'replace-with-generated-neo4j-password',
@@ -405,6 +408,122 @@ test('validateProjectEnvMaps requires Kimi judge settings only when RAG judge is
       RAG_JUDGE_MODEL: 'moonshot-v1-8k',
     },
   }), []);
+});
+
+test('validateProjectEnvMaps requires complete provider settings for every enabled optional RAG capability', () => {
+  const baseRag = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    MILVUS_URI: 'http://localhost:19530',
+    MILVUS_COLLECTION: 'document_chunks',
+    EMBEDDING_PROVIDER: 'local',
+    EMBEDDING_DIMENSION: '1024',
+  };
+  const providerCapabilities = [
+    ['QUERY_REWRITE_ENABLED', 'QUERY_REWRITE_API_KEY, QUERY_REWRITE_BASE_URL, QUERY_REWRITE_MODEL'],
+    ['RERANKER_ENABLED', 'RERANKER_API_KEY, RERANKER_BASE_URL, RERANKER_MODEL'],
+    ['GRAPH_EXTRACTION_ENABLED', 'GRAPH_EXTRACTION_API_KEY, GRAPH_EXTRACTION_BASE_URL, GRAPH_EXTRACTION_MODEL'],
+  ];
+
+  for (const [enabledKey, requiredKeys] of providerCapabilities) {
+    const issues = validateProjectEnvMaps({
+      'server/.env': {
+        DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+        S3_ENDPOINT: 'http://localhost:9000',
+        S3_ACCESS_KEY: 'minioadmin',
+        S3_SECRET_KEY: 'minioadmin',
+        JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+        DEEPSEEK_API_KEY: 'sk-test',
+      },
+      'rag-service/.env': { ...baseRag, [enabledKey]: 'true' },
+    });
+
+    assert.deepEqual(issues, [`rag-service/.env is missing required keys: ${requiredKeys}`]);
+  }
+});
+
+test('validateProjectEnvMaps keeps Redis L1 disabled unless it has a separate configured instance', () => {
+  const server = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  };
+  const base = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    MILVUS_URI: 'http://localhost:19530',
+    MILVUS_COLLECTION: 'document_chunks',
+    EMBEDDING_PROVIDER: 'local',
+    EMBEDDING_DIMENSION: '1024',
+    REDIS_CACHE_ENABLED: 'true',
+  };
+
+  assert.deepEqual(validateProjectEnvMaps({ 'server/.env': server, 'rag-service/.env': base }), [
+    'rag-service/.env is missing required keys: CACHE_REDIS_URL',
+  ]);
+  assert.deepEqual(validateProjectEnvMaps({
+    'server/.env': server,
+    'rag-service/.env': {
+      ...base,
+      REDIS_URL: 'redis://localhost:6379/0',
+      CACHE_REDIS_URL: 'redis://localhost:6379/0',
+    },
+  }), [
+    'rag-service/.env CACHE_REDIS_URL must be separate from REDIS_URL',
+  ]);
+  assert.deepEqual(validateProjectEnvMaps({
+    'server/.env': server,
+    'rag-service/.env': {
+      ...base,
+      REDIS_URL: 'redis://localhost:6379/0',
+      CACHE_REDIS_URL: 'redis://localhost:6380/0',
+    },
+  }), []);
+});
+
+test('validateProjectEnvMaps enforces configurable RAG evaluation case limits', () => {
+  const server = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  };
+  const rag = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    MILVUS_URI: 'http://localhost:19530',
+    MILVUS_COLLECTION: 'document_chunks',
+    EMBEDDING_PROVIDER: 'local',
+    EMBEDDING_DIMENSION: '1024',
+  };
+
+  assert.deepEqual(validateProjectEnvMaps({
+    'server/.env': {
+      ...server,
+      RAG_EVAL_MAX_CASES_PER_DATASET: '100',
+      RAG_EVAL_MAX_CASES_PER_RUN: '101',
+    },
+    'rag-service/.env': rag,
+  }), [
+    'server/.env RAG_EVAL_MAX_CASES_PER_RUN must not exceed RAG_EVAL_MAX_CASES_PER_DATASET',
+  ]);
+  assert.deepEqual(validateProjectEnvMaps({
+    'server/.env': { ...server, RAG_EVAL_MAX_CASES_PER_DATASET: '5001' },
+    'rag-service/.env': rag,
+  }), [
+    'server/.env RAG_EVAL_MAX_CASES_PER_DATASET must be an integer between 1 and 5000',
+  ]);
 });
 
 test('validateProjectEnvMaps rejects mismatched localhost backend port', () => {

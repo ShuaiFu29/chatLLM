@@ -177,6 +177,29 @@ const ragEvalDatasetUpdateBody = strictBody({
   projectSpaceId: optionalProjectSpaceId,
 }, { aliases: projectSpaceAliases });
 
+const ragEvalGraphRelationExpectation = z.object({
+  source: requiredText(200),
+  relation: requiredText(120),
+  target: requiredText(200),
+}).strict();
+
+const ragEvalHumanScores = z.object({
+  correctness: finiteNumber.min(0).max(1).optional(),
+  completeness: finiteNumber.min(0).max(1).optional(),
+  faithfulness: finiteNumber.min(0).max(1).optional(),
+}).strict();
+
+const ragEvalEvaluationSpec = z.object({
+  tags: z.array(requiredText(80)).max(20).optional(),
+  category: optionalText(80),
+  difficulty: z.enum(['easy', 'medium', 'hard']).optional(),
+  expected_chunk_ids: z.array(requiredText(128)).max(50).optional(),
+  expected_evidence: z.array(requiredText(1000)).max(20).optional(),
+  expected_answerable: z.boolean().nullable().optional(),
+  expected_graph_relations: z.array(ragEvalGraphRelationExpectation).max(20).optional(),
+  human_scores: ragEvalHumanScores.optional(),
+}).strict();
+
 const ragEvalCaseCreateBody = strictBody({
   question: requiredText(4096),
   expected_answer: optionalText(4000),
@@ -185,11 +208,14 @@ const ragEvalCaseCreateBody = strictBody({
   expectedKeywords: z.array(requiredText(120)).max(20).optional(),
   expected_source_files: z.array(requiredText(120)).max(20).optional(),
   expectedSourceFiles: z.array(requiredText(120)).max(20).optional(),
+  evaluation_spec: ragEvalEvaluationSpec.optional(),
+  evaluationSpec: ragEvalEvaluationSpec.optional(),
 }, {
   aliases: [
     ['expected_answer', 'expectedAnswer'],
     ['expected_keywords', 'expectedKeywords'],
     ['expected_source_files', 'expectedSourceFiles'],
+    ['evaluation_spec', 'evaluationSpec'],
   ],
 });
 

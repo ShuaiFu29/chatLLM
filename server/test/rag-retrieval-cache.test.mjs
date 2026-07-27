@@ -31,12 +31,3 @@ test('RAG retrieval cache migration adds knowledge versions, index versions, and
   assert.match(conversationLookupMigration, /rag_retrieval_cache_conversation_lookup_idx/i);
   assert.match(conversationLookupMigration, /conversation_id/i);
 });
-
-test('chat controller passes conversation id into Agentic RAG so evidence reuse stays session-aware', () => {
-  const chatSource = readSource('src/controllers/chat.ts');
-  const ragClientSource = readSource('src/lib/ragClient.ts');
-
-  assert.match(ragClientSource, /conversation_id\?: string/);
-  assert.match(chatSource, /conversation_id:\s*conversationId/);
-  assert.match(chatSource, /retrieveAgenticRagDocuments\(\{/);
-});

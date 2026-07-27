@@ -39,6 +39,7 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   const chatMaxConcurrent = asInt(serverEnv, 'CHAT_STREAM_MAX_CONCURRENT', 20);
   const ragEvalConcurrency = asInt(serverEnv, 'RAG_EVAL_QUEUE_CONCURRENCY', 1);
   const ragHealthTimeoutMs = asInt(serverEnv, 'RAG_HEALTH_TIMEOUT_MS', 10000);
+  const ragReadinessTimeoutMs = asInt(ragEnv, 'RAG_READINESS_TIMEOUT_MS', 8000);
   const ragRetrieveTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TIMEOUT_MS', 30000);
   const ragRetrieveMaxAttempts = asInt(serverEnv, 'RAG_RETRIEVE_MAX_ATTEMPTS', 2);
   const ragRetrieveTotalTimeoutMs = asInt(serverEnv, 'RAG_RETRIEVE_TOTAL_TIMEOUT_MS', 60000);
@@ -129,6 +130,16 @@ export function validateCapacityConfig({ envMaps, composeText = '', profile = 'd
   }
   checks.push({ label: 'RAG_RETRIEVE_TIMEOUT_MS', status: 'ok', detail: `RAG_RETRIEVE_TIMEOUT_MS=${ragRetrieveTimeoutMs}` });
   checks.push({ label: 'RAG_HEALTH_TIMEOUT_MS', status: 'ok', detail: `RAG_HEALTH_TIMEOUT_MS=${ragHealthTimeoutMs}` });
+  checks.push({
+    label: 'RAG_READINESS_TIMEOUT_MS',
+    status: ragHealthTimeoutMs >= ragReadinessTimeoutMs ? 'ok' : 'warn',
+    detail: `RAG_READINESS_TIMEOUT_MS=${ragReadinessTimeoutMs}, RAG_HEALTH_TIMEOUT_MS=${ragHealthTimeoutMs}`,
+  });
+  if (ragHealthTimeoutMs < ragReadinessTimeoutMs) {
+    warnings.push(
+      `RAG_HEALTH_TIMEOUT_MS should be >= RAG_READINESS_TIMEOUT_MS (${ragHealthTimeoutMs} < ${ragReadinessTimeoutMs})`
+    );
+  }
   checks.push({ label: 'RAG_RETRIEVE_MAX_ATTEMPTS', status: 'ok', detail: `RAG_RETRIEVE_MAX_ATTEMPTS=${ragRetrieveMaxAttempts}` });
   checks.push({ label: 'RAG_RETRIEVE_TOTAL_TIMEOUT_MS', status: ragRetrieveTotalTimeoutMs >= ragRetrieveTimeoutMs ? 'ok' : 'warn', detail: `RAG_RETRIEVE_TOTAL_TIMEOUT_MS=${ragRetrieveTotalTimeoutMs}` });
   if (ragRetrieveTotalTimeoutMs < ragRetrieveTimeoutMs) {

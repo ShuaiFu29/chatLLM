@@ -18,21 +18,14 @@ const {
 
 test('buildAnswerTaskGuidance adds question-type completeness requirements without expectations', () => {
   const list = buildAnswerTaskGuidance('审计证据链包含哪些项？');
-  const calculation = buildAnswerTaskGuidance('供应商建议扣款如何计算？');
-  const decision = buildAnswerTaskGuidance('管理评审是否批准全平台召回？');
+  const calculation = buildAnswerTaskGuidance('运行成本如何计算？');
+  const decision = buildAnswerTaskGuidance('当前条件是否允许直接发布？');
 
   assert.match(list, /enumerate every distinct/i);
   assert.match(calculation, /formula/i);
   assert.match(calculation, /intermediate/i);
   assert.match(decision, /direct yes, no, conditional/i);
   assert.doesNotMatch(`${list}${calculation}${decision}`, /expected answer|expected keyword/i);
-});
-
-test('buildAnswerTaskGuidance resolves new-versus-changed field ambiguity explicitly', () => {
-  const guidance = buildAnswerTaskGuidance('FW-4.8.2 新增哪些诊断字段？');
-
-  assert.match(guidance, /strictly new items/i);
-  assert.match(guidance, /existing items whose meaning, structure, or capacity changed/i);
 });
 
 test('buildChatSources preserves basic citation fields for UI display and storage', () => {
@@ -272,43 +265,6 @@ test('verifyAnswerGrounding validates each cited claim against its local source'
   assert.ok(result.citation_decisions.every((item) => item.supported));
 });
 
-test('verifyAnswerGrounding accepts faithful English paraphrases of Chinese workflow evidence', () => {
-  const documents = [{
-    id: 'closure-evidence',
-    content: '措施显示已完成只代表责任人提交措施或系统上线，不代表历史所有设备已升级、客户赔付已结案或供应商扣款完成。管理评审保留例外审批，审计仍需检查证据包。',
-    metadata: { filename: 'closure.md', file_id: 'closure', chunk_index: 0 },
-  }];
-  const result = verifyAnswerGrounding(
-    '[Source 1] states that completed actions only mean the responsible person submitted measures or the system has gone live. Historical equipment upgrades, customer compensation, supplier deductions, management review, audit, and evidence packages remain relevant.',
-    buildChatSources(documents),
-    { support_label: 'supported', evidence_label: 'strong' },
-    false,
-    buildVerificationSources(documents)
-  );
-
-  assert.equal(result.status, 'supported');
-  assert.equal(result.verified_sources.length, 1);
-  assert.equal(result.citation_decisions[0].support_mode, 'bilingual_canonical');
-});
-
-test('verifyAnswerGrounding treats an English source-introducing citation as applying to the following claim', () => {
-  const documents = [{
-    id: 'closure-evidence-following',
-    content: '已完成只表示责任人提交措施或系统上线，不表示历史设备升级、客户赔付或供应商扣款完成。管理评审保留例外，审计检查证据包。',
-    metadata: { filename: 'closure.md', file_id: 'closure-following', chunk_index: 0 },
-  }];
-  const result = verifyAnswerGrounding(
-    'The case is not fully closed. [Source 1] states that completed actions only mean the responsible person submitted measures or systems went live; historical equipment upgrades, customer compensation, supplier deductions, management review, audit, and evidence packages remain.',
-    buildChatSources(documents),
-    { support_label: 'supported', evidence_label: 'strong' },
-    false,
-    buildVerificationSources(documents)
-  );
-
-  assert.equal(result.status, 'supported');
-  assert.equal(result.citation_decisions[0].support_mode, 'bilingual_canonical');
-});
-
 test('verifyAnswerGrounding recognizes cautious English answers under insufficient evidence', () => {
   const documents = [{
     id: 'firmware-only',
@@ -503,4 +459,29 @@ test('verifyAnswerGrounding attaches a citation followed by 中提到 to the fol
   );
 
   assert.equal(result.citation_decisions?.[0]?.supported, true);
+});
+
+test('verifyAnswerGrounding rejects substantive answers without sources', () => {
+  assert.deepEqual(verifyAnswerGrounding('A general answer.', []), {
+    status: 'unsupported',
+    score: 0,
+    supported_source_count: 0,
+    verified_sources: [],
+    reasons: ['no_sources', 'answer_without_evidence'],
+  });
+});
+
+test('verifyAnswerGrounding records correct abstention without inventing a grounding score', () => {
+  assert.deepEqual(verifyAnswerGrounding(
+    'The retrieved source material is insufficient to answer this question.',
+    [],
+    undefined,
+    true,
+  ), {
+    status: 'not_applicable',
+    score: 0,
+    supported_source_count: 0,
+    verified_sources: [],
+    reasons: ['no_sources', 'correct_abstention'],
+  });
 });

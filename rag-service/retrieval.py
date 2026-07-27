@@ -1,9 +1,37 @@
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
 from db import get_chunks_by_ids, search_chunks_by_text
 from embeddings import get_embedding
 from fusion import reciprocal_rank_fuse
 from graph_store import search_graph
-from keyword_store import search_keyword_chunks
+from keyword_store import KeywordStoreUnavailableError, search_keyword_chunks
 from vector_store import search_vectors
+
+
+RETRIEVAL_CHANNEL_ORDER = ("vector", "bm25", "graph")
+DEFAULT_RETRIEVAL_ROUTES = ("vector", "bm25")
+RETRIEVAL_CHANNEL_WEIGHTS = {"vector": 1.0, "bm25": 1.0, "graph": 0.7}
+
+
+class RetrievalChannelsUnavailableError(RuntimeError):
+    pass
+
+
+class RetrievalDocuments(list):
+    """List-compatible retrieval result with non-sensitive lane health metadata."""
+
+    def __init__(self, documents: list[dict], channel_status: dict[str, str]):
+        super().__init__(documents)
+        self.channel_status = dict(channel_status)
+        self.degraded = any(status in {"degraded", "error"} for status in channel_status.values())
+
+
+class KeywordDocuments(list):
+    """Keyword results that retain whether PostgreSQL replaced a failed ES query."""
+
+    def __init__(self, documents: list[dict], backend_degraded: bool = False):
+        super().__init__(documents)
+        self.backend_degraded = backend_degraded
 
 
 def _prepare_chunk_result(
@@ -17,7 +45,7 @@ def _prepare_chunk_result(
     channel_ranks: dict | None = None,
     channel_scores: dict | None = None,
 ):
-    metadata = chunk.get("metadata") or {}
+    metadata = dict(chunk.get("metadata") or {})
     chunk_project_space_id = chunk.get("project_space_id")
     metadata.update({
         "filename": chunk.get("filename") or metadata.get("filename"),
@@ -33,7 +61,7 @@ def _prepare_chunk_result(
         "channel_scores": channel_scores or {},
     })
 
-    return {
+    result = {
         "id": str(chunk["id"]),
         "content": chunk["content"],
         "metadata": metadata,
@@ -46,6 +74,12 @@ def _prepare_chunk_result(
         "channel_ranks": channel_ranks or {},
         "channel_scores": channel_scores or {},
     }
+    if chunk.get("graph_score") is not None:
+        try:
+            result["graph_score"] = float(chunk["graph_score"])
+        except (TypeError, ValueError):
+            pass
+    return result
 
 
 def _vector_documents_from_hits(vector_hits: list[dict], project_space_id: str | None) -> list[dict]:
@@ -78,13 +112,36 @@ def _vector_documents_from_hits(vector_hits: list[dict], project_space_id: str |
     return documents
 
 
-def _keyword_documents(query: str, user_id: str, project_space_id: str | None, limit: int) -> list[dict]:
-    keyword_hits = search_keyword_chunks(
-        query=query,
+def _retrieve_vector_documents(
+    query: str,
+    user_id: str,
+    project_space_id: str | None,
+    limit: int,
+    threshold: float,
+) -> list[dict]:
+    embedding = get_embedding(query)
+    vector_hits = search_vectors(
         user_id=user_id,
-        project_space_id=project_space_id,
+        embedding=embedding,
         limit=limit,
+        threshold=threshold,
+        project_space_id=project_space_id,
     )
+    return _vector_documents_from_hits(vector_hits, project_space_id)
+
+
+def _keyword_documents(query: str, user_id: str, project_space_id: str | None, limit: int) -> list[dict]:
+    backend_degraded = False
+    try:
+        keyword_hits = search_keyword_chunks(
+            query=query,
+            user_id=user_id,
+            project_space_id=project_space_id,
+            limit=limit,
+        )
+    except KeywordStoreUnavailableError:
+        backend_degraded = True
+        keyword_hits = []
 
     if not keyword_hits:
         keyword_hits = search_chunks_by_text(
@@ -106,7 +163,33 @@ def _keyword_documents(query: str, user_id: str, project_space_id: str | None, l
         document["retrieval_score"] = lexical_score / max_lexical_score if max_lexical_score > 0 else 0.0
         documents.append(document)
 
-    return documents
+    return KeywordDocuments(documents, backend_degraded=backend_degraded)
+
+
+def _retrieve_graph_documents(
+    query: str,
+    user_id: str,
+    project_space_id: str | None,
+    limit: int,
+) -> list[dict]:
+    return search_graph(
+        query=query,
+        user_id=user_id,
+        project_space_id=project_space_id,
+        limit=limit,
+    )
+
+
+def _normalize_routes(routes: list[str] | tuple[str, ...] | None, hybrid: bool) -> tuple[str, ...]:
+    requested = routes if routes is not None else (DEFAULT_RETRIEVAL_ROUTES if hybrid else ("vector",))
+    requested_set = {str(route).strip().lower() for route in requested if str(route).strip()}
+    unknown_routes = requested_set - set(RETRIEVAL_CHANNEL_ORDER)
+    if unknown_routes:
+        raise ValueError(f"Unsupported retrieval routes: {', '.join(sorted(unknown_routes))}")
+    normalized = tuple(channel for channel in RETRIEVAL_CHANNEL_ORDER if channel in requested_set)
+    if not normalized:
+        raise ValueError("At least one retrieval route is required")
+    return normalized
 
 
 def _result_source_key(result: dict) -> str:
@@ -161,53 +244,76 @@ def retrieve_documents(
     limit: int = 5,
     threshold: float = 0.1,
     hybrid: bool = True,
+    routes: list[str] | tuple[str, ...] | None = None,
 ):
+    selected_routes = _normalize_routes(routes, hybrid)
     search_limit = min(max(limit * 5, limit), 50) if project_space_id else limit
-    vector_hits = []
-    vector_error: Exception | None = None
+    keyword_limit = min(max(limit * 5, limit), 50)
+    graph_limit = min(max(limit * 3, limit), 30)
+    lane_calls = {
+        "vector": lambda: _retrieve_vector_documents(
+            query, user_id, project_space_id, search_limit, threshold,
+        ),
+        "bm25": lambda: _keyword_documents(
+            query, user_id, project_space_id, keyword_limit,
+        ),
+        "graph": lambda: _retrieve_graph_documents(
+            query, user_id, project_space_id, graph_limit,
+        ),
+    }
+    documents_by_channel: dict[str, list[dict]] = {channel: [] for channel in selected_routes}
+    degraded_channels: set[str] = set()
+    channel_errors: dict[str, Exception] = {}
 
-    try:
-        embedding = get_embedding(query)
-        vector_hits = search_vectors(
-            user_id=user_id,
-            embedding=embedding,
-            limit=search_limit,
-            threshold=threshold,
-            project_space_id=project_space_id,
+    with ThreadPoolExecutor(max_workers=len(selected_routes), thread_name_prefix="rag-retrieval") as executor:
+        futures = {
+            executor.submit(lane_calls[channel]): channel
+            for channel in selected_routes
+        }
+        for future in as_completed(futures):
+            channel = futures[future]
+            try:
+                documents_by_channel[channel] = future.result()
+                if bool(getattr(documents_by_channel[channel], "backend_degraded", False)):
+                    degraded_channels.add(channel)
+            except Exception as error:
+                channel_errors[channel] = error
+
+    if channel_errors and len(channel_errors) == len(selected_routes):
+        failed_channels = ", ".join(channel for channel in RETRIEVAL_CHANNEL_ORDER if channel in channel_errors)
+        first_error = channel_errors[next(channel for channel in RETRIEVAL_CHANNEL_ORDER if channel in channel_errors)]
+        raise RetrievalChannelsUnavailableError(
+            f"All selected retrieval channels failed: {failed_channels}"
+        ) from first_error
+
+    channel_status = {
+        channel: (
+            "error"
+            if channel in channel_errors
+            else "degraded"
+            if channel in degraded_channels
+            else "ok"
+            if documents_by_channel[channel]
+            else "empty"
         )
-    except Exception as error:
-        vector_error = error
-        if not hybrid:
-            raise
+        for channel in selected_routes
+    }
 
-    vector_documents = _vector_documents_from_hits(vector_hits, project_space_id)
-    keyword_documents = _keyword_documents(
-        query=query,
-        user_id=user_id,
-        project_space_id=project_space_id,
-        limit=min(max(limit * 5, limit), 50),
-    ) if hybrid else []
-    try:
-        graph_documents = search_graph(
-            query=query,
-            user_id=user_id,
-            project_space_id=project_space_id,
-            limit=min(max(limit * 3, limit), 30),
-        ) if hybrid else []
-    except Exception:
-        graph_documents = []
+    if not any(documents_by_channel.values()):
+        return RetrievalDocuments([], channel_status)
 
-    if not vector_documents and not keyword_documents and not graph_documents:
-        if vector_error and not hybrid:
-            raise vector_error
-        return []
-
-    fused_documents = reciprocal_rank_fuse([
-        ("vector", vector_documents),
-        ("bm25", keyword_documents),
-        ("graph", graph_documents),
-    ])
-    active_retriever_count = sum(1 for documents in (vector_documents, keyword_documents, graph_documents) if documents)
+    ranked_lists = [
+        (channel, documents_by_channel[channel])
+        for channel in RETRIEVAL_CHANNEL_ORDER
+        if channel in documents_by_channel
+    ]
+    # Graph facts are rule-extracted supporting evidence, so they should help
+    # corroborate semantic/lexical hits without outweighing both primary lanes.
+    fused_documents = reciprocal_rank_fuse(
+        ranked_lists,
+        weights=RETRIEVAL_CHANNEL_WEIGHTS,
+    )
+    active_retriever_count = sum(1 for documents in documents_by_channel.values() if documents)
     max_rrf_score = max([float(document.get("rrf_score") or 0) for document in fused_documents] or [0.0])
 
     results = []
@@ -239,4 +345,7 @@ def retrieve_documents(
         ))
 
     ranked_results = sorted(results, key=lambda result: result["retrieval_score"], reverse=True)
-    return _apply_source_diversity(ranked_results, limit)
+    return RetrievalDocuments(
+        _apply_source_diversity(ranked_results, limit),
+        channel_status,
+    )

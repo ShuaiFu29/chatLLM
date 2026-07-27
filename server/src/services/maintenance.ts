@@ -4,14 +4,21 @@ import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
-import { deleteExpiredRateLimitBuckets } from '../repositories/rateLimits';
 import {
   abortMultipartObjectUpload,
+  deleteObject,
+  headObjectMetadata,
   isMultipartUploadMissingError,
+  isObjectNotFoundError,
 } from '../lib/storage';
 import {
-  claimMultipartUploadAbort,
+  assertCompletedMultipartObject,
+  MultipartCompletionIntegrityError,
+} from '../lib/multipartCompletion';
+import {
+  claimExpiredMultipartUploadAbort,
   finalizeMultipartUploadAbort,
+  finalizeMultipartUploadCompletion,
   listExpiredMultipartUploadSessions,
   markMultipartUploadAbortRetryable,
 } from '../repositories/uploadMultipart';
@@ -50,9 +57,31 @@ export const cleanupExpiredMultipartUploadSessions = async () => {
 
   await Promise.all(sessions.map(async (session) => {
     const message = 'Multipart upload session expired';
+    if (session.status === 'completing') {
+      try {
+        const object = await headObjectMetadata(session.object_key);
+        const storageBytes = assertCompletedMultipartObject(object, session);
+        const result = await finalizeMultipartUploadCompletion(
+          session.file_id,
+          session.user_id,
+          session.object_key,
+          storageBytes
+        );
+        if (result.transitioned || result.session?.status === 'completed') return;
+        return;
+      } catch (error) {
+        if (error instanceof MultipartCompletionIntegrityError) {
+          await deleteObject(session.object_key);
+        } else if (!isObjectNotFoundError(error)) {
+          console.warn('[Maintenance] Multipart completion reconciliation failed:', toSafeError(error));
+          return;
+        }
+      }
+    }
+
     const claimed = session.status === 'cancelling'
       ? session
-      : await claimMultipartUploadAbort(session.file_id, session.user_id);
+      : await claimExpiredMultipartUploadAbort(session.file_id, session.user_id);
     if (!claimed) return;
 
     try {
@@ -101,7 +130,6 @@ class MaintenanceService {
   private async runOnce() {
     const results = await Promise.allSettled([
       deleteExpiredSessions(),
-      deleteExpiredRateLimitBuckets(),
       this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),

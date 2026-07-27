@@ -20,6 +20,7 @@ const integrationEnabled = process.env.RAG_EVAL_SNAPSHOT_INTEGRATION === '1'
 
 test('RAG eval snapshot migration and repository preserve immutable run cases', () => {
   const migrationSource = readOptionalSource('migrations/0027_rag_eval_snapshots_leases.sql');
+  const reproducibilityMigrationSource = readOptionalSource('migrations/0030_rag_eval_reproducibility.sql');
   const repositorySource = readOptionalSource('src/repositories/ragEval.ts');
   const createRunBody = repositorySource
     .split('export const createRunningRagEvalRunForUser', 2)[1]
@@ -37,14 +38,25 @@ test('RAG eval snapshot migration and repository preserve immutable run cases', 
   assert.match(migrationSource, /expected_keywords text\[\] not null/i);
   assert.match(migrationSource, /expected_source_files text\[\] not null/i);
   assert.match(migrationSource, /unique \(run_id, ordinal\)/i);
+  assert.match(reproducibilityMigrationSource, /execution_snapshot jsonb/i);
+  assert.match(reproducibilityMigrationSource, /baseline_run_id uuid references rag_eval_runs/i);
+  assert.match(reproducibilityMigrationSource, /answer_keyword_score drop not null/i);
+  assert.match(reproducibilityMigrationSource, /set average_answer_keyword_score = null/i);
+  assert.match(reproducibilityMigrationSource, /set answer_keyword_score = null/i);
 
   assert.match(createRunBody, /withTransaction/);
   assert.match(createRunBody, /for update/i);
   assert.match(createRunBody, /insert into rag_eval_run_cases/i);
+  assert.match(createRunBody, /index_scopes/i);
+  assert.match(createRunBody, /settings_fingerprint/i);
+  assert.match(createRunBody, /execution_snapshot/i);
+  assert.match(createRunBody, /baseline_run_id/i);
   assert.match(createRunBody, /row_number\(\) over/i);
   assert.match(claimBody, /from rag_eval_run_cases/i);
   assert.doesNotMatch(claimBody, /from rag_eval_cases/i);
   assert.match(repositorySource, /select id from rag_eval_cases where id = \$2/i);
+  assert.match(repositorySource, /paired_comparison/i);
+  assert.match(repositorySource, /current\.retrieval_score - baseline\.retrieval_score/i);
 });
 
 test('RAG eval case creation locks the dataset before enforcing its limit', () => {
@@ -71,7 +83,7 @@ const successfulResult = (testCase) => ({
   source_precision_score: 1,
   citation_accuracy_score: 1,
   keyword_score: 1,
-  answer_keyword_score: 1,
+  answer_keyword_score: null,
   grounding_score: 1,
   judge_score: 1,
   expected_answer_support_score: 1,
@@ -84,6 +96,9 @@ const successfulResult = (testCase) => ({
   matched_sources: [],
   trace_summary: {},
   error_message: '',
+  advanced_metrics: {
+    answerability: { applicable: true, accuracy: 1, false_answer: 0, false_abstention: 0 },
+  },
 });
 
 const successfulOutput = (cases) => ({
@@ -98,11 +113,15 @@ const successfulOutput = (cases) => ({
   average_source_precision_score: 1,
   average_citation_accuracy_score: 1,
   average_keyword_score: 1,
-  average_answer_keyword_score: 1,
+  average_answer_keyword_score: null,
   average_grounding_score: 1,
   average_judge_score: 1,
   average_expected_answer_support_score: 1,
   average_verification_score: 1,
+  advanced_metrics: {
+    latency_ms: { applicable: true, p50: 1, p95: 1, max: 1 },
+    cost: { applicable: false, reason: 'pricing not configured' },
+  },
   results: cases.map(successfulResult),
 });
 
@@ -140,11 +159,11 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
     await pool.query(
       `insert into rag_eval_cases (
          id, dataset_id, user_id, question, expected_answer,
-         expected_keywords, expected_source_files, created_at, updated_at
+         expected_keywords, expected_source_files, evaluation_spec, created_at, updated_at
        )
        values
-         ($1, $3, $4, 'original question one', 'answer one', array['one'], array['one.md'], now() - interval '2 seconds', now() - interval '2 seconds'),
-         ($2, $3, $4, 'original question two', 'answer two', array['two'], array['two.md'], now() - interval '1 second', now() - interval '1 second')`,
+         ($1, $3, $4, 'original question one', 'answer one', array['one'], array['one.md'], '{"expected_chunk_ids":["chunk-one"]}'::jsonb, now() - interval '2 seconds', now() - interval '2 seconds'),
+         ($2, $3, $4, 'original question two', 'answer two', array['two'], array['two.md'], '{"expected_answerable":false}'::jsonb, now() - interval '1 second', now() - interval '1 second')`,
       [firstCaseId, secondCaseId, datasetId, userId],
     );
 
@@ -156,7 +175,7 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
     assert.equal(run.created, true);
     assert.equal(run.case_count, 2);
     const snapshotBeforeEdit = await pool.query(
-      `select case_id, ordinal, question, expected_answer, expected_keywords, expected_source_files
+      `select case_id, ordinal, question, expected_answer, expected_keywords, expected_source_files, evaluation_spec
        from rag_eval_run_cases
        where run_id = $1
        order by ordinal`,
@@ -170,6 +189,7 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
         expected_answer: 'answer one',
         expected_keywords: ['one'],
         expected_source_files: ['one.md'],
+        evaluation_spec: { expected_chunk_ids: ['chunk-one'] },
       },
       {
         case_id: secondCaseId,
@@ -178,6 +198,7 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
         expected_answer: 'answer two',
         expected_keywords: ['two'],
         expected_source_files: ['two.md'],
+        evaluation_spec: { expected_answerable: false },
       },
     ]);
 
@@ -220,6 +241,7 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
       expected_answer: item.expected_answer,
       expected_keywords: item.expected_keywords,
       expected_source_files: item.expected_source_files,
+      evaluation_spec: item.evaluation_spec,
     })), [
       {
         id: firstCaseId,
@@ -227,6 +249,7 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
         expected_answer: 'answer one',
         expected_keywords: ['one'],
         expected_source_files: ['one.md'],
+        evaluation_spec: { expected_chunk_ids: ['chunk-one'] },
       },
       {
         id: secondCaseId,
@@ -234,6 +257,7 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
         expected_answer: 'answer two',
         expected_keywords: ['two'],
         expected_source_files: ['two.md'],
+        evaluation_spec: { expected_answerable: false },
       },
     ]);
 
@@ -271,6 +295,27 @@ test('PostgreSQL snapshots cases and serializes concurrent case-limit inserts', 
       { question: 'original question one', case_id: null },
       { question: 'original question two', case_id: secondCaseId },
     ]);
+    const advancedPersistence = await pool.query(
+      `select advanced_metrics
+       from rag_eval_runs
+       where id = $1`,
+      [run.id],
+    );
+    assert.deepEqual(advancedPersistence.rows[0].advanced_metrics.latency_ms, {
+      applicable: true,
+      p50: 1,
+      p95: 1,
+      max: 1,
+    });
+    const advancedResult = await pool.query(
+      `select advanced_metrics
+       from rag_eval_results
+       where run_id = $1
+       order by question
+       limit 1`,
+      [run.id],
+    );
+    assert.equal(advancedResult.rows[0].advanced_metrics.answerability.accuracy, 1);
 
     const cancelledRun = await repository.createRunningRagEvalRunForUser({
       userId,

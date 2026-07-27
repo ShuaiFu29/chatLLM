@@ -1,7 +1,15 @@
 import unittest
 from unittest.mock import DEFAULT, patch
 
-from ingestion import extract_text, format_ingestion_error, process_file
+from db import _build_chunk_metadata, list_parent_chunks_for_matches
+from ingestion import (
+    extract_text,
+    format_ingestion_error,
+    iter_streaming_markdown_chunks,
+    process_file,
+    split_text,
+)
+from parent_context import build_parent_section_documents
 
 
 ATTEMPT_ID = "11111111-1111-4111-8111-111111111111"
@@ -23,6 +31,119 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
     def tearDown(self):
         self.job_tracking_patch.stop()
 
+    def test_markdown_chunks_keep_heading_context(self):
+        chunks = split_text(
+            "# Authentication\n\nOverview.\n\n## Token rotation\n\nRotate refresh tokens after use.",
+            True,
+        )
+
+        token_chunk = next(chunk for chunk in chunks if "Rotate refresh tokens" in chunk)
+        self.assertIn("## Token rotation", token_chunk)
+
+    def test_long_markdown_section_repeats_full_heading_path_on_every_chunk(self):
+        chunks = split_text(
+            "# Authentication\n\n## Token rotation\n\n" + ("rotation policy detail " * 180),
+            True,
+        )
+
+        self.assertGreater(len(chunks), 2)
+        self.assertTrue(all(chunk.startswith("# Authentication\n## Token rotation") for chunk in chunks))
+
+    def test_same_subheading_under_different_parents_keeps_distinct_context(self):
+        chunks = split_text(
+            "# Service A\n\n## Configuration\n\nUses port 7001.\n\n"
+            "# Service B\n\n## Configuration\n\nUses port 7002.",
+            True,
+        )
+
+        service_a = next(chunk for chunk in chunks if "7001" in chunk)
+        service_b = next(chunk for chunk in chunks if "7002" in chunk)
+        self.assertTrue(service_a.startswith("# Service A\n## Configuration"))
+        self.assertTrue(service_b.startswith("# Service B\n## Configuration"))
+
+        metadata_a = _build_chunk_metadata("file-1", "user-1", 0, {"filename": "notes.md"}, service_a)
+        metadata_b = _build_chunk_metadata("file-1", "user-1", 1, {"filename": "notes.md"}, service_b)
+        self.assertNotEqual(metadata_a["parent_section_id"], metadata_b["parent_section_id"])
+
+    def test_parent_section_expansion_merges_children_without_repeating_heading_path(self):
+        parent_id = "parent-auth"
+        children = [{
+            "id": "chunk-2",
+            "content": "# Authentication\n## Rotation\n\nSecond detail.",
+            "metadata": {
+                "file_id": "file-1",
+                "filename": "auth.md",
+                "chunk_index": 2,
+                "parent_section_id": parent_id,
+                "heading_path": ["Authentication", "Rotation"],
+            },
+            "retrieval_channels": ["vector", "bm25"],
+            "retrieval_score": 1.0,
+        }]
+        rows = [
+            {
+                "id": "chunk-1",
+                "file_id": "file-1",
+                "chunk_index": 1,
+                "content": "# Authentication\n## Rotation\n\nFirst detail.",
+                "metadata": {"file_id": "file-1", "parent_section_id": parent_id},
+            },
+            {
+                "id": "chunk-2",
+                "file_id": "file-1",
+                "chunk_index": 2,
+                "content": "# Authentication\n## Rotation\n\nSecond detail.",
+                "metadata": {"file_id": "file-1", "parent_section_id": parent_id},
+            },
+        ]
+
+        expanded = build_parent_section_documents(children, rows)
+
+        self.assertEqual(len(expanded), 1)
+        self.assertEqual(expanded[0]["metadata"]["matched_child_ids"], ["chunk-2"])
+        self.assertEqual(expanded[0]["metadata"]["parent_chunk_count"], 2)
+        self.assertEqual(expanded[0]["content"].count("# Authentication"), 1)
+        self.assertIn("First detail", expanded[0]["content"])
+        self.assertIn("Second detail", expanded[0]["content"])
+
+    def test_parent_section_loading_centers_window_on_ranked_child(self):
+        with patch("db.get_conn") as get_conn:
+            cursor = get_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
+            cursor.fetchall.return_value = []
+
+            list_parent_chunks_for_matches(
+                "user-1",
+                "space-1",
+                [{
+                    "id": "child-47",
+                    "metadata": {
+                        "file_id": "11111111-1111-4111-8111-111111111111",
+                        "parent_section_id": "long-root-section",
+                        "chunk_index": 47,
+                    },
+                }],
+                max_parents=3,
+                max_chunks_per_parent=6,
+            )
+
+        statement, params = cursor.execute.call_args.args
+        self.assertIn("abs(file_chunks.chunk_index - requested.matched_chunk_index)", statement)
+        self.assertEqual(params[2], [47])
+        self.assertEqual(params[-1], 6)
+
+    def test_streaming_markdown_chunks_keep_heading_path(self):
+        markdown = (
+            "# Operations\n\n## Recovery\n\n" + ("restore from checkpoint " * 100)
+        ).encode("utf-8")
+        chunks = list(iter_streaming_markdown_chunks(
+            [markdown[:17], markdown[17:83], markdown[83:]],
+            chunk_size=240,
+            chunk_overlap=30,
+        ))
+
+        self.assertGreater(len(chunks), 2)
+        self.assertTrue(all(chunk.startswith("# Operations\n## Recovery") for chunk in chunks))
+
     def test_extract_text_accepts_markdown_extensions(self):
         text, is_markdown = extract_text(b"# Title\n\nBody", "text/markdown", "notes.markdown")
 
@@ -32,6 +153,22 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
     def test_extract_text_rejects_pdf_documents(self):
         with self.assertRaisesRegex(ValueError, "Only Markdown"):
             extract_text(b"%PDF-1.4", "application/pdf", "paper.pdf")
+
+    def test_process_file_rejects_non_markdown_before_streaming_path(self):
+        with patch("ingestion.get_file", return_value={
+            "id": "file-1",
+            "user_id": "user-1",
+            "filename": "paper.pdf",
+            "file_type": "application/pdf",
+            "object_key": "uploads/paper.pdf",
+            "project_space_id": None,
+        }), patch("ingestion.should_stream_ingestion", return_value=True), patch(
+            "ingestion.process_streaming_file"
+        ) as streaming_process:
+            with self.assertRaisesRegex(ValueError, "Only Markdown"):
+                process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
+
+        streaming_process.assert_not_called()
 
     def test_ingestion_errors_allowlist_user_actions_without_exposing_unknown_details(self):
         self.assertEqual(
@@ -83,6 +220,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
 
         self.assertEqual(result, {"status": "success", "chunks": 12})
         self.assertEqual([len(batch) for batch in embedding_calls], [10, 2])
+        self.assertTrue(all(text.startswith("notes.md\n") for batch in embedding_calls for text in batch))
 
     def test_process_file_stores_friendly_message_for_bailian_quota_errors(self):
         with patch("ingestion.get_file", return_value={

@@ -13,6 +13,9 @@ export const runMigrations = async () => {
   const migrationFileNames = getMigrationFileNames(fs.readdirSync(migrationsDir));
 
   await withTransaction(async (client) => {
+    await client.query(
+      "select pg_advisory_xact_lock(hashtext(current_database()), hashtext('chatllm_schema_migrations'))"
+    );
     await client.query(`
       create table if not exists schema_migrations (
         filename text primary key,

@@ -175,12 +175,16 @@ function withMockedMaintenance(overrides = {}) {
   mockModule('repositories/rateLimits.js', { deleteExpiredRateLimitBuckets: async () => 0 });
   mockModule('lib/storage.js', {
     abortMultipartObjectUpload: async () => undefined,
+    deleteObject: async () => undefined,
+    headObjectMetadata: async () => { throw Object.assign(new Error('not found'), { name: 'NoSuchKey' }); },
     isMultipartUploadMissingError: () => false,
+    isObjectNotFoundError: (error) => error?.name === 'NoSuchKey',
     ...(overrides.storage || {}),
   });
   mockModule('repositories/uploadMultipart.js', {
-    claimMultipartUploadAbort: async () => null,
+    claimExpiredMultipartUploadAbort: async () => null,
     finalizeMultipartUploadAbort: async () => null,
+    finalizeMultipartUploadCompletion: async () => ({ transitioned: false, session: null }),
     listExpiredMultipartUploadSessions: async () => [],
     markMultipartUploadAbortRetryable: async () => null,
     markMultipartUploadSessionExpired: async () => null,
@@ -1863,7 +1867,7 @@ test('expired multipart cleanup keeps reservation retryable when storage abort i
   const { maintenance, restore } = withMockedMaintenance({
     multipart: {
       listExpiredMultipartUploadSessions: async () => [session],
-      claimMultipartUploadAbort: async () => makeMultipartSession('cancelling'),
+      claimExpiredMultipartUploadAbort: async () => makeMultipartSession('cancelling'),
       finalizeMultipartUploadAbort: async () => { finalizations += 1; },
       markMultipartUploadAbortRetryable: async () => { retryableWrites += 1; },
       markMultipartUploadSessionExpired: async () => { legacyExpiredWrites += 1; },
@@ -1884,6 +1888,44 @@ test('expired multipart cleanup keeps reservation retryable when storage abort i
     assert.equal(legacyExpiredWrites, 0);
     assert.equal(directFileWrites, 0);
     assert.equal(retryableWrites, 1);
+  } finally {
+    restore();
+  }
+});
+
+test('expired completing multipart cleanup finalizes a verified object instead of aborting it', async () => {
+  let completionFinalizations = 0;
+  let abortClaims = 0;
+  let storageAborts = 0;
+  const session = makeMultipartSession('completing', {
+    expires_at: '2000-01-01T00:00:00.000Z',
+    file_hash: 'a'.repeat(64),
+    file_size: 12,
+  });
+  const { maintenance, restore } = withMockedMaintenance({
+    multipart: {
+      listExpiredMultipartUploadSessions: async () => [session],
+      claimExpiredMultipartUploadAbort: async () => { abortClaims += 1; return null; },
+      finalizeMultipartUploadCompletion: async () => {
+        completionFinalizations += 1;
+        return { transitioned: true, session: makeMultipartSession('completed') };
+      },
+    },
+    storage: {
+      headObjectMetadata: async () => ({
+        size: 12,
+        metadata: { sha256: 'a'.repeat(64), size: '12' },
+      }),
+      abortMultipartObjectUpload: async () => { storageAborts += 1; },
+    },
+  });
+
+  try {
+    await maintenance.cleanupExpiredMultipartUploadSessions();
+
+    assert.equal(completionFinalizations, 1);
+    assert.equal(abortClaims, 0);
+    assert.equal(storageAborts, 0);
   } finally {
     restore();
   }

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { formatSafeError, toSafeUrl } from './safe-error.mjs';
 
-const DEFAULT_TIMEOUT_MS = 3000;
+const DEFAULT_TIMEOUT_MS = 12000;
 
 const joinUrl = (baseUrl, pathname) => new URL(pathname, baseUrl).toString();
 
@@ -68,8 +68,8 @@ export function buildOpsTargets(env = process.env, envFiles = {}) {
     }));
   }
 
-  const backendUrl = env.OPS_BACKEND_URL || env.LOAD_TARGET_URL || 'http://localhost:3000';
-  const ragUrl = env.OPS_RAG_URL || 'http://localhost:8000';
+  const backendUrl = env.OPS_BACKEND_URL || env.LOAD_TARGET_URL || 'http://127.0.0.1:3000';
+  const ragUrl = env.OPS_RAG_URL || 'http://127.0.0.1:8000';
   const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   const explicitMetricsToken = firstNonBlank(env.OPS_METRICS_TOKEN, env.METRICS_TOKEN);
   const explicitRagToken = firstNonBlank(env.OPS_RAG_TOKEN, env.RAG_SERVICE_TOKEN);
@@ -90,7 +90,11 @@ export function buildOpsTargets(env = process.env, envFiles = {}) {
   );
   const targets = [
     { label: 'backend live', url: joinUrl(backendUrl, '/health/live') },
-    { label: 'backend ready', url: joinUrl(backendUrl, '/health/ready') },
+    {
+      label: 'backend ready',
+      url: joinUrl(backendUrl, '/health/ready'),
+      responseKind: 'backend-ready',
+    },
     {
       label: 'backend metrics',
       url: joinUrl(backendUrl, '/metrics'),
@@ -106,6 +110,7 @@ export function buildOpsTargets(env = process.env, envFiles = {}) {
       label: 'rag ready',
       url: joinUrl(ragUrl, '/health/ready'),
       headers: ragToken ? { 'X-ChatLLM-RAG-Token': ragToken } : undefined,
+      responseKind: 'rag-ready',
     },
   ];
 
@@ -113,15 +118,15 @@ export function buildOpsTargets(env = process.env, envFiles = {}) {
     targets.push(
       {
         label: 'elasticsearch',
-        url: joinUrl(env.OPS_ELASTICSEARCH_URL || 'http://localhost:9200', '/_cluster/health'),
+        url: joinUrl(env.OPS_ELASTICSEARCH_URL || 'http://127.0.0.1:9200', '/_cluster/health'),
       },
       {
         label: 'neo4j',
-        url: env.OPS_NEO4J_URL || 'http://localhost:7474',
+        url: env.OPS_NEO4J_URL || 'http://127.0.0.1:7474',
       },
       {
         label: 'milvus',
-        url: env.OPS_MILVUS_HEALTH_URL || 'http://localhost:9091/healthz',
+        url: env.OPS_MILVUS_HEALTH_URL || 'http://127.0.0.1:9091/healthz',
       }
     );
   }
@@ -131,6 +136,8 @@ export function buildOpsTargets(env = process.env, envFiles = {}) {
 
 const QUEUE_HEALTH_CHECKS = ['cleanup', 'ingestion_leases', 'eval_leases'];
 const QUEUE_HEALTH_STATUSES = new Set(['ok', 'degraded', 'error']);
+const READY_STATUS_VALUES = new Set(['ok', 'error', 'timeout']);
+const CAPABILITY_STATUS_VALUES = new Set(['enabled', 'disabled', 'degraded', 'ok', 'unknown']);
 
 const readQueueHealthSummary = async (response) => {
   if (typeof response.json !== 'function') return null;
@@ -142,6 +149,42 @@ const readQueueHealthSummary = async (response) => {
       return QUEUE_HEALTH_STATUSES.has(status) ? `${key}=${status}` : null;
     });
     return statuses.every(Boolean) ? statuses.join(', ') : null;
+  } catch {
+    return null;
+  }
+};
+
+const readReadySummary = async (response, responseKind) => {
+  if (typeof response.json !== 'function') return null;
+  const requiredChecks = responseKind === 'backend-ready'
+    ? ['postgres', 'redis', 'rag']
+    : ['postgres', 'milvus', 'elasticsearch', 'neo4j'];
+
+  try {
+    const rawBody = await response.json();
+    const body = rawBody?.detail && typeof rawBody.detail === 'object' ? rawBody.detail : rawBody;
+    const checks = requiredChecks.map((key) => {
+      const status = body?.checks?.[key];
+      return READY_STATUS_VALUES.has(status) ? `${key}=${status}` : null;
+    });
+    if (!checks.every(Boolean)) return null;
+
+    if (responseKind === 'backend-ready') return checks.join(', ');
+
+    const capabilityStatus = body?.capabilities?.status;
+    const features = body?.capabilities?.features;
+    const featureKeys = ['query_rewrite', 'reranker', 'graph_extraction', 'retrieval_cache', 'markdown_index'];
+    if (!['ok', 'degraded'].includes(capabilityStatus) || !features || typeof features !== 'object') {
+      return null;
+    }
+    const featureSummaries = featureKeys.map((key) => {
+      const status = features?.[key]?.status;
+      return CAPABILITY_STATUS_VALUES.has(status) ? `${key}=${status}` : null;
+    });
+    if (!featureSummaries.every(Boolean)) return null;
+    const staleFiles = features.markdown_index?.stale_file_count;
+    const staleSuffix = Number.isSafeInteger(staleFiles) ? `, stale_markdown_files=${staleFiles}` : '';
+    return `${checks.join(', ')}; capabilities=${capabilityStatus}; ${featureSummaries.join(', ')}${staleSuffix}`;
   } catch {
     return null;
   }
@@ -169,6 +212,14 @@ const runOneCheck = async (target, options, fetchImpl) => {
       } else {
         ok = false;
         detail += '; invalid queue health response';
+      }
+    } else if (target.responseKind === 'backend-ready' || target.responseKind === 'rag-ready') {
+      const summary = await readReadySummary(response, target.responseKind);
+      if (summary) {
+        detail += `; ${summary}`;
+      } else {
+        ok = false;
+        detail += '; invalid readiness response';
       }
     }
     return {

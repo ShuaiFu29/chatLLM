@@ -31,6 +31,9 @@ const DEFAULT_RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS = 60000;
 const DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS = 15 * 60 * 1000;
 const DEFAULT_RAG_EVAL_CASE_TIMEOUT_MS = 60 * 1000;
 const DEFAULT_RAG_EVAL_RUN_TIMEOUT_MS = 30 * 60 * 1000;
+const DEFAULT_RAG_EVAL_MAX_CASES_PER_DATASET = 500;
+const DEFAULT_RAG_EVAL_MAX_CASES_PER_RUN = 500;
+const MAX_RAG_EVAL_CASE_LIMIT = 5000;
 const MIN_RAG_EVAL_QUEUE_STALE_AFTER_MS = 4000;
 const MAX_RAG_EVAL_TIMEOUT_MS = 2147483647;
 const DEFAULT_FILE_QUEUE_INTERVAL_MS = 5000;
@@ -58,6 +61,7 @@ const DEFAULT_MAX_USER_ACTIVE_UPLOAD_BYTES = 1024 * 1024 * 1024;
 const DEFAULT_MULTIPART_UPLOAD_PART_SIZE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS = 15 * 60;
 const DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_MULTIPART_COMPLETION_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
 
 export interface ServerEnv {
@@ -66,6 +70,8 @@ export interface ServerEnv {
   BACKEND_URL: string;
   CORS_ALLOWED_ORIGINS: string[];
   DATABASE_URL: string;
+  REDIS_URL: string;
+  REDIS_KEY_PREFIX: string;
   S3_ENDPOINT: string;
   S3_ACCESS_KEY: string;
   S3_SECRET_KEY: string;
@@ -111,6 +117,8 @@ export interface ServerEnv {
   RAG_EVAL_QUEUE_STALE_AFTER_MS: number;
   RAG_EVAL_CASE_TIMEOUT_MS: number;
   RAG_EVAL_RUN_TIMEOUT_MS: number;
+  RAG_EVAL_MAX_CASES_PER_DATASET: number;
+  RAG_EVAL_MAX_CASES_PER_RUN: number;
   FILE_QUEUE_INTERVAL_MS: number;
   FILE_QUEUE_CONCURRENCY: number;
   FILE_QUEUE_INGEST_TIMEOUT_MS: number;
@@ -135,6 +143,7 @@ export interface ServerEnv {
   MULTIPART_UPLOAD_PART_SIZE_BYTES: number;
   MULTIPART_UPLOAD_URL_EXPIRES_SECONDS: number;
   MULTIPART_UPLOAD_SESSION_TTL_MS: number;
+  MULTIPART_COMPLETION_LEASE_MS: number;
   SHUTDOWN_TIMEOUT_MS: number;
 }
 
@@ -226,7 +235,7 @@ const getStringList = (value: string | undefined, defaultValue: string[]) => {
 const isOfficialProviderModelName = (model: string) => /^(gpt-|o\d)/i.test(model);
 
 export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv => {
-  const requiredKeys = ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'];
+  const requiredKeys = ['DATABASE_URL', 'REDIS_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET'];
   const missing = requiredKeys.filter((key) => !getRequired(env, key));
   const errors: string[] = [];
 
@@ -285,6 +294,12 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const ragEvalQueueStaleAfterMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_STALE_AFTER_MS', DEFAULT_RAG_EVAL_QUEUE_STALE_AFTER_MS, errors);
   const ragEvalCaseTimeoutMs = getPositiveInteger(env, 'RAG_EVAL_CASE_TIMEOUT_MS', DEFAULT_RAG_EVAL_CASE_TIMEOUT_MS, errors);
   const ragEvalRunTimeoutMs = getPositiveInteger(env, 'RAG_EVAL_RUN_TIMEOUT_MS', DEFAULT_RAG_EVAL_RUN_TIMEOUT_MS, errors);
+  const ragEvalMaxCasesPerDataset = getPositiveInteger(
+    env, 'RAG_EVAL_MAX_CASES_PER_DATASET', DEFAULT_RAG_EVAL_MAX_CASES_PER_DATASET, errors
+  );
+  const ragEvalMaxCasesPerRun = getPositiveInteger(
+    env, 'RAG_EVAL_MAX_CASES_PER_RUN', DEFAULT_RAG_EVAL_MAX_CASES_PER_RUN, errors
+  );
   if (ragEvalQueueStaleAfterMs < MIN_RAG_EVAL_QUEUE_STALE_AFTER_MS) {
     errors.push(`RAG_EVAL_QUEUE_STALE_AFTER_MS must be at least ${MIN_RAG_EVAL_QUEUE_STALE_AFTER_MS}`);
   }
@@ -299,6 +314,12 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   }
   if (ragEvalRunTimeoutMs < ragEvalCaseTimeoutMs) {
     errors.push('RAG_EVAL_RUN_TIMEOUT_MS must be at least RAG_EVAL_CASE_TIMEOUT_MS');
+  }
+  if (ragEvalMaxCasesPerDataset > MAX_RAG_EVAL_CASE_LIMIT) {
+    errors.push(`RAG_EVAL_MAX_CASES_PER_DATASET must be at most ${MAX_RAG_EVAL_CASE_LIMIT}`);
+  }
+  if (ragEvalMaxCasesPerRun > ragEvalMaxCasesPerDataset) {
+    errors.push('RAG_EVAL_MAX_CASES_PER_RUN must not exceed RAG_EVAL_MAX_CASES_PER_DATASET');
   }
   const fileQueueIntervalMs = getPositiveInteger(env, 'FILE_QUEUE_INTERVAL_MS', DEFAULT_FILE_QUEUE_INTERVAL_MS, errors);
   const fileQueueConcurrency = getPositiveInteger(env, 'FILE_QUEUE_CONCURRENCY', DEFAULT_FILE_QUEUE_CONCURRENCY, errors);
@@ -329,6 +350,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const multipartUploadPartSizeBytes = getPositiveInteger(env, 'MULTIPART_UPLOAD_PART_SIZE_BYTES', DEFAULT_MULTIPART_UPLOAD_PART_SIZE_BYTES, errors);
   const multipartUploadUrlExpiresSeconds = getPositiveInteger(env, 'MULTIPART_UPLOAD_URL_EXPIRES_SECONDS', DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS, errors);
   const multipartUploadSessionTtlMs = getPositiveInteger(env, 'MULTIPART_UPLOAD_SESSION_TTL_MS', DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS, errors);
+  const multipartCompletionLeaseMs = getPositiveInteger(env, 'MULTIPART_COMPLETION_LEASE_MS', DEFAULT_MULTIPART_COMPLETION_LEASE_MS, errors);
   const shutdownTimeoutMs = getPositiveInteger(env, 'SHUTDOWN_TIMEOUT_MS', DEFAULT_SHUTDOWN_TIMEOUT_MS, errors);
 
   if (fileQueueIngestTimeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
@@ -353,6 +375,8 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     BACKEND_URL: env.BACKEND_URL?.trim() || `http://localhost:${port}`,
     CORS_ALLOWED_ORIGINS: getStringList(env.CORS_ALLOWED_ORIGINS, [frontendUrl, 'http://localhost:5174']),
     DATABASE_URL: getRequired(env, 'DATABASE_URL'),
+    REDIS_URL: getRequired(env, 'REDIS_URL'),
+    REDIS_KEY_PREFIX: env.REDIS_KEY_PREFIX?.trim() || 'chatllm',
     S3_ENDPOINT: getRequired(env, 'S3_ENDPOINT'),
     S3_ACCESS_KEY: getRequired(env, 'S3_ACCESS_KEY'),
     S3_SECRET_KEY: getRequired(env, 'S3_SECRET_KEY'),
@@ -398,6 +422,8 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     RAG_EVAL_QUEUE_STALE_AFTER_MS: ragEvalQueueStaleAfterMs,
     RAG_EVAL_CASE_TIMEOUT_MS: ragEvalCaseTimeoutMs,
     RAG_EVAL_RUN_TIMEOUT_MS: ragEvalRunTimeoutMs,
+    RAG_EVAL_MAX_CASES_PER_DATASET: ragEvalMaxCasesPerDataset,
+    RAG_EVAL_MAX_CASES_PER_RUN: ragEvalMaxCasesPerRun,
     FILE_QUEUE_INTERVAL_MS: fileQueueIntervalMs,
     FILE_QUEUE_CONCURRENCY: fileQueueConcurrency,
     FILE_QUEUE_INGEST_TIMEOUT_MS: fileQueueIngestTimeoutMs,
@@ -422,6 +448,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     MULTIPART_UPLOAD_PART_SIZE_BYTES: multipartUploadPartSizeBytes,
     MULTIPART_UPLOAD_URL_EXPIRES_SECONDS: multipartUploadUrlExpiresSeconds,
     MULTIPART_UPLOAD_SESSION_TTL_MS: multipartUploadSessionTtlMs,
+    MULTIPART_COMPLETION_LEASE_MS: multipartCompletionLeaseMs,
     SHUTDOWN_TIMEOUT_MS: shutdownTimeoutMs,
   };
 };

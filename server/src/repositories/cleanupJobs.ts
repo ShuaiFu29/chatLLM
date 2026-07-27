@@ -381,6 +381,7 @@ export const enqueueAccountCleanup = async (
 };
 
 interface ClaimCleanupJobOptions {
+  cleanupJobId?: string;
   leaseDurationMs?: number;
   runInTransaction?: typeof withTransaction;
   createId?: () => string;
@@ -398,21 +399,23 @@ export const claimNextCleanupJob = async (
     const { rows } = await client.query<CleanupJobRow>(
       `select ${columns}
        from artifact_cleanup_jobs
-       where (
-         status in ('queued', 'waiting')
-         and (next_attempt_at is null or next_attempt_at <= now())
+       where ($1::uuid is null or id = $1::uuid)
+       and ((
+          status in ('queued', 'waiting')
+          and (next_attempt_at is null or next_attempt_at <= now())
        ) or (
          status = 'failed'
          and attempts < max_attempts
          and next_attempt_at <= now()
        ) or (
          status = 'processing'
-         and attempts < max_attempts
-         and lease_expires_at <= now()
-       )
+          and attempts < max_attempts
+          and lease_expires_at <= now()
+       ))
        order by created_at asc
        limit 1
-       for update skip locked`
+       for update skip locked`,
+      [options.cleanupJobId || null]
     );
     const candidate = rows[0];
     if (!candidate) return null;
@@ -433,6 +436,39 @@ export const claimNextCleanupJob = async (
     );
     return claimed.rows[0] || null;
   });
+};
+
+export const claimCleanupJobById = async (
+  cleanupJobId: string,
+  workerId: string,
+  options: Omit<ClaimCleanupJobOptions, 'cleanupJobId'> = {}
+) => claimNextCleanupJob(workerId, { ...options, cleanupJobId });
+
+export const listDispatchableCleanupJobIds = async (
+  limit = 50,
+  runQuery: typeof query = query
+) => {
+  const boundedLimit = Math.max(1, Math.min(limit, 500));
+  const { rows } = await runQuery<{ id: string }>(
+    `select id
+     from artifact_cleanup_jobs
+     where (
+       status in ('queued', 'waiting')
+       and (next_attempt_at is null or next_attempt_at <= now())
+     ) or (
+       status = 'failed'
+       and attempts < max_attempts
+       and next_attempt_at <= now()
+     ) or (
+       status = 'processing'
+       and attempts < max_attempts
+       and lease_expires_at <= now()
+     )
+     order by created_at asc
+     limit $1`,
+    [boundedLimit]
+  );
+  return rows.map((row) => row.id);
 };
 
 interface FailExhaustedCleanupJobsOptions {

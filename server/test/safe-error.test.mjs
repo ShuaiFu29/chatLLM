@@ -187,7 +187,11 @@ test('health controller never logs Axios request configuration or payloads', asy
   };
 
   try {
-    await healthModule.readyHealthHandler({}, response);
+    const handler = healthModule.createReadyHealthHandler({
+      checkDatabaseReady: async () => true,
+      checkRedisReady: async () => true,
+    });
+    await handler({}, response);
   } finally {
     dbModule.checkDatabaseReady = originalCheckDatabaseReady;
     axios.get = originalAxiosGet;

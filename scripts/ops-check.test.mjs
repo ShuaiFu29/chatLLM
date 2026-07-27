@@ -28,6 +28,8 @@ const testOpsEnv = {
 
 test('docker compose binds every published infrastructure port to loopback by default', () => {
   const expectedPorts = [
+    '6379:6379',
+    '6380:6379',
     '5432:5432',
     '9000:9000',
     '9001:9001',
@@ -39,7 +41,7 @@ test('docker compose binds every published infrastructure port to loopback by de
     '3001:3000',
   ];
   const publishedPorts = [...composeSource.matchAll(/^\s*-\s*"([^"]+)"\s*$/gm)]
-    .map((match) => match[1])
+    .map((match) => match[1].replace('${CACHE_REDIS_PORT:-6380}', '6380'))
     .filter((value) => /(?:^|:)\d+:\d+$/.test(value));
 
   assert.deepEqual(
@@ -153,8 +155,10 @@ test('buildOpsTargets includes app, RAG, and infra readiness endpoints by defaul
     'milvus',
   ]);
   assert.equal(targets[0].url, 'http://localhost:3000/health/live');
+  assert.equal(targets[1].responseKind, 'backend-ready');
   assert.equal(targets[3].url, 'http://localhost:3000/health/queues');
   assert.equal(targets[4].url, 'http://localhost:8000/health/ready');
+  assert.equal(targets[4].responseKind, 'rag-ready');
   assert.equal(targets[7].url, 'http://localhost:9091/healthz');
 });
 
@@ -298,6 +302,41 @@ test('runOpsChecks reports only allowlisted queue health statuses', async () => 
     'HTTP 503; cleanup=degraded, ingestion_leases=ok, eval_leases=degraded',
   );
   assert.doesNotMatch(checks[0].detail, /database-secret|last_error|exhausted|expired/);
+});
+
+test('runOpsChecks validates backend dependencies and reports RAG capability degradation', async () => {
+  const responses = {
+    'backend-ready': {
+      status: 'ready',
+      checks: { postgres: 'ok', redis: 'ok', rag: 'ok' },
+    },
+    'rag-ready': {
+      status: 'ready',
+      checks: { postgres: 'ok', milvus: 'ok', elasticsearch: 'ok', neo4j: 'ok' },
+      capabilities: {
+        status: 'degraded',
+        features: {
+          query_rewrite: { status: 'degraded' },
+          reranker: { status: 'degraded' },
+          graph_extraction: { status: 'degraded' },
+          retrieval_cache: { status: 'enabled' },
+          markdown_index: { status: 'degraded', stale_file_count: 4 },
+        },
+      },
+    },
+  };
+  const checks = await runOpsChecks([
+    { label: 'backend ready', url: 'http://localhost/backend', responseKind: 'backend-ready' },
+    { label: 'rag ready', url: 'http://localhost/rag', responseKind: 'rag-ready' },
+  ], { timeoutMs: 1000 }, async (_url, init) => ({
+    status: 200,
+    json: async () => responses[init.headers?.kind || (_url.endsWith('/backend') ? 'backend-ready' : 'rag-ready')],
+  }));
+
+  assert.deepEqual(checks.map((check) => check.status), ['ok', 'ok']);
+  assert.match(checks[0].detail, /redis=ok/);
+  assert.match(checks[1].detail, /capabilities=degraded/);
+  assert.match(checks[1].detail, /stale_markdown_files=4/);
 });
 
 test('runOpsChecks preserves request URLs while redacting report URLs and network errors', async () => {

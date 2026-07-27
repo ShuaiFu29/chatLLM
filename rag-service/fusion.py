@@ -2,14 +2,59 @@ from collections import defaultdict
 from typing import Iterable
 
 
+_GRAPH_METADATA_LIST_FIELDS = (
+    "graph_entities",
+    "graph_seed_entities",
+    "graph_related_entities",
+    "graph_relations",
+)
+
+
+def _merge_unique_values(left: list, right: list) -> list:
+    merged = list(left)
+    for value in right:
+        if value not in merged:
+            merged.append(value)
+    return merged
+
+
+def _merge_graph_provenance(target: dict, incoming: dict) -> None:
+    target_metadata = dict(target.get("metadata") or {})
+    incoming_metadata = incoming.get("metadata") or {}
+
+    for field in _GRAPH_METADATA_LIST_FIELDS:
+        incoming_values = incoming_metadata.get(field)
+        if isinstance(incoming_values, list) and incoming_values:
+            target_metadata[field] = _merge_unique_values(
+                target_metadata.get(field) or [],
+                incoming_values,
+            )
+
+    target["metadata"] = target_metadata
+    graph_scores = (target.get("graph_score"), incoming.get("graph_score"))
+    numeric_scores = []
+    for score in graph_scores:
+        try:
+            numeric_scores.append(float(score))
+        except (TypeError, ValueError):
+            continue
+    if numeric_scores:
+        target["graph_score"] = max(numeric_scores)
+
+
+
 def _document_key(document: dict) -> str:
     metadata = document.get("metadata") or {}
-    return str(
-        document.get("id")
-        or document.get("chunk_id")
-        or f"{metadata.get('file_id', '')}:{metadata.get('chunk_index', '')}"
-        or document.get("content", "")
-    )
+    explicit_id = document.get("id") or document.get("chunk_id")
+    if explicit_id:
+        return str(explicit_id)
+
+    file_id = metadata.get("file_id")
+    chunk_index = metadata.get("chunk_index")
+    if file_id not in (None, "") and chunk_index is not None:
+        return f"{file_id}:{chunk_index}"
+
+    return str(document.get("content") or "")
 
 
 def reciprocal_rank_fuse(
@@ -31,7 +76,12 @@ def reciprocal_rank_fuse(
                 continue
 
             if key not in documents:
-                documents[key] = dict(document)
+                documents[key] = {
+                    **document,
+                    "metadata": dict(document.get("metadata") or {}),
+                }
+            else:
+                _merge_graph_provenance(documents[key], document)
 
             scores[key] += weight / (k + index)
             channel_ranks[key][channel] = index

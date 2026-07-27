@@ -193,12 +193,43 @@ class StreamingIngestionTests(unittest.TestCase):
         fail_job.assert_not_called()
         complete_job.assert_called_once()
         stages = [call.kwargs["stage"] for call in update_checkpoint.call_args_list]
-        self.assertIn("streaming_download", stages)
+        self.assertIn("staging_streaming_object", stages)
+        self.assertIn("validated_staged_object", stages)
+        self.assertIn("publishing_staged_object", stages)
         self.assertIn("indexing_vectors", stages)
         self.assertIn("completed", complete_job.call_args.kwargs["stage"])
         final_checkpoint = complete_job.call_args.kwargs["checkpoint"]
         self.assertGreater(final_checkpoint["indexed_chunks"], 0)
         self.assertEqual(final_checkpoint["mode"], "streaming")
+
+    def test_streaming_integrity_failure_preserves_existing_indexes_and_chunks(self):
+        original_threshold = ingestion.settings.rag_ingest_streaming_threshold_bytes
+        ingestion.settings.rag_ingest_streaming_threshold_bytes = 1
+        payload = b"# Damaged object"
+
+        with patch("ingestion.get_file", return_value={
+            "id": "file-1",
+            "user_id": "user-1",
+            "filename": "large.md",
+            "file_type": "text/markdown",
+            "object_key": "uploads/large.md",
+            "file_hash": "0" * 64,
+            "file_size": len(payload),
+            "project_space_id": "space-1",
+        }), patch("ingestion.stream_object_bytes", return_value=iter([payload])), patch(
+            "ingestion.reset_file_indexes"
+        ) as reset_indexes, patch("ingestion.delete_file_chunks") as delete_chunks, patch(
+            "ingestion.fail_ingestion_job"
+        ) as fail_job:
+            try:
+                with self.assertRaisesRegex(ValueError, "Uploaded object hash mismatch"):
+                    ingestion.process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
+            finally:
+                ingestion.settings.rag_ingest_streaming_threshold_bytes = original_threshold
+
+        reset_indexes.assert_not_called()
+        delete_chunks.assert_not_called()
+        self.assertEqual(fail_job.call_args.args[3], "Uploaded object integrity check failed")
 
 
 if __name__ == "__main__":

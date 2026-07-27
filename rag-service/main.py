@@ -1,6 +1,8 @@
 import hmac
 import threading
+from concurrent.futures import ThreadPoolExecutor, wait
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Depends, Header
@@ -8,14 +10,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import Field, field_validator
 
 from config import settings
+from capabilities import build_capability_report
 from agentic_retrieval import agentic_retrieve
-from db import assert_eval_lease_active, bump_project_knowledge_version, check_database_ready, get_file
+from db import (
+    assert_eval_lease_active,
+    bump_project_knowledge_version,
+    check_database_ready,
+    get_file,
+    get_markdown_index_status,
+)
 from eval_runner import EvalExecutionStopped, EvalRunDeadlineExceeded, run_eval_cases
 from graph_store import check_graph_store_ready, delete_file_graph, ensure_graph_schema, list_graph, search_graph
 from http_safety import RequestBodyLimitMiddleware, StrictRequestModel, public_internal_error_handler
 from ingestion import process_file
 from keyword_store import check_keyword_store_ready, delete_file_keywords, ensure_keyword_index
-from retrieval_cache import get_default_retrieval_cache
+from retrieval_cache import check_cache_redis_ready, get_default_retrieval_cache
 from retrieval import retrieve_documents
 from safe_errors import safe_error_fields
 from vector_store import check_vector_store_ready, delete_file_vectors, ensure_collection
@@ -84,8 +93,19 @@ class RetrieveRequest(StrictRequestModel):
         return strip_and_reject_blank_value(value)
 
 
+class ConversationTurnRequest(StrictRequestModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=2000)
+
+    @field_validator("content")
+    @classmethod
+    def strip_content(cls, value: str):
+        return strip_and_reject_blank_value(value)
+
+
 class AgenticRetrieveRequest(RetrieveRequest):
     conversation_id: str | None = Field(default=None, max_length=128)
+    conversation_context: list[ConversationTurnRequest] = Field(default_factory=list, max_length=8)
 
     @field_validator("conversation_id")
     @classmethod
@@ -104,19 +124,54 @@ class GraphListRequest(StrictRequestModel):
         return strip_and_reject_blank_value(value)
 
 
+class EvalGraphRelationExpectation(StrictRequestModel):
+    source: str = Field(..., min_length=1, max_length=200)
+    relation: str = Field(..., min_length=1, max_length=120)
+    target: str = Field(..., min_length=1, max_length=200)
+
+    @field_validator("source", "relation", "target")
+    @classmethod
+    def strip_relation_fields(cls, value: str):
+        return strip_and_reject_blank_value(value)
+
+
+class EvalHumanScores(StrictRequestModel):
+    correctness: float | None = Field(default=None, ge=0.0, le=1.0)
+    completeness: float | None = Field(default=None, ge=0.0, le=1.0)
+    faithfulness: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class EvalEvaluationSpec(StrictRequestModel):
+    expected_chunk_ids: list[str] = Field(default_factory=list, max_length=50)
+    expected_evidence: list[str] = Field(default_factory=list, max_length=20)
+    expected_answerable: bool | None = None
+    expected_graph_relations: list[EvalGraphRelationExpectation] = Field(default_factory=list, max_length=20)
+    human_scores: EvalHumanScores | None = None
+
+    @field_validator("expected_chunk_ids", "expected_evidence")
+    @classmethod
+    def strip_gold_strings(cls, values: list[str]):
+        return [strip_and_reject_blank_value(value) for value in values]
+
+
 class EvalCaseRequest(StrictRequestModel):
     id: str = Field(..., min_length=1, max_length=128)
     question: str = Field(..., min_length=1, max_length=4096)
     expected_answer: str = Field(default="", max_length=4000)
     expected_keywords: list[str] = Field(default_factory=list, max_length=20)
     expected_source_files: list[str] = Field(default_factory=list, max_length=20)
+    evaluation_spec: EvalEvaluationSpec = Field(default_factory=EvalEvaluationSpec)
+    actual_answer: str = Field(default="", max_length=20000)
+    retrieval_snapshot: dict[str, object] = Field(default_factory=dict)
+    answer_evaluation: dict[str, object] = Field(default_factory=dict)
+    generation_metadata: dict[str, object] = Field(default_factory=dict)
 
     @field_validator("id", "question")
     @classmethod
     def strip_required_fields(cls, value: str):
         return strip_and_reject_blank_value(value)
 
-    @field_validator("expected_answer")
+    @field_validator("expected_answer", "actual_answer")
     @classmethod
     def strip_expected_answer(cls, value: str):
         return value.strip()
@@ -164,37 +219,55 @@ def ready_health_check():
         "milvus": "error",
         "elasticsearch": "error",
         "neo4j": "error",
+        "cache_redis": "disabled" if not settings.redis_cache_enabled else "error",
     }
 
-    try:
+    def check_postgres():
         check_database_ready()
-        checks["postgres"] = "ok"
-    except Exception:
-        checks["postgres"] = "error"
+        return get_markdown_index_status()
 
-    try:
-        check_vector_store_ready()
-        checks["milvus"] = "ok"
-    except Exception:
-        checks["milvus"] = "error"
+    markdown_index = None
+    check_functions = {
+        "postgres": check_postgres,
+        "milvus": check_vector_store_ready,
+        "elasticsearch": check_keyword_store_ready,
+        "neo4j": check_graph_store_ready,
+        "cache_redis": check_cache_redis_ready,
+    }
+    executor = ThreadPoolExecutor(max_workers=len(check_functions), thread_name_prefix="rag-readiness")
+    futures = {executor.submit(check): name for name, check in check_functions.items()}
+    done, pending = wait(
+        futures,
+        timeout=settings.rag_readiness_timeout_ms / 1000,
+    )
+    for future in done:
+        name = futures[future]
+        try:
+            result = future.result()
+            checks[name] = result if name == "cache_redis" else "ok"
+            if name == "postgres":
+                markdown_index = result
+        except Exception:
+            checks[name] = "error"
+    for future in pending:
+        checks[futures[future]] = "timeout"
+        future.cancel()
+    # Readiness must respect its configured budget even if a dependency client
+    # ignores cancellation while its own network timeout is still running.
+    executor.shutdown(wait=False, cancel_futures=True)
 
-    try:
-        check_keyword_store_ready()
-        checks["elasticsearch"] = "ok"
-    except Exception:
-        checks["elasticsearch"] = "error"
-
-    try:
-        check_graph_store_ready()
-        checks["neo4j"] = "ok"
-    except Exception:
-        checks["neo4j"] = "error"
-
-    ready = all(status == "ok" for status in checks.values())
+    capabilities = build_capability_report(markdown_index, checks["cache_redis"])
+    ready = all(
+        checks[name] == "ok"
+        for name in ("postgres", "milvus", "elasticsearch", "neo4j")
+    )
     if not ready:
-        raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "not_ready", "checks": checks, "capabilities": capabilities},
+        )
 
-    return {"status": "ready", "checks": checks}
+    return {"status": "ready", "checks": checks, "capabilities": capabilities}
 
 @app.on_event("startup")
 def startup():
@@ -261,7 +334,11 @@ def retrieve_endpoint(request: RetrieveRequest):
         limit=request.limit,
         threshold=request.threshold,
     )
-    return {"results": results}
+    return {
+        "results": results,
+        "channel_status": getattr(results, "channel_status", {}),
+        "degraded": bool(getattr(results, "degraded", False)),
+    }
 
 
 # Protected route marker for legacy source checks: @app.post("/agentic-retrieve")
@@ -272,6 +349,7 @@ def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
         user_id=request.user_id,
         project_space_id=request.project_space_id,
         conversation_id=request.conversation_id,
+        conversation_context=[turn.model_dump() for turn in request.conversation_context],
         limit=request.limit,
         threshold=request.threshold,
         cache_store=get_default_retrieval_cache(),

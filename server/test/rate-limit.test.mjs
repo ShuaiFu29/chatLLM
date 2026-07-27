@@ -207,69 +207,43 @@ test('rate limiter fails closed without reflecting repository errors', async () 
   }
 });
 
-test('rate limit repository uses one atomic upsert and bounded expiry cleanup', async () => {
+test('rate limit repository consumes one atomic Redis fixed-window script', async () => {
   const repository = require(path.join(serverRoot, 'dist', 'repositories', 'rateLimits.js'));
   const calls = [];
-  const query = async (sql, params) => {
-    calls.push({ sql, params });
-    if (/insert into rate_limit_buckets/i.test(sql)) {
-      return {
-        rows: [{ request_count: '2', expires_at: '2026-07-12T12:00:00.000Z' }],
-        rowCount: 1,
-      };
-    }
-    if (/delete from rate_limit_buckets/i.test(sql)) {
-      return { rows: [], rowCount: 3 };
-    }
-    throw new Error(`Unexpected SQL: ${sql}`);
+  const redis = {
+    async eval(...args) {
+      calls.push(args);
+      return [2, 45000];
+    },
   };
 
+  const before = Date.now();
   const consumed = await repository.consumeRateLimitBucket({
     bucketKey: `global:${'a'.repeat(64)}`,
     windowMs: 60000,
-  }, query);
-  const deleted = await repository.deleteExpiredRateLimitBuckets(50, query);
+  }, redis);
 
-  assert.deepEqual(consumed, {
-    count: 2,
-    resetAt: Date.parse('2026-07-12T12:00:00.000Z'),
-  });
-  assert.equal(deleted, 3);
-  assert.equal(calls.length, 2);
-  assert.match(calls[0].sql, /insert into rate_limit_buckets/i);
-  assert.match(calls[0].sql, /on conflict \(bucket_key\) do update/i);
-  assert.match(calls[0].sql, /request_count = case/i);
-  assert.match(calls[0].sql, /expires_at <= excluded\.window_started_at/i);
-  assert.match(calls[0].sql, /returning request_count, expires_at/i);
-  assert.deepEqual(calls[0].params, [`global:${'a'.repeat(64)}`, 60000]);
-  assert.match(calls[1].sql, /limit \$1/i);
-  assert.match(calls[1].sql, /delete from rate_limit_buckets/i);
-  assert.match(
-    calls[1].sql,
-    /where bucket\.bucket_key = expired\.bucket_key\s+and bucket\.expires_at <= clock_timestamp\(\)/i,
-    'cleanup must recheck expiry after waiting on a concurrently refreshed bucket',
-  );
-  assert.deepEqual(calls[1].params, [50]);
+  assert.equal(consumed.count, 2);
+  assert.ok(consumed.resetAt >= before + 45000);
+  assert.ok(consumed.resetAt <= Date.now() + 45000);
+  assert.equal(calls.length, 1);
+  const [script, keyCount, key, windowMs] = calls[0];
+  assert.equal(keyCount, 1);
+  assert.equal(key, `chatllm:rate-limit:global:${'a'.repeat(64)}`);
+  assert.equal(windowMs, 60000);
+  assert.match(script, /redis\.call\('INCR', KEYS\[1\]\)/);
+  assert.match(script, /redis\.call\('PEXPIRE', KEYS\[1\], ARGV\[1\]\)/);
+  assert.match(script, /redis\.call\('PTTL', KEYS\[1\]\)/);
 });
 
-test('security migration and maintenance define durable bounded rate-limit buckets', () => {
-  const migrationSource = readSource('migrations/0025_security_sessions_rate_limits.sql');
+test('Redis rate limiting preserves principal scoping and fails closed', () => {
   const middlewareSource = readSource('src/middleware/rateLimit.ts');
   const indexSource = readSource('src/index.ts');
-  const maintenanceSource = readSource('src/services/maintenance.ts');
-
-  assert.match(migrationSource, /create table if not exists rate_limit_buckets/i);
-  assert.match(migrationSource, /bucket_key text primary key/i);
-  assert.match(migrationSource, /window_started_at timestamptz not null/i);
-  assert.match(migrationSource, /request_count integer not null/i);
-  assert.match(migrationSource, /expires_at timestamptz not null/i);
-  assert.match(migrationSource, /rate_limit_buckets_expires_at_idx/i);
   assert.match(middlewareSource, /consumeRateLimitBucket/);
   assert.match(middlewareSource, /isIP/);
   assert.doesNotMatch(middlewareSource, /new Map|MAX_RATE_LIMIT_BUCKETS|pruneOldestBuckets/);
   assert.match(indexSource, /app\.set\('trust proxy', serverEnv\.TRUST_PROXY_HOPS\)/);
   assert.doesNotMatch(indexSource, /app\.set\('trust proxy', 1\)/);
-  assert.match(maintenanceSource, /deleteExpiredRateLimitBuckets/);
 
   const cookieParserIndex = indexSource.indexOf('app.use(cookieParser())');
   const globalLimiterIndex = indexSource.indexOf("keyPrefix: 'global'");

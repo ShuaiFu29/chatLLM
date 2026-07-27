@@ -29,6 +29,7 @@ import { securityHeadersMiddleware } from './middleware/securityHeaders';
 import { errorHandlerMiddleware } from './middleware/errorHandler';
 import { notFoundMiddleware } from './middleware/notFound';
 import { toSafeError } from './lib/safeError';
+import { connectRedis } from './lib/redis';
 
 export const app = express();
 
@@ -118,12 +119,15 @@ app.use(errorHandlerMiddleware);
 
 export const startServer = async () => {
   await runMigrations();
+  await connectRedis();
+  await Promise.all([
+    fileQueue.start(),
+    ragEvalQueue.start(),
+    artifactCleanupQueue.start(),
+  ]);
 
   const server = app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    fileQueue.start();
-    ragEvalQueue.start();
-    artifactCleanupQueue.start();
     maintenanceService.start();
   });
 

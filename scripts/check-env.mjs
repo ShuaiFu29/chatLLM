@@ -11,13 +11,16 @@ const weakJwtSecrets = new Set([
 ]);
 
 const serverRules = {
-  required: ['DATABASE_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET', 'RAG_SERVICE_TOKEN'],
+  required: ['DATABASE_URL', 'REDIS_URL', 'S3_ENDPOINT', 'S3_ACCESS_KEY', 'S3_SECRET_KEY', 'JWT_SECRET', 'RAG_SERVICE_TOKEN'],
   forbiddenPrefixes: ['SUPABASE_', 'OPENAI_'],
   jwtSecretKey: 'JWT_SECRET',
   atLeastOne: [['DEEPSEEK_API_KEY', 'MOONSHOT_API_KEY', 'QWEN_API_KEY']],
 };
 
 const MIN_FILE_QUEUE_INGEST_TIMEOUT_MS = 60000;
+const DEFAULT_RAG_EVAL_MAX_CASES_PER_DATASET = 500;
+const DEFAULT_RAG_EVAL_MAX_CASES_PER_RUN = 500;
+const MAX_RAG_EVAL_CASE_LIMIT = 5000;
 
 const ragRules = {
   required: [
@@ -38,6 +41,7 @@ const infrastructureRules = {
     'POSTGRES_DB',
     'POSTGRES_USER',
     'POSTGRES_PASSWORD',
+    'REDIS_PASSWORD',
     'MINIO_ROOT_USER',
     'MINIO_ROOT_PASSWORD',
     'MILVUS_MINIO_ROOT_USER',
@@ -49,6 +53,7 @@ const infrastructureRules = {
 
 const auditedLegacyInfrastructureValues = new Map([
   ['POSTGRES_PASSWORD', new Set(['chatllm'])],
+  ['REDIS_PASSWORD', new Set(['redis', 'chatllm'])],
   ['MINIO_ROOT_USER', new Set(['minioadmin'])],
   ['MINIO_ROOT_PASSWORD', new Set(['minioadmin'])],
   ['MILVUS_MINIO_ROOT_USER', new Set(['minioadmin'])],
@@ -58,6 +63,7 @@ const auditedLegacyInfrastructureValues = new Map([
 
 const infrastructureSecretKeys = [
   'POSTGRES_PASSWORD',
+  'REDIS_PASSWORD',
   'MINIO_ROOT_PASSWORD',
   'MILVUS_MINIO_ROOT_PASSWORD',
   'NEO4J_PASSWORD',
@@ -178,17 +184,40 @@ function validateInfrastructureEnv(env) {
 }
 
 function validateServerQueueConfig(env) {
+  const issues = [];
   const rawTimeout = env.FILE_QUEUE_INGEST_TIMEOUT_MS?.trim();
-  if (!rawTimeout) return [];
-
-  const timeoutMs = Number.parseInt(rawTimeout, 10);
-  if (Number.isInteger(timeoutMs) && timeoutMs >= MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
-    return [];
+  if (rawTimeout) {
+    const timeoutMs = Number.parseInt(rawTimeout, 10);
+    if (!Number.isInteger(timeoutMs) || timeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
+      issues.push(
+        `server/.env FILE_QUEUE_INGEST_TIMEOUT_MS should be at least ${MIN_FILE_QUEUE_INGEST_TIMEOUT_MS} for synchronous RAG ingestion`,
+      );
+    }
   }
 
-  return [
-    `server/.env FILE_QUEUE_INGEST_TIMEOUT_MS should be at least ${MIN_FILE_QUEUE_INGEST_TIMEOUT_MS} for synchronous RAG ingestion`,
-  ];
+  const readCaseLimit = (key, fallback) => {
+    const rawValue = env[key]?.trim();
+    if (!rawValue) return fallback;
+    const value = Number(rawValue);
+    if (!Number.isSafeInteger(value) || value <= 0 || value > MAX_RAG_EVAL_CASE_LIMIT) {
+      issues.push(`server/.env ${key} must be an integer between 1 and ${MAX_RAG_EVAL_CASE_LIMIT}`);
+      return null;
+    }
+    return value;
+  };
+  const datasetLimit = readCaseLimit(
+    'RAG_EVAL_MAX_CASES_PER_DATASET',
+    DEFAULT_RAG_EVAL_MAX_CASES_PER_DATASET,
+  );
+  const runLimit = readCaseLimit(
+    'RAG_EVAL_MAX_CASES_PER_RUN',
+    DEFAULT_RAG_EVAL_MAX_CASES_PER_RUN,
+  );
+  if (datasetLimit !== null && runLimit !== null && runLimit > datasetLimit) {
+    issues.push('server/.env RAG_EVAL_MAX_CASES_PER_RUN must not exceed RAG_EVAL_MAX_CASES_PER_DATASET');
+  }
+
+  return issues;
 }
 
 function validateServerModelConfig(env) {
@@ -204,7 +233,6 @@ function validateServerModelConfig(env) {
 
 function validateRagEnvMap(env) {
   const provider = env.EMBEDDING_PROVIDER?.trim().toLowerCase() || 'compatible';
-  const judgeEnabled = env.RAG_JUDGE_ENABLED?.trim().toLowerCase() === 'true';
   const issues = validateEnvMap('rag-service/.env', env, ragRules);
 
   if (!['compatible', 'local'].includes(provider)) {
@@ -218,10 +246,42 @@ function validateRagEnvMap(env) {
     }));
   }
 
-  if (judgeEnabled) {
-    issues.push(...validateEnvMap('rag-service/.env', env, {
+  for (const capability of [
+    {
+      enabledKey: 'RAG_JUDGE_ENABLED',
       required: ['RAG_JUDGE_API_KEY', 'RAG_JUDGE_BASE_URL', 'RAG_JUDGE_MODEL'],
-    }));
+    },
+    {
+      enabledKey: 'QUERY_REWRITE_ENABLED',
+      required: ['QUERY_REWRITE_API_KEY', 'QUERY_REWRITE_BASE_URL', 'QUERY_REWRITE_MODEL'],
+    },
+    {
+      enabledKey: 'RERANKER_ENABLED',
+      required: ['RERANKER_API_KEY', 'RERANKER_BASE_URL', 'RERANKER_MODEL'],
+    },
+    {
+      enabledKey: 'GRAPH_EXTRACTION_ENABLED',
+      required: ['GRAPH_EXTRACTION_API_KEY', 'GRAPH_EXTRACTION_BASE_URL', 'GRAPH_EXTRACTION_MODEL'],
+    },
+  ]) {
+    if (env[capability.enabledKey]?.trim().toLowerCase() === 'true') {
+      issues.push(...validateEnvMap('rag-service/.env', env, { required: capability.required }));
+    }
+  }
+
+  const graphOntologyVersion = env.GRAPH_ONTOLOGY_VERSION?.trim();
+  if (graphOntologyVersion && graphOntologyVersion !== 'core-v1') {
+    issues.push('rag-service/.env GRAPH_ONTOLOGY_VERSION must be core-v1');
+  }
+
+  if (env.REDIS_CACHE_ENABLED?.trim().toLowerCase() === 'true') {
+    const cacheRedisUrl = env.CACHE_REDIS_URL?.trim();
+    const queueRedisUrl = env.REDIS_URL?.trim() || 'redis://127.0.0.1:6379/0';
+    if (!cacheRedisUrl) {
+      issues.push('rag-service/.env is missing required keys: CACHE_REDIS_URL');
+    } else if (cacheRedisUrl.replace(/\/+$/, '') === queueRedisUrl.replace(/\/+$/, '')) {
+      issues.push('rag-service/.env CACHE_REDIS_URL must be separate from REDIS_URL');
+    }
   }
 
   return issues;

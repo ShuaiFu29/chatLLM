@@ -61,13 +61,14 @@ test('cleanup claims and step checkpoints are fenced by a renewable lease', () =
   assert.match(repository, /export const renewCleanupJobLease/);
   assert.match(repository, /export const updateCleanupJobStep/);
   assert.match(repository, /export const failExhaustedCleanupJobs/);
+  assert.match(repository, /export const claimCleanupJobById/);
   assert.match(repository, /attempts >= max_attempts[\s\S]*lease_expires_at <= now\(\)/i);
   assert.match(repository, /lease_token = \$[0-9]+[\s\S]*lease_expires_at > now\(\)/i);
   assert.match(queue, /failExhaustedCleanupJobs/);
   assert.match(
     queue,
-    /failExhaustedCleanupJobs\(\)[\s\S]*claimNextCleanupJob/i,
-    'the queue must terminalize exhausted stale leases before claiming more work',
+    /failExhaustedCleanupJobs\(\)[\s\S]*listDispatchableCleanupJobIds/i,
+    'the dispatcher must terminalize exhausted stale leases before publishing ready work',
   );
 });
 

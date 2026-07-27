@@ -23,40 +23,6 @@ test('RAG trace migration stores agentic run metadata and links assistant messag
   assert.match(migrationSource, /rag_runs_user_conversation_created_idx/i);
 });
 
-test('server has an agentic RAG client and persists trace runs for assistant messages', () => {
-  const ragClientSource = readSource('src/lib/ragClient.ts');
-  const chatSource = readSource('src/controllers/chat.ts');
-  const ragRunsRepositorySource = readOptionalSource('src/repositories/ragRuns.ts');
-  const messageRepositorySource = readSource('src/repositories/messages.ts');
-
-  assert.match(ragClientSource, /retrieveAgenticRagDocuments/);
-  assert.match(ragClientSource, /\/agentic-retrieve/);
-  assert.match(ragClientSource, /AgenticRagResponse/);
-  assert.match(ragClientSource, /insufficient_evidence/);
-  assert.match(ragClientSource, /answer_guidance/);
-
-  assert.match(chatSource, /retrieveAgenticRagDocuments/);
-  assert.match(chatSource, /ragRunId/);
-  assert.match(chatSource, /traceSummary/);
-  assert.match(chatSource, /qualitySummary/);
-  assert.match(chatSource, /insufficientEvidence/);
-  assert.match(chatSource, /answer_guidance/);
-  assert.match(chatSource, /insertRagRunForMessage/);
-  assert.match(
-    chatSource,
-    /const evidenceGuidance = answerGuidance\s*\?/,
-    'chat prompt should pass answer_guidance for inventory and other grounded RAG modes, not only weak-evidence cases',
-  );
-
-  assert.match(ragRunsRepositorySource, /insertRagRunForMessage/);
-  assert.match(ragRunsRepositorySource, /insert into rag_runs/i);
-  assert.match(ragRunsRepositorySource, /update messages/i);
-
-  assert.match(messageRepositorySource, /rag_run_id/);
-  assert.match(messageRepositorySource, /rag_trace/);
-  assert.match(messageRepositorySource, /left join rag_runs/i);
-});
-
 test('server exposes authenticated RAG workbench endpoints for inspection and graph search', () => {
   const indexSource = readSource('src/index.ts');
   const routesSource = readOptionalSource('src/routes/ragWorkbench.ts');

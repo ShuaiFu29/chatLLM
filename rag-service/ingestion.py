@@ -1,6 +1,10 @@
 import logging
 import hashlib
 import codecs
+import re
+import tempfile
+from contextlib import contextmanager
+from typing import BinaryIO
 
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
@@ -27,6 +31,10 @@ from vector_store import delete_file_vectors, insert_vectors
 
 
 logger = logging.getLogger(__name__)
+
+_MARKDOWN_HEADING_KEYS = tuple((level, f"Header {level}") for level in range(1, 7))
+_MARKDOWN_HEADING_RE = re.compile(r"^(#{1,6})[ \t]+(.+?)\s*$")
+_MARKDOWN_FENCE_RE = re.compile(r"^\s{0,3}(`{3,}|~{3,})")
 
 
 def verify_uploaded_object(file_bytes: bytes, file_data: dict):
@@ -64,18 +72,37 @@ def format_ingestion_error(error: Exception) -> str:
     return "Document ingestion failed"
 
 
-def extract_text(file_bytes: bytes, file_type: str | None, object_key: str) -> tuple[str, bool]:
-    normalized_key = object_key.lower()
-    is_markdown = (
-        file_type == "text/markdown"
+def assert_markdown_input(file_type: str | None, object_key: str) -> None:
+    normalized_key = str(object_key or "").strip().lower()
+    normalized_type = str(file_type or "").split(";", 1)[0].strip().lower()
+    if not (
+        normalized_type == "text/markdown"
         or normalized_key.endswith(".md")
         or normalized_key.endswith(".markdown")
-    )
-
-    if not is_markdown:
+    ):
         raise ValueError("Only Markdown files (.md, .markdown) are supported")
 
+
+def extract_text(file_bytes: bytes, file_type: str | None, object_key: str) -> tuple[str, bool]:
+    assert_markdown_input(file_type, object_key)
     return file_bytes.decode("utf-8"), True
+
+
+def _heading_prefix(metadata: dict) -> str:
+    headings = []
+    for level, metadata_key in _MARKDOWN_HEADING_KEYS:
+        title = str(metadata.get(metadata_key) or "").strip()
+        if title:
+            headings.append(f"{'#' * level} {title}")
+    return "\n".join(headings)
+
+
+def _with_heading_context(content: str, metadata: dict) -> str:
+    body = content.strip()
+    prefix = _heading_prefix(metadata)
+    if prefix and body:
+        return f"{prefix}\n\n{body}"
+    return prefix or body
 
 
 def split_text(text_content: str, is_markdown: bool) -> list[str]:
@@ -83,11 +110,13 @@ def split_text(text_content: str, is_markdown: bool) -> list[str]:
 
     if is_markdown:
         headers_to_split_on = [
-            ("#", "Header 1"),
-            ("##", "Header 2"),
-            ("###", "Header 3"),
+            ("#" * level, metadata_key)
+            for level, metadata_key in _MARKDOWN_HEADING_KEYS
         ]
-        markdown_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+        markdown_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on,
+            strip_headers=True,
+        )
         md_header_splits = markdown_splitter.split_text(text_content)
 
         text_splitter = RecursiveCharacterTextSplitter(
@@ -95,7 +124,13 @@ def split_text(text_content: str, is_markdown: bool) -> list[str]:
             chunk_overlap=100,
             separators=separators,
         )
-        return [doc.page_content for doc in text_splitter.split_documents(md_header_splits)]
+        chunks = []
+        for section in md_header_splits:
+            for body_chunk in text_splitter.split_text(section.page_content):
+                contextualized = _with_heading_context(body_chunk, section.metadata)
+                if contextualized:
+                    chunks.append(contextualized)
+        return chunks
 
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
@@ -120,25 +155,78 @@ def iter_streaming_markdown_chunks(
     chunk_overlap: int = 100,
 ):
     decoder = codecs.getincrementaldecoder("utf-8")()
-    buffer = ""
+    line_buffer = ""
+    body_buffer = ""
+    heading_path: dict[int, str] = {}
+    fence_marker = ""
+
+    def metadata() -> dict:
+        return {
+            metadata_key: heading_path[level]
+            for level, metadata_key in _MARKDOWN_HEADING_KEYS
+            if level in heading_path
+        }
+
+    def flush_ready(force: bool = False):
+        nonlocal body_buffer
+        while body_buffer and (force or len(body_buffer) >= chunk_size + chunk_overlap):
+            boundary = (
+                len(body_buffer)
+                if force and len(body_buffer) <= chunk_size
+                else find_streaming_split_boundary(body_buffer, chunk_size)
+            )
+            body = body_buffer[:boundary].strip()
+            if body:
+                contextualized = _with_heading_context(body, metadata())
+                if contextualized:
+                    yield contextualized
+            if boundary >= len(body_buffer):
+                body_buffer = ""
+                break
+            overlap_start = max(0, boundary - chunk_overlap)
+            body_buffer = body_buffer[overlap_start:]
+            if force and len(body_buffer) <= chunk_size:
+                continue
+
+    def consume_line(line: str):
+        nonlocal body_buffer, fence_marker
+        fence_match = _MARKDOWN_FENCE_RE.match(line)
+        if fence_match:
+            marker = fence_match.group(1)[0]
+            if not fence_marker:
+                fence_marker = marker
+            elif fence_marker == marker:
+                fence_marker = ""
+
+        heading_match = None if fence_marker else _MARKDOWN_HEADING_RE.match(line.rstrip("\r\n"))
+        if heading_match:
+            yield from flush_ready(force=True)
+            level = len(heading_match.group(1))
+            heading_path[level] = heading_match.group(2).strip()
+            for nested_level in tuple(heading_path):
+                if nested_level > level:
+                    del heading_path[nested_level]
+            return
+
+        body_buffer += line
+        yield from flush_ready(force=False)
 
     for byte_chunk in byte_chunks:
         if not byte_chunk:
             continue
-        buffer += decoder.decode(byte_chunk)
+        line_buffer += decoder.decode(byte_chunk)
+        lines = line_buffer.splitlines(keepends=True)
+        if lines and not lines[-1].endswith(("\n", "\r")):
+            line_buffer = lines.pop()
+        else:
+            line_buffer = ""
+        for line in lines:
+            yield from consume_line(line)
 
-        while len(buffer) >= chunk_size + chunk_overlap:
-            boundary = find_streaming_split_boundary(buffer, chunk_size)
-            chunk = buffer[:boundary].strip()
-            if chunk:
-                yield chunk
-            overlap_start = max(0, boundary - chunk_overlap)
-            buffer = buffer[overlap_start:]
-
-    buffer += decoder.decode(b"", final=True)
-    final = buffer.strip()
-    if final:
-        yield final
+    line_buffer += decoder.decode(b"", final=True)
+    if line_buffer:
+        yield from consume_line(line_buffer)
+    yield from flush_ready(force=True)
 
 
 def should_stream_ingestion(file_data: dict) -> bool:
@@ -186,6 +274,42 @@ def iter_verified_streaming_chunks(object_key: str, file_data: dict):
     verify_streamed_object(byte_count, hasher.hexdigest(), file_data)
 
 
+@contextmanager
+def stage_verified_streaming_object(object_key: str, file_data: dict):
+    """Spool and verify a large object before replacing any active indexes."""
+    hasher = hashlib.sha256()
+    byte_count = 0
+    with tempfile.TemporaryFile(mode="w+b") as staged_file:
+        for byte_chunk in stream_object_bytes(object_key):
+            if not byte_chunk:
+                continue
+            staged_file.write(byte_chunk)
+            byte_count += len(byte_chunk)
+            hasher.update(byte_chunk)
+
+        verify_streamed_object(byte_count, hasher.hexdigest(), file_data)
+        staged_file.seek(0)
+        yield staged_file, byte_count
+
+
+def iter_staged_file_bytes(staged_file: BinaryIO, chunk_size: int = 1024 * 1024):
+    staged_file.seek(0)
+    while True:
+        chunk = staged_file.read(chunk_size)
+        if not chunk:
+            break
+        yield chunk
+
+
+def validate_staged_markdown(staged_file: BinaryIO) -> int:
+    """Fully parse staged UTF-8 Markdown before deleting the active generation."""
+    chunk_count = sum(1 for _ in iter_streaming_markdown_chunks(iter_staged_file_bytes(staged_file)))
+    staged_file.seek(0)
+    if chunk_count == 0:
+        raise ValueError("File produced no chunks")
+    return chunk_count
+
+
 def enrich_chunk_rows(file_data: dict, chunk_rows: list[dict], project_space_id: str) -> list[dict]:
     indexed_chunk_rows = []
     for row in chunk_rows:
@@ -203,6 +327,13 @@ def enrich_chunk_rows(file_data: dict, chunk_rows: list[dict], project_space_id:
         indexed_row["metadata"] = metadata
         indexed_chunk_rows.append(indexed_row)
     return indexed_chunk_rows
+
+
+def build_embedding_text(row: dict) -> str:
+    metadata = row.get("metadata") or {}
+    heading = " / ".join(str(item) for item in (metadata.get("heading_path") or []) if str(item).strip())
+    parts = [str(metadata.get("filename") or "").strip(), heading, str(row.get("content") or "").strip()]
+    return "\n".join(part for part in parts if part)
 
 
 def index_chunk_batch(
@@ -233,9 +364,9 @@ def index_chunk_batch(
 
     batch_size = settings.rag_ingest_embedding_batch_size
     vector_rows = []
-    for i in range(0, len(chunk_rows), batch_size):
-        batch_rows = chunk_rows[i: i + batch_size]
-        batch_chunks = [row["content"] for row in batch_rows]
+    for i in range(0, len(indexed_chunk_rows), batch_size):
+        batch_rows = indexed_chunk_rows[i: i + batch_size]
+        batch_chunks = [build_embedding_text(row) for row in batch_rows]
         batch_embeddings = get_embeddings(batch_chunks)
         if len(batch_embeddings) != len(batch_rows):
             raise EmbeddingIntegrityError("item count does not match the ingestion batch")
@@ -277,6 +408,8 @@ def process_streaming_file(
     file_data: dict,
     user_id: str,
     project_space_id: str,
+    staged_file: BinaryIO,
+    staged_chunk_count: int,
 ):
     object_key = file_data["object_key"]
     update_ingestion_job_checkpoint(
@@ -293,9 +426,14 @@ def process_streaming_file(
         file_id,
         attempt_id,
         lease_token,
-        stage="streaming_download",
+        stage="publishing_staged_object",
         progress=10,
-        checkpoint={"mode": "streaming", "object_key": object_key, "next_chunk_index": 0},
+        checkpoint={
+            "mode": "streaming",
+            "object_key": object_key,
+            "next_chunk_index": 0,
+            "validated_chunks": staged_chunk_count,
+        },
     )
 
     pending_chunks: list[str] = []
@@ -308,7 +446,7 @@ def process_streaming_file(
     batch_size = settings.rag_ingest_chunk_batch_size
 
     with graph_file_transaction() as graph_transaction:
-        for chunk in iter_verified_streaming_chunks(object_key, file_data):
+        for chunk in iter_streaming_markdown_chunks(iter_staged_file_bytes(staged_file)):
             pending_chunks.append(chunk)
             if len(pending_chunks) < batch_size:
                 continue
@@ -327,7 +465,7 @@ def process_streaming_file(
             graph_status = batch_stats["graph_status"]
             vector_batches += batch_stats["vector_batches"]
             pending_chunks = []
-            progress = min(95, 10 + processed_count)
+            progress = min(95, 10 + int((processed_count / staged_chunk_count) * 85))
             update_ingestion_job_checkpoint(
                 file_id,
                 attempt_id,
@@ -435,17 +573,45 @@ def process_file(file_id: str, attempt_id, lease_token):
         file_type = file_data.get("file_type")
         user_id = str(file_data["user_id"])
         project_space_id = str(file_data.get("project_space_id")) if file_data.get("project_space_id") else ""
+        assert_markdown_input(file_type, object_key)
 
         if should_stream_ingestion(file_data):
-            indexes_reset = True
-            return process_streaming_file(
+            update_ingestion_job_checkpoint(
                 file_id,
                 attempt_id,
                 lease_token,
-                file_data,
-                user_id,
-                project_space_id,
+                stage="staging_streaming_object",
+                progress=5,
+                checkpoint={"mode": "streaming", "object_key": object_key},
             )
+            with stage_verified_streaming_object(object_key, file_data) as (staged_file, staged_bytes):
+                assert_ingestion_lease(file_id, attempt_id, lease_token)
+                staged_chunk_count = validate_staged_markdown(staged_file)
+                update_ingestion_job_checkpoint(
+                    file_id,
+                    attempt_id,
+                    lease_token,
+                    stage="validated_staged_object",
+                    progress=8,
+                    total_chunks=staged_chunk_count,
+                    checkpoint={
+                        "mode": "streaming",
+                        "object_key": object_key,
+                        "bytes": staged_bytes,
+                        "validated_chunks": staged_chunk_count,
+                    },
+                )
+                indexes_reset = True
+                return process_streaming_file(
+                    file_id,
+                    attempt_id,
+                    lease_token,
+                    file_data,
+                    user_id,
+                    project_space_id,
+                    staged_file,
+                    staged_chunk_count,
+                )
 
         update_ingestion_job_checkpoint(
             file_id,

@@ -6,6 +6,10 @@ from config import settings
 from http_safety import validate_http_url
 
 
+class KeywordStoreUnavailableError(RuntimeError):
+    """Raised when Elasticsearch cannot execute a configured keyword search."""
+
+
 def _batched(rows: list[dict], batch_size: int):
     for index in range(0, len(rows), batch_size):
         yield rows[index: index + batch_size]
@@ -85,14 +89,33 @@ def ensure_keyword_index():
             },
         },
         "mappings": {
+            "_meta": {
+                "chatllm_schema_version": settings.elasticsearch_schema_version,
+            },
             "properties": {
                 "chunk_id": {"type": "keyword"},
                 "file_id": {"type": "keyword"},
                 "user_id": {"type": "keyword"},
                 "project_space_id": {"type": "keyword"},
-                "filename": {"type": "keyword"},
+                "filename": {
+                    "type": "text",
+                    "analyzer": "chatllm_mixed_text",
+                    "fields": {
+                        "keyword": {"type": "keyword"},
+                        "cjk": {"type": "text", "analyzer": "cjk"},
+                    },
+                },
+                "heading": {
+                    "type": "text",
+                    "analyzer": "chatllm_mixed_text",
+                    "fields": {"cjk": {"type": "text", "analyzer": "cjk"}},
+                },
                 "chunk_index": {"type": "integer"},
-                "content": {"type": "text", "analyzer": "chatllm_mixed_text"},
+                "content": {
+                    "type": "text",
+                    "analyzer": "chatllm_mixed_text",
+                    "fields": {"cjk": {"type": "text", "analyzer": "cjk"}},
+                },
             },
         },
     }
@@ -102,6 +125,12 @@ def ensure_keyword_index():
     except urllib.error.HTTPError as error:
         if error.code != 400:
             raise
+        current = _request("GET", f"{settings.elasticsearch_index}/_mapping")
+        current_meta = ((current.get(settings.elasticsearch_index) or {}).get("mappings") or {}).get("_meta") or {}
+        if current_meta.get("chatllm_schema_version") != settings.elasticsearch_schema_version:
+            raise RuntimeError(
+                "Elasticsearch index schema is incompatible; configure a new ELASTICSEARCH_INDEX and reindex Markdown files"
+            ) from error
 
 
 def index_chunks(rows: list[dict]):
@@ -128,6 +157,7 @@ def index_chunks(rows: list[dict]):
                 "user_id": str(row.get("user_id") or metadata.get("user_id") or ""),
                 "project_space_id": str(metadata.get("project_space_id") or ""),
                 "filename": metadata.get("filename") or "",
+                "heading": " / ".join(str(item) for item in (metadata.get("heading_path") or []) if str(item).strip()),
                 "chunk_index": int(row.get("chunk_index") or metadata.get("chunk_index") or 0),
                 "content": row.get("content") or "",
             }, ensure_ascii=False))
@@ -167,7 +197,20 @@ def search_keyword_chunks(
         "size": limit,
         "query": {
             "bool": {
-                "must": [{"match": {"content": query}}],
+                "must": [{
+                    "multi_match": {
+                        "query": query,
+                        "type": "best_fields",
+                        "fields": [
+                            "filename^4",
+                            "filename.cjk^3",
+                            "heading^2.5",
+                            "heading.cjk^2",
+                            "content",
+                            "content.cjk",
+                        ],
+                    },
+                }],
                 "filter": filters,
             },
         },
@@ -175,8 +218,8 @@ def search_keyword_chunks(
 
     try:
         response = _request("POST", f"{settings.elasticsearch_index}/_search", body)
-    except Exception:
-        return []
+    except Exception as error:
+        raise KeywordStoreUnavailableError("Elasticsearch keyword search failed") from error
 
     hits = response.get("hits", {}).get("hits", [])
     results = []

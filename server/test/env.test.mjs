@@ -24,7 +24,12 @@ function importServerEnv(overrides, expression = 'serverEnv.DATABASE_URL') {
     ['-e', `const { serverEnv } = require(${JSON.stringify(envModulePath)}); console.log(JSON.stringify(${expression}));`],
     {
       cwd: serverRoot,
-      env: { ...baseEnv, RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN, ...overrides },
+      env: {
+        ...baseEnv,
+        REDIS_URL: 'redis://localhost:6379/0',
+        RAG_SERVICE_TOKEN: TEST_RAG_SERVICE_TOKEN,
+        ...overrides,
+      },
       encoding: 'utf8',
     }
   );
@@ -38,6 +43,7 @@ function parseLastJsonLine(stdout) {
 test('server env fails fast when required keys are missing', () => {
   const result = importServerEnv({
     DATABASE_URL: '',
+    REDIS_URL: '',
     S3_ENDPOINT: '',
     S3_ACCESS_KEY: '',
     S3_SECRET_KEY: '',
@@ -49,7 +55,7 @@ test('server env fails fast when required keys are missing', () => {
   });
 
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /Missing required server environment variables: DATABASE_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, JWT_SECRET/);
+  assert.match(result.stderr, /Missing required server environment variables: DATABASE_URL, REDIS_URL, S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY, JWT_SECRET/);
   assert.match(result.stderr, /At least one chat provider key is required: DEEPSEEK_API_KEY, MOONSHOT_API_KEY, QWEN_API_KEY/);
   assert.doesNotMatch(result.stderr, /OPENAI_API_KEY/);
 });

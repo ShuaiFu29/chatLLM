@@ -6,10 +6,6 @@ import {
   UnsupportedOfficialModelError,
 } from '../lib/llmProviders';
 import {
-  buildChatSources,
-  buildAnswerTaskGuidance,
-  buildRagContext,
-  buildVerificationSources,
   ChatSource,
   RagTraceStep,
   RagTraceSummary,
@@ -19,7 +15,7 @@ import { normalizeChatMessageContent } from '../lib/chatInput';
 import { normalizeMessagePageQuery } from '../lib/messagePagination';
 import { normalizeSearchQuery, readSearchFilters } from '../lib/searchInput';
 import { tryAcquireChatStreamSlot } from '../lib/concurrencyGate';
-import { AgenticRagResponse, retrieveAgenticRagDocuments } from '../lib/ragClient';
+import { AgenticRagResponse } from '../lib/ragClient';
 import { shouldUseRagForMessage } from '../lib/ragTrigger';
 import {
   compareConversationsForUser,
@@ -48,6 +44,12 @@ import {
   ensureDefaultProjectSpaceForUser,
   findProjectSpaceForUser,
 } from '../repositories/projectSpaces';
+import {
+  buildInsufficientEvidenceAnswer,
+  buildGroundedAnswerMessages,
+  prepareGroundedAnswer,
+  streamGroundedAnswer,
+} from '../services/answerGeneration';
 
 const readProjectSpaceId = (value: unknown) => {
   if (typeof value !== 'string') return undefined;
@@ -352,7 +354,6 @@ export const sendMessage = async (req: Request, res: Response) => {
 
   try {
     const model = conversation.model || getDefaultChatModel();
-    const { client: chatClient, resolvedModel } = createChatClientForModel(model);
     const userMessage = await insertMessage(conversationId, 'user', content);
     refreshPersonaInsightsForUser(req.user.id).catch((error) => {
       console.warn('[Chat] Failed to refresh persona insights:', toSafeError(error, res.locals.requestId));
@@ -381,6 +382,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     const personalizedSystemPrompt = buildPersonalizedSystemPrompt(systemPrompt, personaProfile);
     const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
     const shouldRunRag = enableRag && shouldUseRagForMessage(content);
+    const history = await listRecentMessages(conversationId, 10);
 
     let contextText = '';
     let assistantSources: ChatSource[] = [];
@@ -396,51 +398,24 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     if (shouldRunRag) {
       try {
-        agenticRagRun = await retrieveAgenticRagDocuments({
-          query: content,
-          user_id: req.user.id,
-          project_space_id: conversation.project_space_id || undefined,
-          conversation_id: conversationId,
-          limit: 10,
-          threshold: 0.1,
+        const preparedAnswer = await prepareGroundedAnswer({
+          question: content,
+          userId: req.user.id,
+          projectSpaceId: conversation.project_space_id || undefined,
+          conversationId,
+          historyNewestFirst: history.map((message) => ({
+            role: message.role as 'user' | 'assistant' | 'system',
+            content: message.content,
+          })),
+          signal: streamAbortController.signal,
         });
-        const documents = agenticRagRun.results || [];
-        traceSummary = {
-          mode: agenticRagRun.mode,
-          intent: agenticRagRun.intent,
-          planned_queries: agenticRagRun.planned_queries || [],
-          trace_steps: agenticRagRun.trace_steps || [],
-          quality: agenticRagRun.quality,
-          insufficient_evidence: agenticRagRun.insufficient_evidence,
-          answer_guidance: agenticRagRun.answer_guidance,
-          cache: agenticRagRun.cache,
-        };
-        insufficientEvidence = Boolean(agenticRagRun.insufficient_evidence);
-        answerGuidance = agenticRagRun.answer_guidance || '';
-
-        if (documents && documents.length > 0) {
-          const contextBuild = buildRagContext(documents);
-          contextText = contextBuild.text;
-          assistantSources = buildChatSources(documents);
-          verificationSources = buildVerificationSources(documents);
-          const contextStep: RagTraceStep = {
-            step_type: 'answer_context_pack',
-            status: contextBuild.allocations.some((item) => item.truncated) ? 'partial' : 'success',
-            duration_ms: 0,
-            input: {
-              document_count: documents.length,
-              context_budget: 12000,
-            },
-            output: {
-              context_length: contextBuild.text.length,
-              source_map: contextBuild.source_map,
-              allocations: contextBuild.allocations,
-            },
-          };
-          traceSummary = traceSummary
-            ? { ...traceSummary, trace_steps: [...traceSummary.trace_steps, contextStep] }
-            : traceSummary;
-        }
+        agenticRagRun = preparedAnswer.ragRun;
+        traceSummary = preparedAnswer.traceSummary;
+        insufficientEvidence = preparedAnswer.insufficientEvidence;
+        answerGuidance = preparedAnswer.answerGuidance;
+        contextText = preparedAnswer.contextText;
+        assistantSources = preparedAnswer.assistantSources;
+        verificationSources = preparedAnswer.verificationSources;
         // This is JSON-encoded SSE under text/event-stream, never an HTML response.
         // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
         res.write(`data: ${JSON.stringify({
@@ -467,70 +442,46 @@ export const sendMessage = async (req: Request, res: Response) => {
       }
     }
 
-    const history = await listRecentMessages(conversationId, 10);
-    const messages = history.reverse().map((msg) => ({
-      role: msg.role as 'user' | 'assistant' | 'system',
-      content: msg.content,
-    }));
-
-    const lastMsg = messages[messages.length - 1];
-    if (!lastMsg || lastMsg.role !== 'user' || lastMsg.content !== content) {
-      messages.push({ role: 'user', content });
-    }
-
-    if (contextText) {
-      const lastMsgIndex = messages.length - 1;
-      if (lastMsgIndex >= 0 && messages[lastMsgIndex].role === 'user') {
-        const originalContent = messages[lastMsgIndex].content;
-        const evidenceGuidance = answerGuidance
-          ? `${answerGuidance}\n\n`
-          : '';
-        const taskGuidance = buildAnswerTaskGuidance(originalContent);
-        messages[lastMsgIndex].content = `${evidenceGuidance}${taskGuidance}\n\nBased on the following context, please answer the user's question.
-If the answer is not in the context, say that the retrieved source material is insufficient.
-Do not use general knowledge as document evidence, and do not attach citations to claims that are not supported by the context.
-Use source labels such as [Source 1] only when the claim is directly supported by that source.
-Answer every explicit part of the question instead of stopping after the first relevant fact.
-Answer in the same language as the user's question unless the user explicitly requests another language.
-Preserve material numbers, units, versions, dates, conditions, exceptions, and negation exactly as supported by the sources.
-Place a source label immediately after each substantive document-backed claim; do not use one citation group to cover unrelated claims.
-Distinguish current rules from deprecated or historical material, and do not turn a control measure into proof that every root cause is resolved.
-Inventory rows are context for document-list questions; do not treat them as document evidence citations.
-Do not mention "Based on the provided context" or similar phrases in your answer unless necessary to clarify source limits.
-
-Context:
-${contextText}
-
-Question:
-${originalContent}`;
-      }
-    }
-
-    const stream = await chatClient.chat.completions.create({
-      model: resolvedModel,
-      messages: [
-        { role: 'system', content: personalizedSystemPrompt },
-        ...messages,
-      ],
-      stream: true,
-      temperature,
-      signal: streamAbortController.signal,
-    });
-
     let fullContent = '';
 
     // JSON-encoded SSE is parsed as event data, not rendered as HTML.
     // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
     res.write(`data: ${JSON.stringify({ userMessageId: userMessage.id })}\n\n`);
 
-    for await (const chunk of stream) {
-      if (res.destroyed) break;
-      const delta = chunk.choices[0]?.delta?.content || '';
-      if (delta) {
-        fullContent += delta;
-        // JSON.stringify safely frames model text inside the SSE data payload.
-        // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
-        res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
+    if (shouldRunRag && insufficientEvidence && !contextText.trim()) {
+      fullContent = buildInsufficientEvidenceAnswer(content);
+      // This local policy response deliberately bypasses the answer model when no evidence exists.
+      // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
+      res.write(`data: ${JSON.stringify({ content: fullContent, deterministicAbstention: true })}\n\n`);
+    } else {
+      const { client: chatClient, resolvedModel } = createChatClientForModel(model);
+      const messages = buildGroundedAnswerMessages({
+        systemPrompt: personalizedSystemPrompt,
+        historyNewestFirst: history.map((message) => ({
+          role: message.role as 'user' | 'assistant' | 'system',
+          content: message.content,
+        })),
+        question: content,
+        contextText,
+        answerGuidance,
+      });
+      const stream = await streamGroundedAnswer({
+        client: chatClient,
+        resolvedModel,
+        messages,
+        temperature,
+        signal: streamAbortController.signal,
+      });
+
+      for await (const chunk of stream) {
+        if (res.destroyed) break;
+        const delta = chunk.choices[0]?.delta?.content || '';
+        if (delta) {
+          fullContent += delta;
+          // JSON.stringify safely frames model text inside the SSE data payload.
+          // nosemgrep: javascript.express.security.audit.xss.direct-response-write.direct-response-write
+          res.write(`data: ${JSON.stringify({ content: delta })}\n\n`);
+        }
       }
     }
 

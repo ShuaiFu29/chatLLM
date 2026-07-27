@@ -1,15 +1,36 @@
+import { Queue, Worker } from 'bullmq';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { ingestRagFile, IngestRagFileInput } from '../lib/ragClient';
+import { BULLMQ_PREFIX, getBullMqConnectionOptions } from '../lib/redis';
 import { toSafeError } from '../lib/safeError';
 import {
-  claimNextPendingFile,
+  claimPendingFileById,
   FileIngestionClaim,
   FileIngestionReconciliation,
+  listDispatchableFileIds,
   reconcileFileIngestionAttempt,
   reconcileFileIngestionJobs,
   renewFileIngestionLease,
 } from '../repositories/files';
+
+export const FILE_INGESTION_QUEUE_NAME = 'chatllm-file-ingestion-v1';
+const FILE_INGESTION_JOB_NAME = 'ingest-file';
+
+export interface FileIngestionQueuePayload {
+  fileId: string;
+}
+
+export const buildFileIngestionQueueJob = (fileId: string) => ({
+  name: FILE_INGESTION_JOB_NAME,
+  data: { fileId } satisfies FileIngestionQueuePayload,
+  opts: {
+    jobId: `file-${fileId}`,
+    attempts: 1,
+    removeOnComplete: true,
+    removeOnFail: true,
+  },
+});
 
 type HeartbeatStopper = () => void | Promise<void>;
 
@@ -108,73 +129,82 @@ export const shouldContinueFileQueueBatch = (
 ) => claimedCount === concurrency && results.every((result) => result.state !== 'active');
 
 class FileQueueService {
-  private isProcessing = false;
+  private isDispatching = false;
   private interval: NodeJS.Timeout | null = null;
+  private queue: Queue<FileIngestionQueuePayload> | null = null;
+  private worker: Worker<FileIngestionQueuePayload> | null = null;
   private intervalMs = serverEnv.FILE_QUEUE_INTERVAL_MS;
   private concurrency = serverEnv.FILE_QUEUE_CONCURRENCY;
   private staleAfterMs = serverEnv.FILE_QUEUE_STALE_AFTER_MS;
 
-  start() {
-    if (this.interval) return;
-    this.processPendingBatch();
-    this.interval = setInterval(() => this.processPendingBatch(), this.intervalMs);
+  async start() {
+    if (this.queue || this.worker) return;
+    const connection = getBullMqConnectionOptions();
+    this.queue = new Queue(FILE_INGESTION_QUEUE_NAME, {
+      connection,
+      prefix: BULLMQ_PREFIX,
+    });
+    this.worker = new Worker(
+      FILE_INGESTION_QUEUE_NAME,
+      async (job) => this.processFileById(job.data.fileId),
+      {
+        connection,
+        prefix: BULLMQ_PREFIX,
+        concurrency: this.concurrency,
+      },
+    );
+    this.worker.on('error', (error) => {
+      console.error('[FileQueue] BullMQ worker error:', toSafeError(error));
+    });
+    await Promise.all([this.queue.waitUntilReady(), this.worker.waitUntilReady()]);
+    await this.dispatchPending();
+    this.interval = setInterval(() => this.dispatchPending(), this.intervalMs);
+    this.interval.unref();
   }
 
-  stop() {
+  async stop() {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
     }
+    const worker = this.worker;
+    const queue = this.queue;
+    this.worker = null;
+    this.queue = null;
+    await worker?.close();
+    await queue?.close();
   }
 
   trigger() {
-    this.processPendingBatch();
+    void this.dispatchPending();
   }
 
-  private async processPendingBatch() {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
+  private async dispatchPending() {
+    if (this.isDispatching || !this.queue) return;
+    this.isDispatching = true;
 
     try {
-      let shouldContinue = true;
-
-      while (shouldContinue) {
-        await reconcileFileIngestionJobs({
-          limit: Math.max(10, this.concurrency * 4),
-        });
-
-        const claims: FileIngestionClaim[] = [];
-        for (let index = 0; index < this.concurrency; index += 1) {
-          const claim = await claimNextPendingFile({
-            maxAttempts: serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
-            retryBaseDelayMs: serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS,
-            staleAfterMs: this.staleAfterMs,
-          });
-          if (!claim) break;
-          claims.push(claim);
-        }
-
-        if (claims.length === 0) {
-          shouldContinue = false;
-          continue;
-        }
-
-        metrics.recordFileQueueClaimed(claims.length);
-        const results = await Promise.all(claims.map((claim) => this.processFile(claim)));
-        shouldContinue = shouldContinueFileQueueBatch(
-          claims.length,
-          this.concurrency,
-          results,
-        );
+      const limit = Math.max(20, this.concurrency * 10);
+      await reconcileFileIngestionJobs({ limit });
+      const fileIds = await listDispatchableFileIds(limit);
+      if (fileIds.length > 0) {
+        await this.queue.addBulk(fileIds.map(buildFileIngestionQueueJob));
       }
     } catch (error) {
-      console.error('[FileQueue] Failed to process pending file:', toSafeError(error));
+      console.error('[FileQueue] Failed to dispatch pending files:', toSafeError(error));
     } finally {
-      this.isProcessing = false;
+      this.isDispatching = false;
     }
   }
 
-  private async processFile(claim: FileIngestionClaim) {
+  private async processFileById(fileId: string) {
+    const claim = await claimPendingFileById(fileId, {
+      maxAttempts: serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
+      retryBaseDelayMs: serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS,
+      staleAfterMs: this.staleAfterMs,
+    });
+    if (!claim) return { state: 'superseded' as const };
+    metrics.recordFileQueueClaimed(1);
     metrics.recordFileQueueStarted();
     let status: FileIngestionReconciliation['state'] = 'failed';
     try {

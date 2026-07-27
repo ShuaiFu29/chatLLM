@@ -8,6 +8,7 @@ import {
 
 const enterpriseInfrastructureEnv = {
   INFRA_BIND_HOST: '127.0.0.1',
+  REDIS_PASSWORD: 'test-redis-password-at-least-32-characters',
   POSTGRES_DB: 'chatllm',
   POSTGRES_USER: 'test-postgres-user',
   POSTGRES_PASSWORD: 'test-postgres-password-at-least-32-characters',
@@ -21,6 +22,7 @@ const enterpriseInfrastructureEnv = {
 
 const enterpriseServerEnv = {
   DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+  REDIS_URL: 'redis://:test-redis-password-at-least-32-characters@localhost:6379/0',
   S3_ENDPOINT: 'http://localhost:9000',
   S3_ACCESS_KEY: 'minioadmin',
   S3_SECRET_KEY: 'minioadmin',

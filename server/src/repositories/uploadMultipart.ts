@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../lib/db';
+import { serverEnv } from '../lib/env';
 
 export type MultipartUploadSessionStatus =
   | 'initiated'
@@ -24,6 +25,11 @@ export interface MultipartUploadSessionRow {
   error_message?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface ExpiredMultipartUploadSessionRow extends MultipartUploadSessionRow {
+  file_hash: string;
+  file_size: number | string;
 }
 
 const columns = `
@@ -186,12 +192,13 @@ export const claimMultipartUploadCompletion = async (fileId: string, userId: str
     `update upload_multipart_sessions
      set status = 'completing',
          error_message = null,
+         expires_at = now() + ($3::text || ' milliseconds')::interval,
          updated_at = now()
      where file_id = $1
        and user_id = $2
        and status in ('initiated', 'uploading')
      returning ${columns}`,
-    [fileId, userId]
+    [fileId, userId, serverEnv.MULTIPART_COMPLETION_LEASE_MS]
   );
 
   return rows[0] || null;
@@ -260,13 +267,14 @@ export const reclaimMultipartUploadCompletion = async (
   const { rows } = await query<MultipartUploadSessionRow>(
     `update upload_multipart_sessions
      set error_message = null,
+         expires_at = now() + ($4::text || ' milliseconds')::interval,
          updated_at = now()
      where file_id = $1
        and user_id = $2
        and status = 'completing'
        and error_message = $3
      returning ${columns}`,
-    [fileId, userId, expectedErrorMessage]
+    [fileId, userId, expectedErrorMessage, serverEnv.MULTIPART_COMPLETION_LEASE_MS]
   );
 
   return rows[0] || null;
@@ -491,10 +499,12 @@ export const finalizeMultipartUploadFailure = async (
 });
 
 export const listExpiredMultipartUploadSessions = async (limit = 20) => {
-  const { rows } = await query<MultipartUploadSessionRow>(
-    `select ${columns}
+  const { rows } = await query<ExpiredMultipartUploadSessionRow>(
+    `select ${columns},
+            (select file_hash from files where id = upload_multipart_sessions.file_id) as file_hash,
+            (select file_size from files where id = upload_multipart_sessions.file_id) as file_size
      from upload_multipart_sessions
-     where status in ('initiated', 'uploading', 'cancelling')
+     where status in ('initiated', 'uploading', 'completing', 'cancelling')
        and expires_at <= now()
      order by expires_at asc
      limit $1`,
@@ -502,4 +512,21 @@ export const listExpiredMultipartUploadSessions = async (limit = 20) => {
   );
 
   return rows;
+};
+
+export const claimExpiredMultipartUploadAbort = async (fileId: string, userId: string) => {
+  const { rows } = await query<MultipartUploadSessionRow>(
+    `update upload_multipart_sessions
+     set status = 'cancelling',
+         error_message = null,
+         updated_at = now()
+     where file_id = $1
+       and user_id = $2
+       and status in ('initiated', 'uploading', 'completing')
+       and expires_at <= now()
+     returning ${columns}`,
+    [fileId, userId]
+  );
+
+  return rows[0] || null;
 };

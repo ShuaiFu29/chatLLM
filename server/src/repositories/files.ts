@@ -532,6 +532,7 @@ export type FileIngestionReconciliation = {
 };
 
 interface ClaimNextPendingFileOptions {
+  fileId?: string;
   retryBaseDelayMs?: number;
   staleAfterMs?: number;
   maxAttempts?: number;
@@ -551,6 +552,7 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
       `select ${columns}
        from files
        where object_key is not null
+         and ($3::uuid is null or id = $3::uuid)
          and (
            (
              status = 'pending'
@@ -591,7 +593,7 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
        order by created_at asc
        limit 1
        for update skip locked`,
-      [retryBaseDelayMs, maxAttempts]
+      [retryBaseDelayMs, maxAttempts, options.fileId || null]
     );
 
     const candidate = rows[0];
@@ -678,6 +680,134 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
         : String(leaseExpiresAt),
     };
   });
+};
+
+export interface MarkdownReingestionOptions {
+  limit?: number;
+  projectSpaceId?: string | null;
+}
+
+const markdownReingestionPredicate = `
+  files.object_key is not null
+  and files.status in ('completed', 'failed')
+  and (
+    lower(files.filename) like '%.md'
+    or lower(files.filename) like '%.markdown'
+  )
+  and ($1::uuid is null or files.project_space_id = $1::uuid)
+  and not exists (
+    select 1
+    from file_ingestion_jobs active_job
+    where active_job.file_id = files.id
+      and active_job.status in ('queued', 'processing')
+      and active_job.lease_expires_at > now()
+  )
+`;
+
+export const countMarkdownFilesForReingestion = async (
+  projectSpaceId?: string | null,
+  runQuery: typeof query = query,
+) => {
+  const { rows } = await runQuery<{ count: number | string }>(
+    `select count(*)::bigint as count
+     from files
+     where ${markdownReingestionPredicate}`,
+    [projectSpaceId || null],
+  );
+  return Number(rows[0]?.count || 0);
+};
+
+export const queueMarkdownFilesForReingestion = async (options: MarkdownReingestionOptions = {}) => {
+  const boundedLimit = Number.isSafeInteger(options.limit)
+    ? Math.min(Math.max(Number(options.limit), 1), 1000)
+    : 100;
+
+  return withTransaction(async (client) => {
+    const { rows } = await client.query<FileRow>(
+       `with candidates as (
+         select files.id
+         from files
+         where ${markdownReingestionPredicate}
+         order by files.updated_at asc, files.id asc
+         for update skip locked
+         limit $2
+       )
+       update files
+       set status = 'pending',
+           progress = 0,
+           error_message = null,
+           attempts = 0,
+           max_attempts = $3,
+           next_attempt_at = null,
+           last_attempt_at = null,
+           updated_at = now()
+       from candidates
+       where files.id = candidates.id
+       returning files.*`,
+      [
+        options.projectSpaceId || null,
+        boundedLimit,
+        serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
+      ],
+    );
+    return rows;
+  });
+};
+
+export const claimPendingFileById = async (
+  fileId: string,
+  options: Omit<ClaimNextPendingFileOptions, 'fileId'> = {}
+) => claimNextPendingFile({ ...options, fileId });
+
+export const listDispatchableFileIds = async (
+  limit = 50,
+  runQuery: typeof query = query
+) => {
+  const boundedLimit = Math.max(1, Math.min(limit, 500));
+  const { rows } = await runQuery<{ id: string }>(
+    `select id
+     from files
+     where object_key is not null
+       and (
+         (
+           status = 'pending'
+           and (next_attempt_at is null or next_attempt_at <= now())
+         )
+         or (
+           status = 'failed'
+           and attempts < greatest(max_attempts, $2)
+           and coalesce(
+             next_attempt_at,
+             updated_at + (
+               least(
+                 3600000::double precision,
+                 $1::double precision * power(2, greatest(attempts - 1, 0))
+               ) * interval '1 millisecond'
+             )
+           ) <= now()
+         )
+         or (
+           status = 'processing'
+           and attempts < greatest(max_attempts, $2)
+           and (
+             not exists (
+               select 1 from file_ingestion_jobs job where job.file_id = files.id
+             )
+             or exists (
+               select 1
+               from file_ingestion_jobs job
+               where job.file_id = files.id
+                 and job.status in ('queued', 'processing')
+                 and job.lease_expires_at <= now()
+             )
+           )
+         )
+       )
+     order by created_at asc
+     limit $3`,
+    [serverEnv.FILE_QUEUE_RETRY_BASE_DELAY_MS, serverEnv.FILE_QUEUE_MAX_ATTEMPTS, boundedLimit]
+  );
+  return rows.map((row) => row.id);
 };
 
 interface RenewFileIngestionLeaseOptions {

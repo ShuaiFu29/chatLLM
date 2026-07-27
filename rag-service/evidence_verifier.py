@@ -1,36 +1,12 @@
 import re
 
-from reranker import classify_source_role, extract_exact_markers, score_query_coverage
+from reranker import classify_source_role, extract_exact_markers, score_answer_bearing, score_query_coverage
 
 
-RISK_KEYWORDS = {
-    "regulatory": (
-        "合规", "监管", "法规", "制度", "政策", "规程", "规范", "审批", "审计", "留痕",
-        "regulation", "regulatory", "compliance", "policy", "audit", "approval",
-    ),
-    "legal": (
-        "法律", "法务", "责任", "处罚", "诉讼", "保全", "合同", "义务",
-        "legal", "liability", "lawsuit", "contract", "obligation",
-    ),
-    "medical": (
-        "患者", "诊疗", "临床", "病历", "医保", "医疗", "检验", "质控",
-        "patient", "clinical", "medical", "diagnosis", "insurance",
-    ),
-    "finance": (
-        "金额", "支付", "赔付", "费用", "发票", "税", "结算", "预算", "采购",
-        "payment", "claim", "invoice", "tax", "settlement", "budget",
-    ),
-    "security": (
-        "安全", "事故", "取证", "权限", "泄露", "密钥", "漏洞",
-        "security", "incident", "forensic", "breach", "permission", "secret",
-    ),
-    "obligation": (
+QUERY_STRUCTURE_KEYWORDS = {
+    "constraint": (
         "必须", "不得", "禁止", "应当", "应按", "需要", "不能", "是否能", "能否", "允许",
         "must", "shall", "should", "cannot", "prohibited", "required", "allowed",
-    ),
-    "cross_region": (
-        "跨境", "出境", "欧盟", "华东", "华南", "华北", "cn", "eu", "us", "asia",
-        "cross-border", "cross region", "regional",
     ),
     "temporal": (
         "当前", "最新", "废止", "旧口径", "修订版", "生效", "失效", "today", "latest",
@@ -54,7 +30,7 @@ def _normalize_marker(value: str) -> str:
 
 def extract_required_markers(value: str) -> set[str]:
     markers = set(extract_exact_markers(value or ""))
-    for token in re.findall(r"\b(?:CN|EU|US|UK|AI|API|SRE|BMS|NMPA|FDA|GDPR)\b", value or "", re.IGNORECASE):
+    for token in re.findall(r"\b[A-Z][A-Z0-9_]{1,15}\b", value or ""):
         markers.add(_normalize_marker(token))
     for token in re.findall(r"\b(?:19|20)\d{2}\b", value or ""):
         markers.add(_normalize_marker(token))
@@ -65,55 +41,25 @@ def _normalized_text(value: str) -> str:
     return (value or "").lower().replace(" ", "")
 
 
-def requires_cross_region_corroboration(value: str) -> bool:
-    normalized = _normalized_text(value)
-    if any(marker in normalized for marker in ("跨境", "出境", "cross-border", "crossregion")):
-        return True
-
-    region_markers: set[str] = set()
-    marker_patterns = {
-        "cn": (r"\bcn\b", "中国", "境内"),
-        "eu": (r"\beu\b", "欧盟", "欧洲"),
-        "us": (r"\bus\b", "美国"),
-        "uk": (r"\buk\b", "英国"),
-        "asia": (r"\basia\b", "亚洲"),
-    }
-    for marker, patterns in marker_patterns.items():
-        for pattern in patterns:
-            if pattern.startswith(r"\b"):
-                if re.search(pattern, value or "", re.IGNORECASE):
-                    region_markers.add(marker)
-                    break
-            elif pattern in (value or ""):
-                region_markers.add(marker)
-                break
-
-    return len(region_markers) >= 2
-
-
 def assess_query_risk(query: str) -> dict:
     normalized = _normalized_text(query)
     risk_factors: list[str] = []
-    for factor, keywords in RISK_KEYWORDS.items():
+    for factor, keywords in QUERY_STRUCTURE_KEYWORDS.items():
         if any(_normalized_text(keyword) in normalized for keyword in keywords):
             risk_factors.append(factor)
 
     if extract_required_markers(query) or re.search(r"\d", query or ""):
-        risk_factors.append("numeric_or_exact_marker")
+        risk_factors.append("exact_marker")
     if any(_normalized_text(term) in normalized for term in MULTI_HOP_TERMS):
         risk_factors.append("multi_hop")
 
     risk_factors = sorted(set(risk_factors))
-    high_signals = {"regulatory", "legal", "medical", "finance", "security"}
-    if high_signals & set(risk_factors) and (
-        {"obligation", "cross_region", "temporal", "numeric_or_exact_marker", "multi_hop"} & set(risk_factors)
-    ):
+    factors = set(risk_factors)
+    if "exact_marker" in factors and factors & {"constraint", "temporal", "multi_hop"}:
         risk_level = "high"
-    elif {"cross_region", "numeric_or_exact_marker"} <= set(risk_factors) and (
-        {"obligation", "temporal", "multi_hop"} & set(risk_factors)
-    ):
+    elif len(factors) >= 3:
         risk_level = "high"
-    elif len(risk_factors) >= 2 or "numeric_or_exact_marker" in risk_factors:
+    elif factors:
         risk_level = "medium"
     else:
         risk_level = "low"
@@ -125,7 +71,7 @@ def assess_query_risk(query: str) -> dict:
     }
 
 
-def _document_confidence(document: dict) -> float:
+def _document_rank_signal(document: dict) -> float:
     for key in ("agentic_score", "rerank_score", "retrieval_confidence", "similarity", "retrieval_score"):
         try:
             value = float(document.get(key) or 0)
@@ -151,14 +97,22 @@ def verify_evidence_support(
     if not documents:
         return {
             **risk,
+            "verification_scope": "evidence_support",
+            "answer_evaluated": False,
+            "score_type": "heuristic_evidence_support",
+            "calibrated": False,
+            "rank_signal_score": 0.0,
             "support_label": "unsupported",
             "support_score": 0.0,
             "key_term_coverage": 0.0,
             "exact_marker_coverage": 0.0,
+            "exact_marker_applicable": bool(extract_required_markers(query)),
             "matched_markers": [],
             "missing_markers": sorted(extract_required_markers(query)),
             "source_diversity_score": 0.0,
-            "primary_source_ratio": 0.0,
+            "primary_source_ratio": None,
+            "source_role_applicable": False,
+            "answer_bearing_score": 0.0,
             "cache_reuse_allowed": False,
             "must_retrieve": True,
             "reasons": ["no_evidence"],
@@ -168,7 +122,8 @@ def verify_evidence_support(
     document_markers: set[str] = set()
     source_roles: list[str] = []
     source_ids: set[str] = set()
-    confidences: list[float] = []
+    rank_signals: list[float] = []
+    answer_bearing_scores: list[float] = []
     for document in documents:
         metadata = document.get("metadata") or {}
         content = str(document.get("content") or "")
@@ -180,31 +135,38 @@ def verify_evidence_support(
         source_id = _source_id(document)
         if source_id:
             source_ids.add(source_id)
-        confidences.append(_document_confidence(document))
+        rank_signals.append(_document_rank_signal(document))
+        answer_bearing_scores.append(score_answer_bearing(query, content))
 
     combined_content = "\n".join(combined_parts)
     key_term_coverage, matched_terms = score_query_coverage(query, combined_content)
     required_markers = extract_required_markers(query)
+    exact_marker_applicable = bool(required_markers)
     matched_markers = sorted(required_markers & document_markers)
     missing_markers = sorted(required_markers - document_markers)
     exact_marker_coverage = (
         len(matched_markers) / len(required_markers)
-        if required_markers else 1.0
+        if exact_marker_applicable else 0.0
     )
-    primary_count = len([role for role in source_roles if role not in {"evaluation_guide"}])
-    primary_source_ratio = primary_count / len(source_roles)
-    deprecated_ratio = len([role for role in source_roles if role == "deprecated"]) / len(source_roles)
-    guide_ratio = len([role for role in source_roles if role == "evaluation_guide"]) / len(source_roles)
+    classified_roles = [role for role in source_roles if role in {"primary", "deprecated"}]
+    primary_source_ratio = (
+        len([role for role in classified_roles if role == "primary"]) / len(classified_roles)
+        if classified_roles else None
+    )
+    deprecated_ratio = (
+        len([role for role in classified_roles if role == "deprecated"]) / len(classified_roles)
+        if classified_roles else 0.0
+    )
+    answer_bearing_score = max(answer_bearing_scores or [0.0])
     source_diversity_score = min(len(source_ids), min(len(documents), 4)) / max(1, min(len(documents), 4))
-    top_confidence = max(confidences or [0.0])
+    top_rank_signal = max(rank_signals or [0.0])
 
-    source_quality = _clamp(primary_source_ratio - guide_ratio * 0.45 - deprecated_ratio * 0.20)
+    support_components = [(key_term_coverage, 0.65), (answer_bearing_score, 0.35)]
+    if exact_marker_applicable:
+        support_components.append((exact_marker_coverage, 0.25))
+    support_weight = sum(weight for _, weight in support_components)
     support_score = _clamp(
-        key_term_coverage * 0.34
-        + exact_marker_coverage * 0.28
-        + source_quality * 0.16
-        + top_confidence * 0.12
-        + source_diversity_score * 0.10
+        sum(score * weight for score, weight in support_components) / support_weight
     )
 
     reasons: list[str] = []
@@ -212,18 +174,16 @@ def verify_evidence_support(
         reasons.append("missing_required_markers")
     if key_term_coverage < 0.28:
         reasons.append("low_key_term_coverage")
-    if guide_ratio > 0.35:
-        reasons.append("evaluation_guide_dominates")
+    if answer_bearing_score < 0.34:
+        reasons.append("no_answer_bearing_evidence")
     if deprecated_ratio > 0 and risk["risk_level"] == "high":
         reasons.append("deprecated_evidence_in_high_risk_query")
-    if risk["risk_level"] == "high" and len(source_ids) < 2 and any(term in risk["risk_factors"] for term in ("multi_hop", "cross_region")):
-        reasons.append("limited_source_diversity_for_high_risk_query")
 
     if (
         support_score >= 0.72
-        and exact_marker_coverage >= 0.85
+        and (not exact_marker_applicable or exact_marker_coverage >= 0.85)
         and key_term_coverage >= 0.35
-        and primary_source_ratio >= 0.50
+        and answer_bearing_score >= 0.34
         and "deprecated_evidence_in_high_risk_query" not in reasons
     ):
         support_label = "supported"
@@ -239,19 +199,16 @@ def verify_evidence_support(
     cache_similarity_ok = query_similarity is None or query_similarity >= min_cache_similarity
     cache_blocking_reasons = {
         "deprecated_evidence_in_high_risk_query",
-        "evaluation_guide_dominates",
+        "no_answer_bearing_evidence",
     }
     reason_set = set(reasons)
-    source_diversity_blocks_cache = (
-        "limited_source_diversity_for_high_risk_query" in reason_set
-        and requires_cross_region_corroboration(query)
-    )
-    has_cache_blocking_reason = bool(cache_blocking_reasons & reason_set) or source_diversity_blocks_cache
+    has_cache_blocking_reason = bool(cache_blocking_reasons & reason_set)
     cache_reuse_allowed = (
         bool(cache_hit_type)
         and support_label == "supported"
         and cache_similarity_ok
         and not missing_markers
+        and answer_bearing_score >= 0.55
         and not (risk["risk_level"] == "high" and support_score < 0.75)
         and not has_cache_blocking_reason
     )
@@ -265,15 +222,23 @@ def verify_evidence_support(
 
     return {
         **risk,
+        "verification_scope": "evidence_support",
+        "answer_evaluated": False,
+        "score_type": "heuristic_evidence_support",
+        "calibrated": False,
+        "rank_signal_score": _clamp(top_rank_signal),
         "support_label": support_label,
         "support_score": support_score,
         "key_term_coverage": _clamp(key_term_coverage),
         "exact_marker_coverage": _clamp(exact_marker_coverage),
+        "exact_marker_applicable": exact_marker_applicable,
         "matched_markers": matched_markers,
         "missing_markers": missing_markers,
         "matched_terms": matched_terms[:20],
         "source_diversity_score": _clamp(source_diversity_score),
-        "primary_source_ratio": _clamp(primary_source_ratio),
+        "primary_source_ratio": _clamp(primary_source_ratio) if primary_source_ratio is not None else None,
+        "source_role_applicable": bool(classified_roles),
+        "answer_bearing_score": _clamp(answer_bearing_score),
         "cache_reuse_allowed": cache_reuse_allowed,
         "must_retrieve": must_retrieve,
         "reasons": sorted(set(reasons)),

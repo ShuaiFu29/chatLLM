@@ -7,7 +7,8 @@
     "dev": "nodemon src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "npm run build && node --import ./test/setup-env.mjs --test test/auth-middleware.test.mjs test/avatar-replacement.test.mjs test/avatar-replacement-postgres.integration.test.mjs test/chat-input.test.mjs test/chat-sources.test.mjs test/chat-workbench-upgrades.test.mjs test/cleanup-jobs.test.mjs test/cleanup-jobs-postgres.integration.test.mjs test/conversation-management.test.mjs test/env.test.mjs test/file-queue-status.test.mjs test/http-middleware.test.mjs test/jwt.test.mjs test/message-pagination.test.mjs test/migrations.test.mjs test/mutation-schema.test.mjs test/persona-center.test.mjs test/platform-stability.test.mjs test/postgres-integration-lock.test.mjs test/project-space-delete.test.mjs test/project-space-schema.test.mjs test/queue-health.test.mjs test/rag-client.test.mjs test/rag-eval-snapshots.test.mjs test/rag-eval.test.mjs test/rag-retrieval-cache.test.mjs test/rag-trace-eval.test.mjs test/rag-trigger.test.mjs test/rate-limit.test.mjs test/request-limits.test.mjs test/safe-error.test.mjs test/search-input.test.mjs test/sessions.test.mjs test/storage-minio.integration.test.mjs test/upload-document-content.test.mjs test/upload-input.test.mjs test/upload-limits.test.mjs test/upload-multipart.test.mjs test/upload-quota-dedup.test.mjs test/upload-quota-postgres.integration.test.mjs test/usage-tracking.test.mjs"
+    "reindex:markdown": "npm run build && node dist/scripts/reindexMarkdown.js",
+    "test": "npm run build && node --import ./test/setup-env.mjs --test test/answer-generation.test.mjs test/auth-middleware.test.mjs test/bullmq-jobs.test.mjs test/avatar-replacement.test.mjs test/avatar-replacement-postgres.integration.test.mjs test/chat-input.test.mjs test/chat-sources.test.mjs test/chat-workbench-upgrades.test.mjs test/cleanup-jobs.test.mjs test/cleanup-jobs-postgres.integration.test.mjs test/conversation-management.test.mjs test/env.test.mjs test/file-queue-status.test.mjs test/http-middleware.test.mjs test/jwt.test.mjs test/message-pagination.test.mjs test/migrations.test.mjs test/mutation-schema.test.mjs test/persona-center.test.mjs test/platform-stability.test.mjs test/postgres-integration-lock.test.mjs test/project-space-delete.test.mjs test/project-space-schema.test.mjs test/queue-health.test.mjs test/rag-client.test.mjs test/rag-eval-snapshots.test.mjs test/rag-eval.test.mjs test/rag-retrieval-cache.test.mjs test/rag-trace-eval.test.mjs test/rag-trigger.test.mjs test/rate-limit.test.mjs test/reindex-markdown.test.mjs test/request-limits.test.mjs test/safe-error.test.mjs test/search-input.test.mjs test/sessions.test.mjs test/storage-minio.integration.test.mjs test/upload-document-content.test.mjs test/upload-input.test.mjs test/upload-limits.test.mjs test/upload-multipart.test.mjs test/upload-quota-dedup.test.mjs test/upload-quota-postgres.integration.test.mjs test/usage-tracking.test.mjs"
   },
   "keywords": [],
   "author": "",
@@ -19,11 +20,13 @@
     "@aws-sdk/s3-request-presigner": "^3.1075.0",
     "@types/fs-extra": "^11.0.4",
     "axios": "^1.13.2",
+    "bullmq": "^5.81.2",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "fs-extra": "^11.3.3",
+    "ioredis": "^5.11.1",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "pg": "^8.22.0",

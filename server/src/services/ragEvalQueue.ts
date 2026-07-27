@@ -1,4 +1,5 @@
 import os from 'os';
+import { Queue, Worker } from 'bullmq';
 import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import {
@@ -6,16 +7,37 @@ import {
   RagEvalRunResponse,
   runRagEvaluation,
 } from '../lib/ragClient';
+import { BULLMQ_PREFIX, getBullMqConnectionOptions } from '../lib/redis';
 import { toSafeError } from '../lib/safeError';
+import { generateEvaluatedRagAnswer } from './answerGeneration';
 import {
   ClaimedRagEvalRunJob,
   completeRagEvalRunWithResults,
   failRagEvalRunForUser,
   markRagEvalRunAttemptFailed,
-  claimNextRagEvalRunJob,
+  claimRagEvalRunJobById,
+  listDispatchableRagEvalRunIds,
   RagEvalDatasetRow,
   renewRagEvalRunLease,
 } from '../repositories/ragEval';
+
+export const RAG_EVAL_QUEUE_NAME = 'chatllm-rag-evaluation-v1';
+const RAG_EVAL_JOB_NAME = 'run-evaluation';
+
+export interface RagEvalQueuePayload {
+  runId: string;
+}
+
+export const buildRagEvalQueueJob = (runId: string) => ({
+  name: RAG_EVAL_JOB_NAME,
+  data: { runId } satisfies RagEvalQueuePayload,
+  opts: {
+    jobId: `eval-${runId}`,
+    attempts: 1,
+    removeOnComplete: true,
+    removeOnFail: true,
+  },
+});
 
 const toRagEvalCases = (dataset: RagEvalDatasetRow) => (dataset.cases || []).map((testCase) => ({
   id: testCase.id,
@@ -23,7 +45,70 @@ const toRagEvalCases = (dataset: RagEvalDatasetRow) => (dataset.cases || []).map
   expected_answer: testCase.expected_answer,
   expected_keywords: testCase.expected_keywords,
   expected_source_files: testCase.expected_source_files,
+  evaluation_spec: testCase.evaluation_spec || {},
 }));
+
+type GenerateEvaluatedAnswer = typeof generateEvaluatedRagAnswer;
+
+export const prepareRagEvalCases = async (
+  job: ClaimedRagEvalRunJob,
+  signal: AbortSignal,
+  generateAnswer: GenerateEvaluatedAnswer = generateEvaluatedRagAnswer,
+) => {
+  const cases = toRagEvalCases(job.dataset);
+  const generatedCases: RagEvalRunInput['cases'] = [];
+  for (const testCase of cases) {
+    if (signal.aborted) throw new Error('RAG evaluation answer generation aborted');
+    const caseController = new AbortController();
+    const abortCase = () => caseController.abort();
+    signal.addEventListener('abort', abortCase, { once: true });
+    const caseTimer = setTimeout(abortCase, job.case_timeout_ms);
+    try {
+      const generated = await generateAnswer({
+        question: testCase.question,
+        userId: job.user_id,
+        projectSpaceId: job.dataset.project_space_id || undefined,
+        temperature: 0,
+        signal: caseController.signal,
+      });
+      const contextStep = generated.prepared.traceSummary.trace_steps.find(
+        (step) => step.step_type === 'answer_context_pack',
+      );
+      generatedCases.push({
+        ...testCase,
+        actual_answer: generated.actualAnswer,
+        retrieval_snapshot: {
+          ...generated.prepared.ragRun,
+          actual_answer: generated.actualAnswer,
+          answer_sources: generated.prepared.answerContextDocuments,
+        },
+        answer_evaluation: generated.claimEvaluation,
+        generation_metadata: {
+          prompt_version: generated.promptVersion,
+          model_version: generated.modelVersion,
+          provider: generated.provider,
+          verifier_version: generated.claimEvaluation.verifier_version,
+          context_budget_tokens: contextStep?.input?.budget_tokens,
+          context_estimated_tokens: contextStep?.output?.estimated_tokens,
+          context_truncated: contextStep?.output?.truncated,
+          token_usage: generated.tokenUsage,
+        },
+      });
+    } catch (_error) {
+      if (signal.aborted) throw new Error('RAG evaluation answer generation aborted');
+      generatedCases.push({
+        ...testCase,
+        preparation_error: caseController.signal.aborted
+          ? 'Answer generation case timeout'
+          : 'Answer generation failed',
+      });
+    } finally {
+      clearTimeout(caseTimer);
+      signal.removeEventListener('abort', abortCase);
+    }
+  }
+  return generatedCases;
+};
 
 type HeartbeatStopper = () => void | Promise<void>;
 
@@ -44,6 +129,10 @@ interface ExecuteRagEvalRequestOptions {
   ) => () => void;
   now?: () => number;
   warn?: (message: string, error: unknown) => void;
+  prepareCases?: (
+    job: ClaimedRagEvalRunJob,
+    signal: AbortSignal,
+  ) => Promise<RagEvalRunInput['cases']>;
 }
 
 const defaultWarn = (message: string, error: unknown) => {
@@ -123,8 +212,17 @@ export const executeRagEvalRequest = async (
     startRagEvalHeartbeat(activeJob, onLeaseLost, warn)
   ));
   const stopHeartbeat = startHeartbeat(job, () => controller.abort());
+  const deadlineTimer = setTimeout(
+    () => controller.abort(),
+    Math.min(remainingMs, 2_147_483_647),
+  );
 
   try {
+    const cases = options.prepareCases
+      ? await options.prepareCases(job, controller.signal)
+      : await prepareRagEvalCases(job, controller.signal);
+    const transportRemainingMs = Math.floor(new Date(deadlineAt).getTime() - now());
+    if (transportRemainingMs <= 0) throw new Error('RAG evaluation deadline exceeded');
     return await runEvaluation({
       run_id: job.id,
       lease_token: job.lease_token,
@@ -132,11 +230,12 @@ export const executeRagEvalRequest = async (
       case_timeout_ms: job.case_timeout_ms,
       user_id: job.user_id,
       project_space_id: job.dataset.project_space_id,
-      cases: toRagEvalCases(job.dataset),
+      cases,
       limit: 10,
       threshold: 0.1,
-    }, controller.signal, remainingMs);
+    }, controller.signal, transportRemainingMs);
   } finally {
+    clearTimeout(deadlineTimer);
     try {
       await stopHeartbeat();
     } catch (error) {
@@ -147,8 +246,10 @@ export const executeRagEvalRequest = async (
 };
 
 class RagEvalQueueService {
-  private isProcessing = false;
+  private isDispatching = false;
   private interval: NodeJS.Timeout | null = null;
+  private queue: Queue<RagEvalQueuePayload> | null = null;
+  private worker: Worker<RagEvalQueuePayload> | null = null;
   private workerId = `${os.hostname()}:${process.pid}:rag-eval`;
   private intervalMs = serverEnv.RAG_EVAL_QUEUE_INTERVAL_MS;
   private concurrency = serverEnv.RAG_EVAL_QUEUE_CONCURRENCY;
@@ -157,23 +258,48 @@ class RagEvalQueueService {
     controller: AbortController;
   }>();
 
-  start() {
-    if (this.interval) return;
-    this.processPendingBatch();
-    this.interval = setInterval(() => this.processPendingBatch(), this.intervalMs);
+  async start() {
+    if (this.queue || this.worker) return;
+    const connection = getBullMqConnectionOptions();
+    this.queue = new Queue(RAG_EVAL_QUEUE_NAME, {
+      connection,
+      prefix: BULLMQ_PREFIX,
+    });
+    this.worker = new Worker(
+      RAG_EVAL_QUEUE_NAME,
+      async (job) => this.processRunById(job.data.runId),
+      {
+        connection,
+        prefix: BULLMQ_PREFIX,
+        concurrency: this.concurrency,
+      },
+    );
+    this.worker.on('error', (error) => {
+      console.error('[RagEvalQueue] BullMQ worker error:', toSafeError(error));
+    });
+    await Promise.all([this.queue.waitUntilReady(), this.worker.waitUntilReady()]);
+    await this.dispatchPending();
+    this.interval = setInterval(() => this.dispatchPending(), this.intervalMs);
+    this.interval.unref();
   }
 
-  stop() {
+  async stop() {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
     }
     for (const active of this.activeControllers.values()) active.controller.abort();
     this.activeControllers.clear();
+    const worker = this.worker;
+    const queue = this.queue;
+    this.worker = null;
+    this.queue = null;
+    await worker?.close();
+    await queue?.close();
   }
 
   trigger() {
-    this.processPendingBatch();
+    void this.dispatchPending();
   }
 
   abortRun(runId: string) {
@@ -197,43 +323,33 @@ class RagEvalQueueService {
     };
   }
 
-  private async processPendingBatch() {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
+  private async dispatchPending() {
+    if (this.isDispatching || !this.queue) return;
+    this.isDispatching = true;
 
     try {
-      let shouldContinue = true;
-
-      while (shouldContinue) {
-        const jobs: ClaimedRagEvalRunJob[] = [];
-
-        for (let index = 0; index < this.concurrency; index += 1) {
-          const job = await claimNextRagEvalRunJob({
-            workerId: this.workerId,
-            maxAttempts: serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
-            retryBaseDelayMs: serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS,
-            staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS,
-            runTimeoutMs: serverEnv.RAG_EVAL_RUN_TIMEOUT_MS,
-          });
-
-          if (!job) break;
-          metrics.recordRagEvalRunQueueClaimed();
-          jobs.push(job);
-        }
-
-        if (jobs.length === 0) {
-          shouldContinue = false;
-          continue;
-        }
-
-        await Promise.all(jobs.map((job) => this.processRun(job)));
-        shouldContinue = jobs.length === this.concurrency;
+      const runIds = await listDispatchableRagEvalRunIds(Math.max(20, this.concurrency * 10));
+      if (runIds.length > 0) {
+        await this.queue.addBulk(runIds.map(buildRagEvalQueueJob));
       }
     } catch (error) {
-      console.error('[RagEvalQueue] Failed to process queued eval run:', toSafeError(error));
+      console.error('[RagEvalQueue] Failed to dispatch queued eval runs:', toSafeError(error));
     } finally {
-      this.isProcessing = false;
+      this.isDispatching = false;
     }
+  }
+
+  private async processRunById(runId: string) {
+    const job = await claimRagEvalRunJobById(runId, {
+      workerId: this.workerId,
+      maxAttempts: serverEnv.RAG_EVAL_QUEUE_MAX_ATTEMPTS,
+      retryBaseDelayMs: serverEnv.RAG_EVAL_QUEUE_RETRY_BASE_DELAY_MS,
+      staleAfterMs: serverEnv.RAG_EVAL_QUEUE_STALE_AFTER_MS,
+      runTimeoutMs: serverEnv.RAG_EVAL_RUN_TIMEOUT_MS,
+    });
+    if (!job) return;
+    metrics.recordRagEvalRunQueueClaimed();
+    await this.processRun(job);
   }
 
   private async processRun(job: ClaimedRagEvalRunJob) {

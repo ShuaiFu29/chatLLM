@@ -1,56 +1,27 @@
 import re
 
 
+LOCAL_RERANKER_VERSION = "local-evidence-v2"
+
+
 EXACT_MARKER_RE = re.compile(
-    r"T\+\d+"
-    r"|\d{4}-\d{2}-\d{2}"
-    r"|[A-Za-z0-9]+(?:-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)+"
-    r"|\d+(?:\.\d+)?\s?(?:MW|KW|MWH|KWH|%)",
+    r"(?<![A-Za-z0-9_])T\+\d+(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])\d{4}-\d{2}-\d{2}(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])v?\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.]+)?(?![A-Za-z0-9_])"
+    r"|(?<![A-Za-z0-9_])[A-Za-z][A-Za-z0-9_]*(?:[-_.][A-Za-z0-9_]+)+(?![A-Za-z0-9_])"
+    r"|(?:[$€£¥￥]\s*\d+(?:\.\d+)?)"
+    r"|\b\d+(?:\.\d+)?\s?(?:%|ms|s|sec|secs|seconds?|min|mins|minutes?|h|hr|hrs|hours?|d|days?|"
+    r"hz|khz|mhz|ghz|b|kb|mb|gb|tb|v|kv|a|ma|w|kw|mw|wh|kwh|mwh|"
+    r"pa|kpa|mpa|bar|°c|kg|g|mg|mm|cm|m|km|元|万元|秒|分钟|小时|天|周|个月|年)"
+    r"(?![A-Za-z0-9_])",
     re.IGNORECASE,
 )
 
-EVALUATION_GUIDE_FILENAME_MARKERS = (
-    "test-guide",
-    "corpus-index",
-    "eval-guide",
-    "evaluation-guide",
-    "评测指南",
-    "语料索引",
-    "测试指南",
-    "语料索引与测试指南",
-)
-
-EVALUATION_GUIDE_CONTENT_MARKERS = (
-    "建议评测问题",
-    "期望来源文档",
-    "rag 压力测试知识库索引",
-)
-
-EXPLICIT_GUIDE_QUERY_MARKERS = (
-    "语料索引",
-    "索引文件",
-    "测试指南",
-    "评测指南",
-    "evaluation guide",
-    "test guide",
-    "corpus index",
-)
-
-BOILERPLATE_MARKERS = (
-    "本文件围绕",
-    "资料进入专项夹",
-    "这一点在多份材料中反复出现",
-    "整理人保留了原始措辞",
-    "关联说明：本材料夹中的文件",
-    "上表不是要求统一删改",
-)
-
-INDEX_FILENAME_MARKERS = (
-    "目录",
-    "索引",
-    "移交清单",
-)
-
+TERM_STOPWORDS = {
+    "a", "an", "and", "are", "as", "be", "by", "do", "does", "for", "from",
+    "how", "in", "is", "of", "on", "or", "the", "to", "what", "when", "where",
+    "which", "who", "why", "with",
+}
 
 def _clamp(value: float) -> float:
     return max(0.0, min(1.0, round(value, 6)))
@@ -83,9 +54,39 @@ def extract_terms(value: str) -> set[str]:
     for token in re.findall(r"\b[A-Z]{2,}\b", text):
         terms.add(_normalize_marker(token))
     for token in re.findall(r"[A-Za-z][A-Za-z0-9_]+", text):
-        if len(token) > 2:
-            terms.add(token.lower())
+        normalized = token.lower()
+        if len(normalized) > 2 and normalized not in TERM_STOPWORDS:
+            terms.add(normalized)
     return {term for term in terms if term}
+
+
+def score_answer_bearing(query: str, content: str) -> float:
+    """Estimate whether a passage contains information beyond restating the query.
+
+    This is a conservative lexical gate, not an entailment probability. It is
+    primarily used to prevent question-only FAQ headings from being labelled as
+    strong evidence or approving an exact-cache short circuit.
+    """
+    query_text = re.sub(r"\s+", "", query or "").casefold().rstrip("?？")
+    content_text = re.sub(r"\s+", "", content or "").casefold()
+    content_body = re.sub(r"^(?:faq|question|q|问题|问)[:：\-]?", "", content_text).rstrip("?？")
+    if not content_body or content_body == query_text:
+        return 0.0
+
+    query_terms = extract_terms(query)
+    novel_terms = extract_terms(content) - query_terms - {"faq", "question"}
+    lexical_signal = min(1.0, len(novel_terms) / 3)
+
+    query_numbers = set(re.findall(r"\d+(?:\.\d+)?", query or ""))
+    content_numbers = set(re.findall(r"\d+(?:\.\d+)?", content or ""))
+    fact_marker_signal = 1.0 if (extract_exact_markers(content) - extract_exact_markers(query)) or (content_numbers - query_numbers) else 0.0
+    length_signal = min(1.0, max(0, len(content_body) - len(query_text)) / max(40, len(query_text)))
+    score = max(fact_marker_signal * 0.8, lexical_signal * 0.75 + length_signal * 0.25)
+
+    stripped = (content or "").strip()
+    if stripped.endswith(("?", "？")) and not re.search(r"[。.!；;]\s*\S", stripped):
+        score = min(score, 0.25)
+    return _clamp(score)
 
 
 def _term_weight(term: str) -> float:
@@ -111,35 +112,10 @@ def score_query_coverage(query: str, content: str) -> tuple[float, list[str]]:
 
 
 def classify_source_role(document: dict) -> str:
+    """Return an explicitly supplied role without guessing from corpus text."""
     metadata = document.get("metadata") or {}
-    filename = str(metadata.get("filename") or document.get("filename") or "").lower()
-    content = str(document.get("content") or "").lower()
-    combined = f"{filename}\n{content}"
-
-    if any(marker in filename for marker in EVALUATION_GUIDE_FILENAME_MARKERS):
-        return "evaluation_guide"
-    if any(marker in content for marker in EVALUATION_GUIDE_CONTENT_MARKERS):
-        return "evaluation_guide"
-    if "deprecated" in combined or "已废止" in combined:
-        return "deprecated"
-    if any(marker in filename for marker in INDEX_FILENAME_MARKERS) and _boilerplate_penalty(str(document.get("content") or "")) >= 0.1:
-        return "index"
-    return "primary"
-
-
-def query_requests_evaluation_guide(query: str) -> bool:
-    normalized = " ".join(str(query or "").lower().split())
-    return any(marker in normalized for marker in EXPLICIT_GUIDE_QUERY_MARKERS)
-
-
-def _source_quality(role: str) -> float:
-    if role == "evaluation_guide":
-        return 0.12
-    if role == "index":
-        return 0.72
-    if role == "deprecated":
-        return 0.78
-    return 1.0
+    role = document.get("source_role") or metadata.get("source_role")
+    return str(role).strip() if role else "unclassified"
 
 
 def _raw_retrieval_score(document: dict) -> float:
@@ -184,7 +160,7 @@ def score_filename_match(query: str, document: dict) -> float:
 
     # Require the filename to explain a meaningful part of itself and a small
     # but real part of the query; this keeps generic short filenames from
-    # dominating while strongly rewarding domain-document names such as BMS.
+    # dominating while still rewarding distinctive domain document names.
     filename_side = matched_weight / filename_weight
     query_side = matched_weight / query_weight
     score = filename_side * 0.60 + min(query_side * 3.0, 1.0) * 0.40
@@ -193,10 +169,93 @@ def score_filename_match(query: str, document: dict) -> float:
     return _clamp(score)
 
 
-def _boilerplate_penalty(content: str) -> float:
-    normalized = content or ""
-    hits = sum(1 for marker in BOILERPLATE_MARKERS if marker in normalized)
-    return _clamp(min(hits, 3) * 0.10)
+def _heading_text(document: dict) -> str:
+    metadata = document.get("metadata") or {}
+    heading_path = metadata.get("heading_path") or document.get("heading_path") or []
+    if isinstance(heading_path, list):
+        return " ".join(str(value).strip() for value in heading_path if str(value).strip())
+    return str(heading_path or "").strip()
+
+
+def score_heading_match(query: str, document: dict) -> float:
+    heading = _heading_text(document)
+    if not heading:
+        return 0.0
+    coverage, _ = score_query_coverage(query, heading)
+    normalized_heading = re.sub(r"[^\w\u3400-\u4dbf\u4e00-\u9fff]+", "", heading).casefold()
+    normalized_query = re.sub(r"[^\w\u3400-\u4dbf\u4e00-\u9fff]+", "", query).casefold()
+    if normalized_heading and normalized_heading in normalized_query:
+        coverage = max(coverage, 0.9)
+    return _clamp(coverage)
+
+
+def _ordered_query_units(query: str) -> list[str]:
+    units: list[str] = []
+    seen: set[str] = set()
+    for marker in sorted(extract_exact_markers(query), key=len, reverse=True):
+        normalized = marker.casefold()
+        if normalized not in seen:
+            seen.add(normalized)
+            units.append(normalized)
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_]+", query or ""):
+        normalized = token.casefold()
+        if len(normalized) > 2 and normalized not in TERM_STOPWORDS and normalized not in seen:
+            seen.add(normalized)
+            units.append(normalized)
+    for sequence in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]{2,}", query or ""):
+        cleaned = re.sub(
+            r"(?:请问|请说明|请介绍|请分析|请解释|如何|怎么|怎样|为什么|为何|是什么|"
+            r"有哪些|有什么|是否|能否|可以|以及|或者)",
+            " ",
+            sequence,
+        )
+        for token in cleaned.split():
+            normalized = token.casefold()
+            if len(normalized) >= 2 and normalized not in seen:
+                seen.add(normalized)
+                units.append(normalized)
+    return units[:12]
+
+
+def score_phrase_proximity(query: str, content: str) -> float:
+    haystack = re.sub(r"\s+", " ", content or "").casefold()
+    units = _ordered_query_units(query)
+    if not haystack or not units:
+        return 0.0
+    positions = [(unit, haystack.find(unit)) for unit in units]
+    matched = [(unit, position) for unit, position in positions if position >= 0]
+    coverage = len(matched) / len(units)
+    if len(matched) == 1:
+        return _clamp(coverage * 0.35)
+    if not matched:
+        return 0.0
+    start = min(position for _, position in matched)
+    end = max(position + len(unit) for unit, position in matched)
+    span = max(1, end - start)
+    payload_length = sum(len(unit) for unit, _ in matched)
+    proximity = min(1.0, payload_length / span)
+    return _clamp(coverage * (0.45 + proximity * 0.55))
+
+
+def _source_key(document: dict) -> str:
+    metadata = document.get("metadata") or {}
+    return str(
+        metadata.get("file_id")
+        or document.get("file_id")
+        or metadata.get("filename")
+        or document.get("filename")
+        or ""
+    )
+
+
+def _content_similarity(left: str, right: str) -> float:
+    left_terms = extract_terms(left)
+    right_terms = extract_terms(right)
+    if not left_terms or not right_terms:
+        left_normalized = re.sub(r"\s+", "", left or "").casefold()
+        right_normalized = re.sub(r"\s+", "", right or "").casefold()
+        return 1.0 if left_normalized and left_normalized == right_normalized else 0.0
+    return len(left_terms & right_terms) / len(left_terms | right_terms)
 
 
 def _classify_evidence_specificity(
@@ -219,13 +278,12 @@ def _classify_evidence_specificity(
         + filename_match_score * 0.24
         + exact_marker_coverage * 0.18
     )
-    return _clamp(specificity - _boilerplate_penalty(content))
+    return _clamp(specificity)
 
 
 def rerank_documents(query: str, documents: list[dict], top_k: int | None = None) -> list[dict]:
     max_retrieval_score = max([_raw_retrieval_score(document) for document in documents] or [0.0])
     query_exact_markers = extract_exact_markers(query)
-    guide_requested = query_requests_evaluation_guide(query)
     ranked = []
     for index, document in enumerate(documents, start=1):
         raw_retrieval_score = _raw_retrieval_score(document)
@@ -238,6 +296,12 @@ def rerank_documents(query: str, documents: list[dict], top_k: int | None = None
         )
         role = classify_source_role(document)
         filename_match_score = score_filename_match(query, document)
+        heading_match_score = score_heading_match(query, document)
+        phrase_proximity_score = score_phrase_proximity(
+            query,
+            "\n".join(filter(None, (_heading_text(document), str(document.get("content") or "")))),
+        )
+        answer_bearing_score = score_answer_bearing(query, str(document.get("content") or ""))
         evidence_specificity = _classify_evidence_specificity(
             query,
             document,
@@ -245,42 +309,71 @@ def rerank_documents(query: str, documents: list[dict], top_k: int | None = None
             exact_score,
             filename_match_score,
         )
-        source_quality = 1.0 if role == "evaluation_guide" and guide_requested else _source_quality(role)
         base_score = (
-            retrieval_confidence * 0.14
-            + coverage_score * 0.30
-            + exact_score * 0.20
-            + filename_match_score * 0.18
-            + evidence_specificity * 0.10
-            + source_quality * 0.05
-            + _channel_bonus(document) * 0.03
+            retrieval_confidence * 0.44
+            + coverage_score * 0.18
+            + exact_score * 0.12
+            + heading_match_score * 0.08
+            + phrase_proximity_score * 0.06
+            + answer_bearing_score * 0.07
+            + filename_match_score * 0.03
+            + evidence_specificity * 0.01
+            + _channel_bonus(document) * 0.01
         )
-        if role == "evaluation_guide" and not guide_requested:
-            base_score *= 0.45
-        elif role == "evaluation_guide" and guide_requested:
-            base_score += 0.08
-        elif role == "primary" and (exact_score > 0 or filename_match_score >= 0.25):
-            base_score += 0.05
-        if filename_match_score >= 0.35 and evidence_specificity >= 0.45:
-            base_score += 0.08
-        if evidence_specificity < 0.25:
-            base_score *= 0.88
+        stripped_content = str(document.get("content") or "").strip()
+        question_like = stripped_content.endswith(("?", "？")) or bool(
+            re.match(r"^(?:faq|question|q|问题|问)[:：\-]", stripped_content, re.IGNORECASE)
+        )
+        question_only_penalty = (
+            0.22
+            if question_like and answer_bearing_score <= 0.1 and coverage_score >= 0.7
+            else 0.0
+        )
 
-        rerank_score = _clamp(base_score)
+        rerank_score = _clamp(base_score - question_only_penalty)
         enriched = dict(document)
         enriched["pre_rerank_rank"] = index
         enriched["rerank_score"] = rerank_score
         enriched["agentic_score"] = rerank_score
-        enriched["reranker"] = "local-evidence"
+        enriched["reranker"] = LOCAL_RERANKER_VERSION
         enriched["source_role"] = role
-        enriched["source_quality"] = source_quality
+        enriched["source_quality"] = 1.0 if role == "primary" else 0.0 if role == "deprecated" else None
         enriched["term_coverage"] = coverage_score
         enriched["exact_match_score"] = _clamp(exact_score)
         enriched["filename_match_score"] = filename_match_score
+        enriched["heading_match_score"] = heading_match_score
+        enriched["phrase_proximity_score"] = phrase_proximity_score
+        enriched["answer_bearing_score"] = answer_bearing_score
+        enriched["question_only_penalty"] = question_only_penalty
         enriched["evidence_specificity"] = evidence_specificity
         enriched["retrieval_confidence"] = _clamp(retrieval_confidence)
         enriched["matched_terms"] = matched_terms
         ranked.append(enriched)
 
-    ranked.sort(key=lambda item: item["rerank_score"], reverse=True)
+    ranked.sort(key=lambda item: (-item["rerank_score"], item["pre_rerank_rank"]))
+
+    # Suppress repeated chunks from the same source after relevance scoring.
+    # Cross-source repetition is retained because it may be independent
+    # corroboration rather than duplicate ingestion.
+    preceding: list[dict] = []
+    for document in ranked:
+        source_key = _source_key(document)
+        similarity = max(
+            (
+                _content_similarity(str(document.get("content") or ""), str(previous.get("content") or ""))
+                for previous in preceding
+                if source_key and _source_key(previous) == source_key
+            ),
+            default=0.0,
+        )
+        penalty = 0.12 if similarity >= 0.98 else 0.06 if similarity >= 0.85 else 0.0
+        document["base_rerank_score"] = document["rerank_score"]
+        document["duplicate_similarity"] = _clamp(similarity)
+        document["duplicate_penalty"] = penalty
+        if penalty:
+            document["rerank_score"] = _clamp(document["rerank_score"] - penalty)
+            document["agentic_score"] = document["rerank_score"]
+        preceding.append(document)
+
+    ranked.sort(key=lambda item: (-item["rerank_score"], item["pre_rerank_rank"]))
     return ranked[:top_k] if top_k else ranked

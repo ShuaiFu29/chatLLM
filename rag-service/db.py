@@ -1,5 +1,6 @@
 import hashlib
 import json
+import re
 from contextlib import contextmanager
 from queue import Empty, LifoQueue
 from threading import Lock
@@ -10,7 +11,9 @@ from psycopg.rows import dict_row
 from config import settings
 
 
-CHUNK_STRATEGY_VERSION = "markdown-v1:chunk1000-overlap100"
+LEGACY_CHUNK_STRATEGY_VERSION = "markdown-v1:chunk1000-overlap100"
+CHUNK_STRATEGY_VERSION = "markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100"
+MIXED_CHUNK_STRATEGY_VERSION = "markdown-mixed:v1-v4-reindex-required"
 
 
 class IngestionLeaseLostError(RuntimeError):
@@ -194,7 +197,46 @@ def check_database_ready() -> bool:
     return True
 
 
-def _index_settings_fingerprint() -> str:
+def get_markdown_index_status() -> dict:
+    """Return an aggregate, read-only view of indexed Markdown strategy age."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                with markdown_chunks as (
+                  select
+                    files.id as file_id,
+                    coalesce(file_chunks.metadata->>'chunk_strategy_version', '') <> %s as stale
+                  from files
+                  join file_chunks on file_chunks.file_id = files.id
+                  where files.status = 'completed'
+                    and (
+                      lower(files.filename) like '%%.md'
+                      or lower(files.filename) like '%%.markdown'
+                    )
+                )
+                select
+                  count(distinct file_id)::bigint as indexed_file_count,
+                  count(distinct file_id) filter (where stale)::bigint as stale_file_count,
+                  count(*) filter (where stale)::bigint as stale_chunk_count
+                from markdown_chunks
+                """,
+                (CHUNK_STRATEGY_VERSION,),
+            )
+            row = cur.fetchone() or {}
+
+    stale_file_count = int(row.get("stale_file_count") or 0)
+    return {
+        "status": "degraded" if stale_file_count else "ok",
+        "current_chunk_strategy_version": CHUNK_STRATEGY_VERSION,
+        "indexed_file_count": int(row.get("indexed_file_count") or 0),
+        "stale_file_count": stale_file_count,
+        "stale_chunk_count": int(row.get("stale_chunk_count") or 0),
+        "reindex_required": stale_file_count > 0,
+    }
+
+
+def _index_settings_fingerprint(chunk_strategy_version: str = CHUNK_STRATEGY_VERSION) -> str:
     payload = {
         "embedding_model": settings.embedding_model,
         "embedding_dimension": settings.embedding_dimension,
@@ -203,14 +245,67 @@ def _index_settings_fingerprint() -> str:
         "milvus_metric_type": settings.milvus_metric_type,
         "elasticsearch_enabled": settings.elasticsearch_enabled,
         "elasticsearch_index": settings.elasticsearch_index,
+        "elasticsearch_schema_version": settings.elasticsearch_schema_version,
         "neo4j_enabled": settings.neo4j_enabled,
-        "chunk_strategy_version": CHUNK_STRATEGY_VERSION,
+        "graph_extraction_enabled": settings.graph_extraction_enabled,
+        "graph_extraction_base_url": settings.graph_extraction_base_url,
+        "graph_extraction_model": settings.graph_extraction_model,
+        "graph_extractor_version": settings.graph_extractor_version,
+        "graph_ontology_version": settings.graph_ontology_version,
+        "chunk_strategy_version": chunk_strategy_version,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
 def _ensure_rag_index_version(cur, user_id: str, project_space_id: str, knowledge_version: int):
+    cur.execute(
+        """
+        select
+          vector_version,
+          bm25_version,
+          graph_version,
+          chunk_strategy_version,
+          embedding_model,
+          embedding_dimension,
+          settings_fingerprint
+        from rag_index_versions
+        where user_id::text = %s and project_space_id::text = %s
+        """,
+        (user_id, project_space_id),
+    )
+    existing = cur.fetchone()
+    if existing:
+        cur.execute(
+            """
+            update rag_index_versions
+            set knowledge_version = %s,
+                updated_at = case when knowledge_version <> %s then now() else updated_at end
+            where user_id::text = %s and project_space_id::text = %s
+            """,
+            (knowledge_version, knowledge_version, user_id, project_space_id),
+        )
+        return existing
+
+    # A project may predate rag_index_versions. Do not label its existing
+    # chunks as the current strategy until a real reingestion has rebuilt every backing index.
+    cur.execute(
+        """
+        select exists (
+          select 1
+          from file_chunks
+          join files on files.id = file_chunks.file_id
+          where files.user_id::text = %s
+            and files.project_space_id::text = %s
+          limit 1
+        ) as has_existing_chunks
+        """,
+        (user_id, project_space_id),
+    )
+    has_existing_chunks = bool((cur.fetchone() or {}).get("has_existing_chunks"))
+    initial_chunk_strategy = (
+        LEGACY_CHUNK_STRATEGY_VERSION if has_existing_chunks else CHUNK_STRATEGY_VERSION
+    )
     cur.execute(
         """
         insert into rag_index_versions (
@@ -224,22 +319,24 @@ def _ensure_rag_index_version(cur, user_id: str, project_space_id: str, knowledg
         )
         values (%s, %s, %s, %s, %s, %s, %s)
         on conflict (user_id, project_space_id) do update set
-          knowledge_version = excluded.knowledge_version,
-          chunk_strategy_version = excluded.chunk_strategy_version,
-          embedding_model = excluded.embedding_model,
-          embedding_dimension = excluded.embedding_dimension,
-          settings_fingerprint = excluded.settings_fingerprint,
-          updated_at = now()
-        returning vector_version, bm25_version, graph_version
+          knowledge_version = excluded.knowledge_version
+        returning
+          vector_version,
+          bm25_version,
+          graph_version,
+          chunk_strategy_version,
+          embedding_model,
+          embedding_dimension,
+          settings_fingerprint
         """,
         (
             user_id,
             project_space_id,
             knowledge_version,
-            CHUNK_STRATEGY_VERSION,
+            initial_chunk_strategy,
             settings.embedding_model,
             settings.embedding_dimension,
-            _index_settings_fingerprint(),
+            _index_settings_fingerprint(initial_chunk_strategy),
         ),
     )
     return cur.fetchone()
@@ -282,10 +379,10 @@ def get_retrieval_scope(user_id: str, project_space_id: str | None = None) -> di
                     "vector_version": int((index_version or {}).get("vector_version") or 1),
                     "bm25_version": int((index_version or {}).get("bm25_version") or 1),
                     "graph_version": int((index_version or {}).get("graph_version") or 1),
-                    "chunk_strategy_version": CHUNK_STRATEGY_VERSION,
-                    "embedding_model": settings.embedding_model,
-                    "embedding_dimension": settings.embedding_dimension,
-                    "settings_fingerprint": _index_settings_fingerprint(),
+                    "chunk_strategy_version": str((index_version or {}).get("chunk_strategy_version") or CHUNK_STRATEGY_VERSION),
+                    "embedding_model": str((index_version or {}).get("embedding_model") or settings.embedding_model),
+                    "embedding_dimension": int((index_version or {}).get("embedding_dimension") or settings.embedding_dimension),
+                    "settings_fingerprint": str((index_version or {}).get("settings_fingerprint") or _index_settings_fingerprint()),
                 }
 
             cur.execute(
@@ -297,13 +394,28 @@ def get_retrieval_scope(user_id: str, project_space_id: str | None = None) -> di
                 """,
                 (user_id,),
             )
-            project_versions = [
-                {
-                    "project_space_id": str(row["project_space_id"]),
-                    "knowledge_version": int(row.get("knowledge_version") or 1),
-                }
-                for row in (cur.fetchall() or [])
-            ]
+            project_versions = []
+            for row in (cur.fetchall() or []):
+                project_space_id = str(row["project_space_id"])
+                knowledge_version = int(row.get("knowledge_version") or 1)
+                index_version = _ensure_rag_index_version(
+                    cur,
+                    user_id,
+                    project_space_id,
+                    knowledge_version,
+                ) or {}
+                project_versions.append({
+                    "project_space_id": project_space_id,
+                    "knowledge_version": knowledge_version,
+                    "vector_version": int(index_version.get("vector_version") or 1),
+                    "bm25_version": int(index_version.get("bm25_version") or 1),
+                    "graph_version": int(index_version.get("graph_version") or 1),
+                    "chunk_strategy_version": str(index_version.get("chunk_strategy_version") or CHUNK_STRATEGY_VERSION),
+                    "embedding_model": str(index_version.get("embedding_model") or settings.embedding_model),
+                    "embedding_dimension": int(index_version.get("embedding_dimension") or settings.embedding_dimension),
+                    "settings_fingerprint": str(index_version.get("settings_fingerprint") or _index_settings_fingerprint()),
+                })
+            conn.commit()
             return {
                 "user_id": user_id,
                 "project_space_id": None,
@@ -346,6 +458,25 @@ def bump_project_knowledge_version(user_id: str, project_space_id: str | None, r
             knowledge_version = int(space.get("knowledge_version") or 1)
             cur.execute(
                 """
+                select exists (
+                  select 1
+                  from file_chunks
+                  join files on files.id = file_chunks.file_id
+                  where files.user_id::text = %s
+                    and files.project_space_id::text = %s
+                    and coalesce(file_chunks.metadata->>'chunk_strategy_version', '') <> %s
+                  limit 1
+                ) as has_legacy_chunks
+                """,
+                (user_id, project_space_id, CHUNK_STRATEGY_VERSION),
+            )
+            effective_chunk_strategy = (
+                MIXED_CHUNK_STRATEGY_VERSION
+                if bool((cur.fetchone() or {}).get("has_legacy_chunks"))
+                else CHUNK_STRATEGY_VERSION
+            )
+            cur.execute(
+                """
                 insert into rag_index_versions (
                   user_id,
                   project_space_id,
@@ -375,10 +506,10 @@ def bump_project_knowledge_version(user_id: str, project_space_id: str | None, r
                     user_id,
                     project_space_id,
                     knowledge_version,
-                    CHUNK_STRATEGY_VERSION,
+                    effective_chunk_strategy,
                     settings.embedding_model,
                     settings.embedding_dimension,
-                    _index_settings_fingerprint(),
+                    _index_settings_fingerprint(effective_chunk_strategy),
                 ),
             )
             index_version = cur.fetchone() or {}
@@ -663,7 +794,35 @@ def delete_file_chunks(file_id: str):
         conn.commit()
 
 
-def _build_chunk_metadata(file_id: str, user_id: str, chunk_index: int, file_data: dict) -> dict:
+def _chunk_heading_path(content: str) -> list[str]:
+    headings: list[str] = []
+    for line in str(content or "").splitlines():
+        if not line.strip():
+            if headings:
+                break
+            continue
+        match = re.match(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+        if not match:
+            break
+        level = len(match.group(1))
+        title = match.group(2).strip()
+        while len(headings) >= level:
+            headings.pop()
+        while len(headings) < level - 1:
+            headings.append("")
+        headings.append(title)
+    return [heading for heading in headings if heading]
+
+
+def _build_chunk_metadata(
+    file_id: str,
+    user_id: str,
+    chunk_index: int,
+    file_data: dict,
+    content: str,
+) -> dict:
+    heading_path = _chunk_heading_path(content)
+    parent_identity = "\0".join((file_id, *heading_path)) if heading_path else f"{file_id}\0__root__"
     return {
         "filename": file_data["filename"],
         "file_type": file_data.get("file_type"),
@@ -672,6 +831,10 @@ def _build_chunk_metadata(file_id: str, user_id: str, chunk_index: int, file_dat
         "source_file_id": file_id,
         "file_id": file_id,
         "chunk_index": chunk_index,
+        "chunk_strategy_version": CHUNK_STRATEGY_VERSION,
+        "heading_path": heading_path,
+        "heading_depth": len(heading_path),
+        "parent_section_id": hashlib.sha256(parent_identity.encode("utf-8")).hexdigest()[:24],
     }
 
 
@@ -690,7 +853,7 @@ def insert_file_chunk_batch(
             inserted: list[dict] = []
             for offset, chunk in enumerate(chunks):
                 chunk_index = start_index + offset
-                metadata = _build_chunk_metadata(file_id, user_id, chunk_index, file_data)
+                metadata = _build_chunk_metadata(file_id, user_id, chunk_index, file_data, chunk)
                 cur.execute(
                     """
                     insert into file_chunks (file_id, user_id, chunk_index, content, metadata)
@@ -711,7 +874,7 @@ def replace_file_chunks(file_id: str, user_id: str, chunks: list[str], file_data
 
             inserted: list[dict] = []
             for index, chunk in enumerate(chunks):
-                metadata = _build_chunk_metadata(file_id, user_id, index, file_data)
+                metadata = _build_chunk_metadata(file_id, user_id, index, file_data, chunk)
                 cur.execute(
                     """
                     insert into file_chunks (file_id, user_id, chunk_index, content, metadata)
@@ -758,39 +921,85 @@ def get_chunks_by_ids(chunk_ids: Iterable[str]) -> list[dict]:
     return [by_id[str(chunk_id)] for chunk_id in ids if str(chunk_id) in by_id]
 
 
-def list_file_chunks_for_sources(
+def list_parent_chunks_for_matches(
     user_id: str,
     project_space_id: str | None,
-    file_ids: Iterable[str],
-    limit: int = 30,
+    matches: Iterable[dict],
+    max_parents: int = 8,
+    max_chunks_per_parent: int = 6,
 ) -> list[dict]:
-    """Load bounded chunks for already-retrieved sources within the caller's scope."""
-    source_ids = list(dict.fromkeys(str(file_id) for file_id in file_ids if str(file_id).strip()))
-    if not source_ids or limit <= 0:
+    """Load bounded Markdown parent sections for already-authorized child hits."""
+    requested: list[tuple[str, str, int]] = []
+    requested_parents: set[tuple[str, str]] = set()
+    for document in matches:
+        metadata = document.get("metadata") or {}
+        file_id = str(metadata.get("file_id") or document.get("file_id") or "").strip()
+        parent_section_id = str(metadata.get("parent_section_id") or "").strip()
+        parent_key = (file_id, parent_section_id)
+        if not all(parent_key) or parent_key in requested_parents:
+            continue
+        try:
+            matched_chunk_index = int(metadata.get("chunk_index", document.get("chunk_index", 0)) or 0)
+        except (TypeError, ValueError):
+            matched_chunk_index = 0
+        requested_parents.add(parent_key)
+        requested.append((file_id, parent_section_id, matched_chunk_index))
+        if len(requested) >= max(1, max_parents):
+            break
+    if not requested:
         return []
 
+    file_ids = [file_id for file_id, _, _ in requested]
+    parent_ids = [parent_id for _, parent_id, _ in requested]
+    matched_indices = [chunk_index for _, _, chunk_index in requested]
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                select
-                  file_chunks.id,
-                  file_chunks.file_id,
-                  file_chunks.user_id,
-                  file_chunks.chunk_index,
-                  file_chunks.content,
-                  file_chunks.metadata,
-                  files.project_space_id,
-                  files.filename
-                from file_chunks
-                join files on files.id = file_chunks.file_id
-                where file_chunks.user_id::text = %s
-                  and file_chunks.file_id = any(%s::uuid[])
-                  and (%s::text is null or files.project_space_id::text = %s)
-                order by files.filename asc, file_chunks.chunk_index asc
-                limit %s
+                with requested(file_id, parent_section_id, matched_chunk_index, request_rank) as (
+                  select *
+                  from unnest(%s::uuid[], %s::text[], %s::integer[]) with ordinality
+                ), ranked as (
+                  select
+                    file_chunks.id,
+                    file_chunks.file_id,
+                    file_chunks.user_id,
+                    file_chunks.chunk_index,
+                    file_chunks.content,
+                    file_chunks.metadata,
+                    files.project_space_id,
+                    files.filename,
+                    requested.parent_section_id,
+                    requested.matched_chunk_index,
+                    requested.request_rank,
+                    row_number() over (
+                      partition by requested.file_id, requested.parent_section_id
+                      order by
+                        abs(file_chunks.chunk_index - requested.matched_chunk_index) asc,
+                        file_chunks.chunk_index asc
+                    ) as parent_chunk_rank
+                  from requested
+                  join file_chunks
+                    on file_chunks.file_id = requested.file_id
+                   and file_chunks.metadata->>'parent_section_id' = requested.parent_section_id
+                  join files on files.id = file_chunks.file_id
+                  where file_chunks.user_id::text = %s
+                    and (%s::text is null or files.project_space_id::text = %s)
+                )
+                select *
+                from ranked
+                where parent_chunk_rank <= %s
+                order by request_rank asc, chunk_index asc
                 """,
-                (user_id, source_ids, project_space_id, project_space_id, limit),
+                (
+                    file_ids,
+                    parent_ids,
+                    matched_indices,
+                    user_id,
+                    project_space_id,
+                    project_space_id,
+                    max(1, max_chunks_per_parent),
+                ),
             )
             return cur.fetchall()
 
@@ -845,3 +1054,19 @@ def list_files_for_inventory(user_id: str, project_space_id: str | None = None, 
                 (user_id, project_space_id, project_space_id, limit),
             )
             return cur.fetchall()
+
+
+def count_files_for_inventory(user_id: str, project_space_id: str | None = None) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select count(*)::bigint as total
+                from files
+                where user_id::text = %s
+                  and (%s::text is null or project_space_id::text = %s)
+                """,
+                (user_id, project_space_id, project_space_id),
+            )
+            row = cur.fetchone() or {}
+            return int(row.get("total") or 0)

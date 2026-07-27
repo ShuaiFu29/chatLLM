@@ -353,6 +353,46 @@ test('legacy aliases remain explicit but ambiguous duplicate aliases are rejecte
   }));
 });
 
+test('RAG eval case schema accepts bounded advanced Gold labels and rejects invalid calibration data', () => {
+  const { parseBody } = loadValidation();
+  const { mutationSchemas } = loadSchemas();
+
+  assert.doesNotThrow(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'What happens when the worker fails?',
+    evaluation_spec: {
+      tags: ['queue', 'reliability'],
+      category: 'operations',
+      difficulty: 'medium',
+      expected_chunk_ids: ['chunk-1'],
+      expected_evidence: ['The worker retries the job.'],
+      expected_answerable: true,
+      expected_graph_relations: [{ source: 'Worker', relation: 'USES', target: 'Queue' }],
+      human_scores: { correctness: 0.9, completeness: 0.8, faithfulness: 1 },
+    },
+  }));
+
+  assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'Q',
+    evaluation_spec: { human_scores: { correctness: 1.1 } },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'Q',
+    evaluation_spec: { expected_graph_relations: [{ source: 'Worker', relation: 'USES' }] },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'Q',
+    evaluation_spec: { difficulty: 'expert' },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'Q',
+    evaluation_spec: { tags: Array.from({ length: 21 }, (_, index) => `tag-${index}`) },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'Q',
+    evaluation_spec: { category: 'x'.repeat(81) },
+  }));
+});
+
 test('validation middleware returns a stable non-reflective 400 and forwards parsed values', () => {
   const { validateMutation } = loadValidation();
   const { mutationSchemas } = loadSchemas();

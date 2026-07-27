@@ -1,5 +1,6 @@
 process.env.NODE_ENV ||= 'test';
 process.env.DATABASE_URL ||= 'postgres://chatllm:chatllm@localhost:5432/chatllm';
+process.env.REDIS_URL ||= 'redis://localhost:6379/0';
 process.env.S3_ENDPOINT ||= 'http://localhost:9000';
 process.env.S3_ACCESS_KEY ||= 'test-access-key';
 process.env.S3_SECRET_KEY ||= 'test-secret-key';

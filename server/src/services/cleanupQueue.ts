@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
+import { Queue, Worker } from 'bullmq';
 import { cleanupRagFileVectors } from '../lib/ragClient';
+import { BULLMQ_PREFIX, getBullMqConnectionOptions } from '../lib/redis';
 import {
   abortMultipartObjectUpload,
   deleteObject,
@@ -7,7 +9,7 @@ import {
 } from '../lib/storage';
 import { toSafeError } from '../lib/safeError';
 import {
-  claimNextCleanupJob,
+  claimCleanupJobById,
   CleanupJobClaim,
   CleanupLeaseLostError,
   failExhaustedCleanupJobs,
@@ -16,11 +18,30 @@ import {
   finalizeFileCleanup,
   finalizeProjectSpaceCleanup,
   getCleanupChildSummary,
+  listDispatchableCleanupJobIds,
   markCleanupJobFailed,
   markCleanupJobWaiting,
   renewCleanupJobLease,
   updateCleanupJobStep,
 } from '../repositories/cleanupJobs';
+
+export const ARTIFACT_CLEANUP_QUEUE_NAME = 'chatllm-artifact-cleanup-v1';
+const ARTIFACT_CLEANUP_JOB_NAME = 'cleanup-artifact';
+
+export interface ArtifactCleanupQueuePayload {
+  cleanupJobId: string;
+}
+
+export const buildArtifactCleanupQueueJob = (cleanupJobId: string) => ({
+  name: ARTIFACT_CLEANUP_JOB_NAME,
+  data: { cleanupJobId } satisfies ArtifactCleanupQueuePayload,
+  opts: {
+    jobId: `cleanup-${cleanupJobId}`,
+    attempts: 1,
+    removeOnComplete: true,
+    removeOnFail: true,
+  },
+});
 
 const CLEANUP_QUEUE_INTERVAL_MS = 5000;
 const CLEANUP_QUEUE_CONCURRENCY = 2;
@@ -217,23 +238,50 @@ const startCleanupHeartbeat = (
 class ArtifactCleanupQueue {
   private workerId = randomUUID();
   private interval: NodeJS.Timeout | null = null;
-  private isProcessing = false;
+  private isDispatching = false;
+  private queue: Queue<ArtifactCleanupQueuePayload> | null = null;
+  private worker: Worker<ArtifactCleanupQueuePayload> | null = null;
 
-  start() {
-    if (this.interval) return;
-    this.processPendingBatch();
-    this.interval = setInterval(() => this.processPendingBatch(), CLEANUP_QUEUE_INTERVAL_MS);
+  async start() {
+    if (this.queue || this.worker) return;
+    const connection = getBullMqConnectionOptions();
+    this.queue = new Queue(ARTIFACT_CLEANUP_QUEUE_NAME, {
+      connection,
+      prefix: BULLMQ_PREFIX,
+    });
+    this.worker = new Worker(
+      ARTIFACT_CLEANUP_QUEUE_NAME,
+      async (job) => this.processJobById(job.data.cleanupJobId),
+      {
+        connection,
+        prefix: BULLMQ_PREFIX,
+        concurrency: CLEANUP_QUEUE_CONCURRENCY,
+      },
+    );
+    this.worker.on('error', (error) => {
+      console.error('[CleanupQueue] BullMQ worker error:', toSafeError(error));
+    });
+    await Promise.all([this.queue.waitUntilReady(), this.worker.waitUntilReady()]);
+    await this.dispatchPending();
+    this.interval = setInterval(() => this.dispatchPending(), CLEANUP_QUEUE_INTERVAL_MS);
     this.interval.unref();
   }
 
-  stop() {
-    if (!this.interval) return;
-    clearInterval(this.interval);
-    this.interval = null;
+  async stop() {
+    if (this.interval) {
+      clearInterval(this.interval);
+      this.interval = null;
+    }
+    const worker = this.worker;
+    const queue = this.queue;
+    this.worker = null;
+    this.queue = null;
+    await worker?.close();
+    await queue?.close();
   }
 
   trigger() {
-    this.processPendingBatch();
+    void this.dispatchPending();
   }
 
   private async processJob(job: CleanupJobClaim) {
@@ -245,29 +293,29 @@ class ArtifactCleanupQueue {
     }
   }
 
-  private async processPendingBatch() {
-    if (this.isProcessing) return;
-    this.isProcessing = true;
+  private async processJobById(cleanupJobId: string) {
+    const job = await claimCleanupJobById(cleanupJobId, this.workerId, {
+      leaseDurationMs: CLEANUP_QUEUE_STALE_AFTER_MS,
+    });
+    if (!job) return { state: 'superseded' as const };
+    return this.processJob(job);
+  }
+
+  private async dispatchPending() {
+    if (this.isDispatching || !this.queue) return;
+    this.isDispatching = true;
     try {
       await failExhaustedCleanupJobs();
-      let shouldContinue = true;
-      while (shouldContinue) {
-        const jobs: CleanupJobClaim[] = [];
-        for (let index = 0; index < CLEANUP_QUEUE_CONCURRENCY; index += 1) {
-          const job = await claimNextCleanupJob(this.workerId, {
-            leaseDurationMs: CLEANUP_QUEUE_STALE_AFTER_MS,
-          });
-          if (!job) break;
-          jobs.push(job);
-        }
-        if (jobs.length === 0) break;
-        await Promise.all(jobs.map((job) => this.processJob(job)));
-        shouldContinue = jobs.length === CLEANUP_QUEUE_CONCURRENCY;
+      const cleanupJobIds = await listDispatchableCleanupJobIds(
+        Math.max(20, CLEANUP_QUEUE_CONCURRENCY * 10)
+      );
+      if (cleanupJobIds.length > 0) {
+        await this.queue.addBulk(cleanupJobIds.map(buildArtifactCleanupQueueJob));
       }
     } catch (error) {
-      console.error('[CleanupQueue] Failed to process cleanup jobs:', toSafeError(error));
+      console.error('[CleanupQueue] Failed to dispatch cleanup jobs:', toSafeError(error));
     } finally {
-      this.isProcessing = false;
+      this.isDispatching = false;
     }
   }
 }

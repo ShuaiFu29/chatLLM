@@ -4,11 +4,17 @@ import { CircuitOpenError, OperationCircuitBreaker } from './circuitBreaker';
 import { serverEnv } from './env';
 import { metrics as defaultMetrics } from './metrics';
 
+export interface RagConversationContextItem {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+}
+
 interface RetrieveRagDocumentsInput {
   query: string;
   user_id: string;
   project_space_id?: string;
   conversation_id?: string;
+  conversation_context?: RagConversationContextItem[];
   limit: number;
   threshold: number;
 }
@@ -49,6 +55,25 @@ export interface RagEvalCaseInput {
   expected_answer?: string;
   expected_keywords?: string[];
   expected_source_files?: string[];
+  evaluation_spec?: {
+    tags?: string[];
+    category?: string;
+    difficulty?: 'easy' | 'medium' | 'hard';
+    expected_chunk_ids?: string[];
+    expected_evidence?: string[];
+    expected_answerable?: boolean | null;
+    expected_graph_relations?: Array<{
+      source: string;
+      relation: string;
+      target: string;
+    }>;
+    human_scores?: Partial<Record<'correctness' | 'completeness' | 'faithfulness', number>>;
+  };
+  actual_answer?: string;
+  retrieval_snapshot?: object;
+  answer_evaluation?: object;
+  generation_metadata?: object;
+  preparation_error?: string;
 }
 
 export interface RagEvalRunInput {
@@ -68,6 +93,7 @@ export interface RagEvalRunResponse {
   failed_count: number;
   duration_ms: number;
   average_overall_score: number;
+  average_retrieval_overall_score?: number;
   average_retrieval_score: number;
   average_answer_score: number;
   average_source_score: number;
@@ -75,16 +101,25 @@ export interface RagEvalRunResponse {
   average_source_precision_score?: number;
   average_citation_accuracy_score?: number;
   average_keyword_score: number;
-  average_answer_keyword_score?: number;
+  average_answer_keyword_score?: number | null;
   average_grounding_score?: number;
   average_judge_score?: number;
   average_expected_answer_support_score?: number;
   average_verification_score?: number;
+  average_correctness_score?: number;
+  average_completeness_score?: number;
+  average_faithfulness_score?: number;
+  average_citation_precision?: number;
+  average_citation_coverage?: number;
+  average_citation_f1?: number;
+  average_hallucination_rate?: number;
+  advanced_metrics?: Record<string, unknown>;
   results: Array<{
     case_id: string;
     question: string;
     status: 'success' | 'failed';
     overall_score: number;
+    retrieval_overall_score?: number;
     retrieval_score: number;
     answer_score: number;
     source_score: number;
@@ -92,12 +127,25 @@ export interface RagEvalRunResponse {
     source_precision_score?: number;
     citation_accuracy_score?: number;
     keyword_score: number;
-    answer_keyword_score?: number;
+    answer_keyword_score?: number | null;
     grounding_score?: number;
     judge_score?: number;
     expected_answer_support_score?: number;
     expected_answer_support_label?: string;
     verification_score?: number;
+    actual_answer?: string;
+    correctness_score?: number;
+    completeness_score?: number;
+    faithfulness_score?: number;
+    citation_precision?: number;
+    citation_coverage?: number;
+    citation_f1?: number;
+    hallucination_rate?: number;
+    prompt_version?: string;
+    model_version?: string;
+    judge_version?: string;
+    verifier_version?: string;
+    claim_evaluation?: Record<string, unknown>;
     latency_ms?: number;
     evidence_label: string;
     support_label?: string;
@@ -105,6 +153,7 @@ export interface RagEvalRunResponse {
     matched_sources: unknown[];
     trace_summary: Record<string, unknown>;
     error_message: string;
+    advanced_metrics?: Record<string, unknown>;
   }>;
 }
 
@@ -276,13 +325,16 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     return response.results || [];
   };
 
-  const retrieveAgenticRagDocuments = (input: RetrieveRagDocumentsInput): Promise<AgenticRagResponse> => (
+  const retrieveAgenticRagDocuments = (
+    input: RetrieveRagDocumentsInput,
+    signal?: AbortSignal,
+  ): Promise<AgenticRagResponse> => (
     postRagService<AgenticRagResponse>(
       'agentic-retrieve',
       '/agentic-retrieve',
       input,
       retrieveTimeoutMs,
-      undefined,
+      signal,
       retrieveRetry,
     )
   );

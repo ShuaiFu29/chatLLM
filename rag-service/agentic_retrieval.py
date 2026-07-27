@@ -1,30 +1,46 @@
+import inspect
 import re
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
+from config import settings
 from evaluation import evaluate_retrieval_quality
 from evidence_verifier import assess_query_risk, verify_evidence_support
-from query_planner import plan_queries
-from db import list_file_chunks_for_sources, list_files_for_inventory
-from reranker import classify_source_role, extract_exact_markers, query_requests_evaluation_guide, rerank_documents
+from query_planner import plan_queries, resolve_standalone_query
+from db import count_files_for_inventory, list_files_for_inventory, list_parent_chunks_for_matches
+from parent_context import build_parent_section_documents
+from reranker import LOCAL_RERANKER_VERSION, classify_source_role
+from semantic_reranker import rerank_with_provider, reranker_fingerprint
+from semantic_query_rewriter import query_rewriter_fingerprint, rewrite_query_resolution
 from retrieval import retrieve_documents
 from retrieval_cache import (
     CONVERSATION_EVIDENCE_THRESHOLD,
-    SIMILAR_QUERY_THRESHOLD,
     RetrievalCacheStore,
+    build_retrieval_request_fingerprint,
+    cache_metrics_snapshot,
     cache_entry_is_reusable,
     normalize_query,
+    record_cache_metric,
 )
 
 
-RetrieveFn = Callable[[str, str, str | None, int, float], list[dict]]
+RetrieveFn = Callable[..., list[dict]]
 RerankFn = Callable[[str, list[dict]], list[dict]]
 InventoryFn = Callable[[str, str | None, int], list[dict]]
-SourceDepthFn = Callable[[str, str | None, list[str], int], list[dict]]
+InventoryCountFn = Callable[[str, str | None], int]
+ParentDepthFn = Callable[[str, str | None, list[dict], int, int], list[dict]]
 
-INVENTORY_RESULT_LIMIT = 500
-SOURCE_DEPTH_CHUNK_LIMIT = 30
+INVENTORY_RESULT_LIMIT = 100
+PARENT_SECTION_LIMIT = 8
+PARENT_SECTION_CHUNK_LIMIT = 6
+PARENT_SECTION_MAX_CHARS = 8000
+QUERY_PARALLELISM = max(1, min(settings.agentic_query_parallelism, 3))
+
+
+class PlannedRetrievalUnavailableError(RuntimeError):
+    """Raised when every planned query fails before producing retrieval evidence."""
 
 
 def _now_ms() -> int:
@@ -36,6 +52,23 @@ def _trace_step(step_type: str, status: str, started_at_ms: int, input_data: dic
         "step_type": step_type,
         "status": status,
         "duration_ms": max(0, _now_ms() - started_at_ms),
+        "input": input_data,
+        "output": output_data,
+    }
+
+
+def _completed_trace_step(
+    step_type: str,
+    status: str,
+    duration_ms: int,
+    input_data: dict,
+    output_data: dict,
+) -> dict:
+    """Build a trace for work that completed concurrently in another thread."""
+    return {
+        "step_type": step_type,
+        "status": status,
+        "duration_ms": max(0, duration_ms),
         "input": input_data,
         "output": output_data,
     }
@@ -53,100 +86,6 @@ def _document_key(document: dict) -> str:
 def _source_key(document: dict) -> str:
     metadata = document.get("metadata") or {}
     return str(metadata.get("file_id") or metadata.get("filename") or document.get("id") or "")
-
-
-def _is_uuid(value: str) -> bool:
-    try:
-        uuid.UUID(str(value))
-        return True
-    except (ValueError, TypeError, AttributeError):
-        return False
-
-
-def _query_requests_source_depth(query: str) -> bool:
-    normalized_query = "".join(str(query or "").lower().split())
-    return any(term in normalized_query for term in (
-        "哪些", "有哪些", "包含", "包括", "字段", "如何计算", "怎么计算", "公式", "权重", "步骤", "条件", "为什么",
-        "which", "list", "fields", "calculate", "formula", "steps", "conditions", "why",
-    ))
-
-
-def _source_depth_ids(query: str, documents: list[dict]) -> list[str]:
-    all_markers = {marker.lower() for marker in extract_exact_markers(query)}
-    query_markers = {
-        marker for marker in all_markers
-        if not any(marker != other and other.startswith(marker) for other in all_markers)
-    }
-    if not query_markers:
-        return []
-
-    filename_matching_ids: list[str] = []
-    content_matching_ids: list[str] = []
-    for document in documents:
-        metadata = document.get("metadata") or {}
-        filename = str(metadata.get("filename") or document.get("filename") or "").lower()
-        content = str(document.get("content") or "").lower()
-        file_id = str(metadata.get("file_id") or document.get("file_id") or "")
-        if not file_id:
-            continue
-        if any(marker in filename for marker in query_markers) and file_id not in filename_matching_ids:
-            filename_matching_ids.append(file_id)
-        elif any(marker in content for marker in query_markers) and file_id not in content_matching_ids:
-            content_matching_ids.append(file_id)
-    return filename_matching_ids or content_matching_ids
-
-
-def _depth_content_score(query: str, document: dict) -> int:
-    content = "".join(str(document.get("content") or "").lower().split())
-    normalized_query = "".join(str(query or "").lower().split())
-    query_terms: set[str] = set(re.findall(r"[a-z0-9][a-z0-9.+-]{1,}|[\u4e00-\u9fff]{2,}", normalized_query))
-    for token in list(query_terms):
-        if re.fullmatch(r"[\u4e00-\u9fff]{2,}", token):
-            for size in (2, 3, 4):
-                query_terms.update(token[index:index + size] for index in range(max(0, len(token) - size + 1)))
-    return sum(1 for term in query_terms if term and term in content)
-
-
-def _source_depth_documents(query: str, rows: list[dict]) -> list[dict]:
-    grouped: dict[str, list[dict]] = {}
-    for row in rows:
-        file_id = str(row.get("file_id") or (row.get("metadata") or {}).get("file_id") or "")
-        if file_id:
-            grouped.setdefault(file_id, []).append(row)
-
-    documents: list[dict] = []
-    for file_id, source_rows in grouped.items():
-        ordered_rows = sorted(
-            source_rows,
-            key=lambda item: (
-                -_depth_content_score(query, {"content": item.get("content")}),
-                int(item.get("chunk_index") or 0),
-            ),
-        )
-        first = ordered_rows[0]
-        metadata = dict(first.get("metadata") or {})
-        metadata.update({
-            "filename": first.get("filename") or metadata.get("filename"),
-            "file_id": file_id,
-            "chunk_index": None,
-            "project_space_id": str(first.get("project_space_id")) if first.get("project_space_id") else None,
-            "retrieval_mode": "source_depth",
-            "source_depth_chunk_count": len(ordered_rows),
-        })
-        content = "\n\n".join(
-            f"[Chunk {row.get('chunk_index')}]\n{str(row.get('content') or '').strip()}"
-            for row in ordered_rows
-            if str(row.get("content") or "").strip()
-        )
-        documents.append({
-            "id": f"source-depth:{file_id}",
-            "content": content,
-            "metadata": metadata,
-            "similarity": 0.0,
-            "retrieval_score": 0.0,
-            "retrieval_channels": ["source_depth"],
-        })
-    return documents
 
 
 def _retrieval_channel_summary(documents: list[dict]) -> dict:
@@ -172,133 +111,48 @@ def _retrieval_channel_summary(documents: list[dict]) -> dict:
         if source_key:
             source_ids.add(source_key)
 
+    channel_status = getattr(documents, "channel_status", None)
     return {
         "channel_counts": dict(sorted(channel_counts.items())),
         "mode_counts": dict(sorted(mode_counts.items())),
         "unique_source_count": len(source_ids),
+        **({"channel_status": dict(channel_status)} if isinstance(channel_status, dict) else {}),
+        "degraded": bool(getattr(documents, "degraded", False)),
     }
 
 
-def _document_facet(document: dict) -> str:
-    metadata = document.get("metadata") or {}
-    explicit_domain = str(metadata.get("source_domain") or "").strip().lower()
-    if explicit_domain:
-        return explicit_domain
-
-    filename = str(metadata.get("filename") or document.get("filename") or "").lower()
-    content = str(document.get("content") or "").lower()
-
-    filename_markers = [
-        ("model", ("model", "triage", "change", "feature", "模型", "特征")),
-        ("privacy", ("patient", "consent", "privacy", "cn-er", "eu-hds", "cross-border", "患者", "授权", "跨境")),
-        ("payment", ("payment", "insurance", "claim", "clinical", "lab", "quality", "医保", "支付", "临床", "检验", "质控")),
-        ("operations", ("sre", "incident", "observability", "cyber", "redteam", "事故", "安全", "观测")),
-        ("governance", ("governance", "audit", "retention", "board", "deprecation", "conflict", "vendor", "审计", "董事会", "法律保全", "废止")),
-        ("regional", ("regional", "appendix", "asia", "eu", "us-state", "区域", "附件", "欧盟", "亚洲")),
-    ]
-    for facet, markers in filename_markers:
-        if any(marker in filename for marker in markers):
-            return facet
-
-    content_markers = [
-        ("model", ("model", "模型", "triage", "change", "feature", "drift", "特征")),
-        ("privacy", ("patient", "consent", "privacy", "cn-er", "eu-hds", "cross-border", "患者", "授权", "跨境", "假名化")),
-        ("payment", ("payment", "insurance", "claim", "clinical", "lab", "quality", "医保", "支付", "临床", "检验", "质控")),
-        ("operations", ("sre", "incident", "observability", "cyber", "redteam", "事故", "扩容", "取证", "安全", "观测")),
-        ("governance", ("governance", "audit", "retention", "board", "deprecation", "conflict", "vendor", "审计", "董事会", "法律保全", "废止")),
-        ("regional", ("regional", "appendix", "asia", "eu", "us-state", "区域", "附件", "欧盟", "亚洲")),
-    ]
-
-    for facet, markers in content_markers:
-        if any(marker in content for marker in markers):
-            return facet
-    return "general"
+def _retrieval_trace_status(documents: list[dict]) -> str:
+    if bool(getattr(documents, "degraded", False)) or not documents:
+        return "partial"
+    return "success"
 
 
-def _select_diverse_documents(ranked_documents: list[dict], limit: int, query: str = "") -> list[dict]:
+def _select_diverse_documents(ranked_documents: list[dict], limit: int) -> list[dict]:
     if limit <= 0:
         return []
 
-    primary_documents = [document for document in ranked_documents if classify_source_role(document) != "evaluation_guide"]
-    guide_documents = [document for document in ranked_documents if classify_source_role(document) == "evaluation_guide"]
-    guide_requested = query_requests_evaluation_guide(query)
-    ordered_documents = ranked_documents if guide_requested else primary_documents + guide_documents
-    depth_requested = _query_requests_source_depth(query)
-    depth_slots = min(3, max(1, limit // 3)) if depth_requested and limit >= 3 else 0
-    unique_source_limit = max(1, limit - depth_slots)
-
     selected: list[dict] = []
-    selected_keys: set[str] = set()
     selected_document_keys: set[str] = set()
+    source_counts: dict[str, int] = {}
+    max_per_source = 1 if limit <= 2 else 2
 
-    if limit >= 4 and not guide_requested:
-        selected_facets: set[str] = set()
-        available_facets = {_document_facet(document) for document in primary_documents}
-        target_facet_count = min(unique_source_limit, len(available_facets), 6)
-        for document in primary_documents:
-            source_key = _source_key(document)
-            document_key = _document_key(document)
-            facet = _document_facet(document)
-            if (
-                source_key in selected_keys
-                or document_key in selected_document_keys
-                or facet in selected_facets
-            ):
-                continue
-            selected.append(document)
-            selected_keys.add(source_key)
-            selected_document_keys.add(document_key)
-            selected_facets.add(facet)
-            if len(selected) >= target_facet_count:
-                break
-
-    for document in ordered_documents:
+    for document in ranked_documents:
         source_key = _source_key(document)
         document_key = _document_key(document)
-        if source_key in selected_keys or document_key in selected_document_keys:
+        if document_key in selected_document_keys:
+            continue
+        count_key = source_key or f"document:{document_key}"
+        if source_counts.get(count_key, 0) >= max_per_source:
             continue
         selected.append(document)
-        selected_keys.add(source_key)
         selected_document_keys.add(document_key)
-        if len(selected) >= unique_source_limit:
-            break
+        source_counts[count_key] = source_counts.get(count_key, 0) + 1
+        if len(selected) >= limit:
+            return selected
 
-    if depth_slots:
-        query_markers = {marker.lower() for marker in extract_exact_markers(query)}
-        preferred_source_keys = {
-            _source_key(document)
-            for document in selected
-            if any(
-                marker in str((document.get("metadata") or {}).get("filename") or "").lower()
-                for marker in query_markers
-            )
-        }
-        ranked_depth_documents = sorted(
-            enumerate(ordered_documents),
-            key=lambda item: (-_depth_content_score(query, item[1]), item[0]),
-        )
-        depth_documents = [document for _, document in ranked_depth_documents]
-        for preferred_only in (True, False):
-            for document in depth_documents:
-                source_key = _source_key(document)
-                document_key = _document_key(document)
-                if source_key not in selected_keys:
-                    continue
-                if preferred_only and preferred_source_keys and source_key not in preferred_source_keys:
-                    continue
-                if not preferred_only and preferred_source_keys and source_key in preferred_source_keys:
-                    continue
-                if document_key in selected_document_keys:
-                    continue
-                selected.append(document)
-                selected_document_keys.add(document_key)
-                if len(selected) >= limit:
-                    return selected
-
-    if len(selected) >= limit:
-        return selected
-
-    for document in ordered_documents:
+    # Do not under-fill when all relevant evidence lives in one Markdown file.
+    # The final answer context remains bounded by the token packer.
+    for document in ranked_documents:
         document_key = _document_key(document)
         if document_key in selected_document_keys:
             continue
@@ -415,22 +269,43 @@ def _build_inventory_documents(files: list[dict]) -> list[dict]:
 
 def _classify_question(query: str) -> dict:
     normalized = "".join(query.lower().split())
-    relationship_terms = ("关系", "关联", "依赖", "影响", "链路", "为什么", "如何协作", "connect", "relate", "relationship", "depend")
-    comparison_terms = ("对比", "区别", "差异", "区分", "是否", "能否", "还是", "compare", "difference")
+    relationship_terms = ("关联", "依赖", "影响", "链路", "连接", "冲突", "替代", "协作", "配合", "隶属")
+    comparison_terms = ("对比", "区别", "差异", "区分", "是否", "能否", "还是")
+    relationship_match = (
+        any(term in normalized for term in relationship_terms)
+        # “关系型数据库” describes a category rather than an entity-to-entity
+        # relationship, so it must stay on the normal knowledge retrieval path.
+        or bool(re.search(r"关系(?!型)", normalized))
+        or bool(re.search(
+            r"(?:谁|哪些(?:服务|组件|模块|系统)?)(?:使用|生产|消费|配置|实现)(?:了)?|"
+            r"(?:由哪些|由什么)(?:服务|组件|模块|系统)?组成|"
+            r"\b(?:connect(?:s|ed|ing|ion|ions)?|relate[ds]?|related|relationship|relationships|"
+            r"depend(?:s|ed|ing)?|dependency|dependencies|conflict(?:s|ed|ing)?|"
+            r"replace(?:s|d)?|impact(?:s|ed|ing)?|collaborat(?:e|es|ed|ing|ion)|"
+            r"cooperat(?:e|es|ed|ing|ion)|uses|used|part\s+of|produces|consumes|configures|implements)\b",
+            query,
+            re.IGNORECASE,
+        ))
+    )
+    comparison_match = any(term in normalized for term in comparison_terms) or bool(re.search(
+        r"\b(?:compare[ds]?|comparing|difference|differences|distinguish(?:es|ed|ing)?)\b",
+        query,
+        re.IGNORECASE,
+    ))
     inventory = _looks_like_inventory_query(query)
 
     if inventory:
         intent_type = "inventory"
         complexity = "simple"
         routes = ["metadata"]
-    elif any(term in normalized for term in relationship_terms):
+    elif relationship_match:
         intent_type = "relationship"
         complexity = "multi_hop"
         routes = ["vector", "bm25", "graph"]
-    elif any(term in normalized for term in comparison_terms):
+    elif comparison_match:
         intent_type = "comparison"
         complexity = "multi_hop"
-        routes = ["vector", "bm25", "graph"]
+        routes = ["vector", "bm25"]
     else:
         intent_type = "knowledge_qa"
         complexity = "standard"
@@ -444,9 +319,12 @@ def _classify_question(query: str) -> dict:
 
 
 def _build_retry_query(query: str, intent: dict) -> str:
+    is_cjk = bool(re.search(r"[\u3400-\u9fff]", query))
     if intent.get("type") in {"relationship", "comparison"}:
-        return f"{query} 相关实体 关系 链路 背景"
-    return f"{query} 相关背景 具体说明 原文"
+        suffix = "相关实体 关系 链路 背景" if is_cjk else "related entities relationships dependencies context"
+        return f"{query} {suffix}"
+    suffix = "相关背景 具体说明 原文" if is_cjk else "related context detailed explanation source text"
+    return f"{query} {suffix}"
 
 
 def _inventory_quality(document_count: int) -> dict:
@@ -494,7 +372,7 @@ def _evaluate_cached_documents(
         return [], evaluate_retrieval_quality(query, [])
 
     ranked_documents = rerank_fn(query, documents)
-    selected_documents = _select_diverse_documents(ranked_documents, limit, query)
+    selected_documents = _select_diverse_documents(ranked_documents, limit)
     quality = evaluate_retrieval_quality(query, selected_documents)
     return selected_documents, quality
 
@@ -634,7 +512,151 @@ def _should_store_cache(quality: dict) -> bool:
 
 
 def default_rerank_documents(query: str, documents: list[dict]) -> list[dict]:
-    return rerank_documents(query, documents)
+    return rerank_with_provider(query, documents)
+
+
+def _reranker_cache_fingerprint(rerank_fn: RerankFn) -> str:
+    explicit = str(getattr(rerank_fn, "cache_fingerprint", "") or "").strip()
+    if explicit:
+        return explicit
+    if rerank_fn is default_rerank_documents:
+        return reranker_fingerprint()
+    module = str(getattr(rerank_fn, "__module__", "custom") or "custom")
+    qualified_name = str(
+        getattr(rerank_fn, "__qualname__", getattr(rerank_fn, "__name__", "anonymous"))
+        or "anonymous"
+    )
+    return f"custom:{module}.{qualified_name}"
+
+
+def _request_cache_fingerprint(
+    scope_fingerprint: str,
+    routes: list[str],
+    limit: int,
+    threshold: float,
+    rerank_fn: RerankFn,
+) -> str:
+    return build_retrieval_request_fingerprint(
+        scope_fingerprint=scope_fingerprint,
+        routes=routes,
+        limit=limit,
+        threshold=threshold,
+        reranker_fingerprint=_reranker_cache_fingerprint(rerank_fn),
+        query_rewriter_fingerprint=query_rewriter_fingerprint(),
+    )
+
+
+def _planned_queries(query: str, query_resolution: dict | None, max_queries: int = 3) -> list[str]:
+    candidates = [query, *((query_resolution or {}).get("semantic_alternatives") or []), *plan_queries(query, max_queries)]
+    planned: list[str] = []
+    identities: set[str] = set()
+    for candidate in candidates:
+        normalized = str(candidate or "").strip()
+        identity = normalize_query(normalized)
+        if not normalized or not identity or identity in identities:
+            continue
+        identities.add(identity)
+        planned.append(normalized)
+        if len(planned) >= max_queries:
+            break
+    return planned
+
+
+def _invoke_retriever(
+    retrieve_fn: RetrieveFn,
+    query: str,
+    user_id: str,
+    project_space_id: str | None,
+    limit: int,
+    threshold: float,
+    routes: list[str],
+) -> list[dict]:
+    """Pass routes to route-aware retrievers while preserving simple test adapters."""
+    try:
+        parameters = inspect.signature(retrieve_fn).parameters.values()
+        supports_routes = any(
+            parameter.name == "routes" or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except (TypeError, ValueError):
+        supports_routes = False
+
+    if supports_routes:
+        return retrieve_fn(
+            query,
+            user_id,
+            project_space_id,
+            limit,
+            threshold,
+            routes=routes,
+        )
+    return retrieve_fn(query, user_id, project_space_id, limit, threshold)
+
+
+def _retrieve_planned_queries(
+    queries: list[str],
+    user_id: str,
+    project_space_id: str | None,
+    limit: int,
+    threshold: float,
+    routes: list[str],
+    retrieve_fn: RetrieveFn,
+) -> list[dict]:
+    """Run bounded query variants concurrently and return deterministic results.
+
+    A failure in one variant is isolated so another useful variant can still
+    provide evidence. Results are sorted back into planner order before fusion.
+    """
+    if not queries:
+        return []
+
+    def run(index: int, planned_query: str) -> dict:
+        started_at = _now_ms()
+        try:
+            documents = _invoke_retriever(
+                retrieve_fn,
+                planned_query,
+                user_id,
+                project_space_id,
+                limit,
+                threshold,
+                routes,
+            )
+            return {
+                "index": index,
+                "query": planned_query,
+                "documents": documents,
+                "duration_ms": max(0, _now_ms() - started_at),
+                "error": None,
+            }
+        except Exception:
+            return {
+                "index": index,
+                "query": planned_query,
+                "documents": [],
+                "duration_ms": max(0, _now_ms() - started_at),
+                "error": "Retrieval failed",
+            }
+
+    max_workers = min(QUERY_PARALLELISM, len(queries))
+    if max_workers <= 1:
+        completed = [run(index, planned_query) for index, planned_query in enumerate(queries)]
+    else:
+        completed = []
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="rag-query") as executor:
+            futures = {
+                executor.submit(run, index, planned_query): index
+                for index, planned_query in enumerate(queries)
+            }
+            for future in as_completed(futures):
+                completed.append(future.result())
+
+    ordered = sorted(completed, key=lambda item: int(item["index"]))
+    if ordered and all(item.get("error") for item in ordered):
+        raise PlannedRetrievalUnavailableError(
+            f"All {len(ordered)} planned retrieval queries failed"
+        )
+    return ordered
 
 
 def _build_answer_guidance(quality: dict) -> tuple[bool, str]:
@@ -665,21 +687,35 @@ def _build_answer_guidance(quality: dict) -> tuple[bool, str]:
     )
 
 
-def agentic_retrieve(
+def _agentic_retrieve_impl(
     query: str,
     user_id: str,
     project_space_id: str | None = None,
     conversation_id: str | None = None,
+    query_resolution: dict | None = None,
     limit: int = 5,
     threshold: float = 0.1,
     retrieve_fn: RetrieveFn = retrieve_documents,
     rerank_fn: RerankFn = default_rerank_documents,
     inventory_fn: InventoryFn = list_files_for_inventory,
+    inventory_count_fn: InventoryCountFn | None = None,
     cache_store: RetrievalCacheStore | None = None,
-    source_depth_fn: SourceDepthFn = list_file_chunks_for_sources,
+    parent_depth_fn: ParentDepthFn = list_parent_chunks_for_matches,
 ) -> dict:
     run_id = str(uuid.uuid4())
     trace_steps: list[dict] = []
+    if query_resolution:
+        started_at = _now_ms()
+        trace_steps.append(_trace_step(
+            "conversation_query_resolve",
+            "success" if query_resolution.get("confidence") != "low" else "partial",
+            started_at,
+            {
+                "original_query": query_resolution.get("original_query"),
+                "context_turn_count": query_resolution.get("available_context_turns", 0),
+            },
+            query_resolution,
+        ))
 
     if _looks_like_inventory_query(query):
         intent = _classify_question(query)
@@ -696,22 +732,33 @@ def agentic_retrieve(
         started_at = _now_ms()
         files = inventory_fn(user_id, project_space_id, inventory_limit)
         documents = _build_inventory_documents(files)
-        inventory_total = len(files)
+        count_fn = inventory_count_fn or (count_files_for_inventory if inventory_fn is list_files_for_inventory else None)
+        inventory_total = count_fn(user_id, project_space_id) if count_fn else len(files)
+        inventory_truncated = inventory_total > len(files)
         trace_steps.append(_trace_step(
             "metadata_lookup",
             "success",
             started_at,
             {"user_id": user_id, "project_space_id": project_space_id, "limit": inventory_limit},
-            {"file_count": inventory_total, "complete_within_limit": inventory_total < inventory_limit},
+            {
+                "file_count": inventory_total,
+                "returned_count": len(files),
+                "complete_within_limit": not inventory_truncated,
+            },
         ))
 
         started_at = _now_ms()
         quality = _inventory_quality(len(documents))
         insufficient_evidence, answer_guidance = _build_answer_guidance(quality)
         if documents:
+            listing_guidance = (
+                f"当前只返回前 {len(documents)} 篇，必须明确说明清单已截断；"
+                if inventory_truncated
+                else "然后按文件名逐条列出所有已返回的文档；"
+            )
             answer_guidance = (
                 f"这是文档清单问题。请先明确回答当前知识库共 {inventory_total} 篇文档，"
-                "然后按文件名逐条列出所有已返回的文档；不要只列一部分，不要改写文件名。"
+                f"{listing_guidance}不要改写文件名。"
                 "如果用户询问上传了哪些文档，优先回答文档清单，而不是做内容摘要。"
             )
         trace_steps.append(_trace_step(
@@ -725,6 +772,7 @@ def agentic_retrieve(
         return {
             "run_id": run_id,
             "mode": "metadata_inventory",
+            "query_resolution": query_resolution,
             "intent": intent,
             "planned_queries": [query],
             "results": documents,
@@ -732,6 +780,8 @@ def agentic_retrieve(
             "quality": quality,
             "inventory_total": inventory_total,
             "inventory_limit": inventory_limit,
+            "inventory_returned": len(files),
+            "inventory_truncated": inventory_truncated,
             "insufficient_evidence": insufficient_evidence,
             "answer_guidance": answer_guidance,
         }
@@ -762,17 +812,29 @@ def agentic_retrieve(
         "success",
         started_at,
         {"intent": intent["type"], "complexity": intent["complexity"]},
-        {"routes": intent["routes"]},
+        {
+            "routes": intent["routes"],
+            "graph_extraction_mode": (
+                "not_routed"
+                if "graph" not in intent["routes"]
+                else "llm_primary_with_rule_fallback"
+                if settings.graph_extraction_enabled
+                else "rules_fallback"
+            ),
+        },
     ))
 
     started_at = _now_ms()
-    planned_queries = plan_queries(query, max_queries=3)
+    planned_queries = _planned_queries(query, query_resolution, max_queries=3)
     trace_steps.append(_trace_step(
         "query_rewrite",
         "success",
         started_at,
         {"query": query, "max_queries": 3},
-        {"planned_queries": planned_queries},
+        {
+            "planned_queries": planned_queries,
+            "semantic_rewrite": (query_resolution or {}).get("semantic_rewrite") or {},
+        },
     ))
 
     merged_by_key: dict[str, dict] = {}
@@ -785,7 +847,14 @@ def agentic_retrieve(
         started_at = _now_ms()
         try:
             scope = cache_store.get_scope(user_id, project_space_id)
-            scope_fingerprint = str(scope.get("fingerprint") or "")
+            base_scope_fingerprint = str(scope.get("fingerprint") or "")
+            scope_fingerprint = _request_cache_fingerprint(
+                base_scope_fingerprint,
+                intent["routes"],
+                limit,
+                threshold,
+                rerank_fn,
+            )
             exact_entry = cache_store.find_exact(
                 user_id,
                 project_space_id,
@@ -793,15 +862,8 @@ def agentic_retrieve(
                 scope_fingerprint,
                 normalized_query,
             )
-            similar_entry = None if exact_entry else cache_store.find_similar(
-                user_id,
-                project_space_id,
-                conversation_id,
-                scope_fingerprint,
-                normalized_query,
-                min_similarity=SIMILAR_QUERY_THRESHOLD,
-            )
-            conversation_entry = None if exact_entry or similar_entry or not conversation_id else cache_store.find_conversation_evidence(
+            record_cache_metric("exact_hit" if exact_entry else "exact_miss")
+            conversation_entry = None if exact_entry or not conversation_id else cache_store.find_conversation_evidence(
                 user_id,
                 project_space_id,
                 conversation_id,
@@ -809,8 +871,9 @@ def agentic_retrieve(
                 normalized_query,
                 min_similarity=CONVERSATION_EVIDENCE_THRESHOLD,
             )
-            cache_entry = exact_entry or similar_entry or conversation_entry
-            hit_type = "exact" if exact_entry else "similar" if similar_entry else "conversation" if conversation_entry else None
+            cache_entry = exact_entry or conversation_entry
+            hit_type = "exact" if exact_entry else "conversation" if conversation_entry else None
+            lookup_duration_ms = max(0, _now_ms() - started_at)
             trace_steps.append(_trace_step(
                 "cache_lookup",
                 "success",
@@ -826,6 +889,8 @@ def agentic_retrieve(
                     "scope_fingerprint": scope_fingerprint,
                     "hit_type": hit_type,
                     "query_similarity": (cache_entry or {}).get("query_similarity"),
+                    "lookup_duration_ms": lookup_duration_ms,
+                    "similar_query_policy": "disabled_for_short_circuit",
                 },
             ))
 
@@ -853,10 +918,15 @@ def agentic_retrieve(
                     verification,
                 ))
                 reusable = (
-                    cache_entry_is_reusable(cache_entry, cached_quality, query_similarity)
+                    hit_type == "exact"
+                    and cache_entry_is_reusable(cache_entry, cached_quality, query_similarity)
                     and verification.get("cache_reuse_allowed") is True
                 )
                 if reusable:
+                    saved_retrieval_queries = len(planned_queries)
+                    saved_channel_calls = saved_retrieval_queries * len(intent["routes"])
+                    record_cache_metric("saved_retrieval_queries", saved_retrieval_queries)
+                    record_cache_metric("saved_channel_calls", saved_channel_calls)
                     _safe_cache_side_effect(
                         trace_steps,
                         "record_hit",
@@ -893,6 +963,12 @@ def agentic_retrieve(
                         scope_fingerprint=scope_fingerprint,
                         reused_count=len(cached_documents),
                         query_similarity=query_similarity,
+                        reason="exact_evidence_verified",
+                        skipped_retrieve=True,
+                        saved_retrieval_queries=saved_retrieval_queries,
+                        saved_channel_calls=saved_channel_calls,
+                        lookup_duration_ms=lookup_duration_ms,
+                        metrics=cache_metrics_snapshot(),
                     )
                     trace_steps.append(_trace_step(
                         "evidence_reuse",
@@ -913,6 +989,7 @@ def agentic_retrieve(
                     return {
                         "run_id": run_id,
                         "mode": "agentic",
+                        "query_resolution": query_resolution,
                         "intent": intent,
                         "planned_queries": planned_queries,
                         "results": cached_documents,
@@ -923,13 +1000,23 @@ def agentic_retrieve(
                         "cache": cache_info,
                     }
 
-                _merge_documents(merged_by_key, cached_documents, query, cache_source=hit_type or "cache")
+                rejection_reason = (
+                    "conversation_evidence_candidate_only"
+                    if hit_type == "conversation"
+                    else "exact_evidence_verification_rejected"
+                )
+                record_cache_metric(
+                    "conversation_candidate" if hit_type == "conversation" else "exact_rejected"
+                )
                 cache_info = _cache_summary(
                     "partial",
                     hit_type=hit_type,
                     scope_fingerprint=scope_fingerprint,
                     reused_count=len(cached_documents),
                     query_similarity=query_similarity,
+                    reason=rejection_reason,
+                    skipped_retrieve=False,
+                    lookup_duration_ms=lookup_duration_ms,
                 )
                 trace_steps.append(_trace_step(
                     "evidence_reuse",
@@ -943,13 +1030,26 @@ def agentic_retrieve(
                     {
                         "reused_count": len(cached_documents),
                         "skipped_retrieve": False,
+                        "reason": rejection_reason,
                         **cached_quality,
                     },
                 ))
             else:
-                cache_info = _cache_summary("miss", scope_fingerprint=scope_fingerprint)
+                cache_info = _cache_summary(
+                    "miss",
+                    scope_fingerprint=scope_fingerprint,
+                    reason="exact_not_found",
+                    skipped_retrieve=False,
+                    lookup_duration_ms=lookup_duration_ms,
+                )
         except Exception:
-            cache_info = _cache_summary("disabled", error="Cache lookup failed")
+            record_cache_metric("lookup_bypass")
+            cache_info = _cache_summary(
+                "bypass",
+                reason="lookup_error",
+                skipped_retrieve=False,
+                error="Cache lookup failed",
+            )
             trace_steps.append(_trace_step(
                 "cache_lookup",
                 "partial",
@@ -959,6 +1059,7 @@ def agentic_retrieve(
             ))
 
     retrieve_limit = min(max(limit * 2, limit), 20)
+    queries_to_retrieve: list[str] = []
     for planned_query in planned_queries:
         if cache_store and scope_fingerprint:
             normalized_planned_query = normalize_query(planned_query)
@@ -970,7 +1071,6 @@ def agentic_retrieve(
                     conversation_id,
                     scope_fingerprint,
                     normalized_planned_query,
-                    min_similarity=SIMILAR_QUERY_THRESHOLD,
                 )
                 if subquery_entry:
                     subquery_documents, subquery_quality = _evaluate_cached_documents(
@@ -1025,6 +1125,8 @@ def agentic_retrieve(
                             scope_fingerprint=scope_fingerprint,
                             reused_count=int(cache_info.get("reused_count") or 0) + len(subquery_documents),
                             query_similarity=cache_info.get("query_similarity"),
+                            reason="exact_subquery_reused",
+                            skipped_retrieve=False,
                         )
                         trace_steps.append(_trace_step(
                             "subquery_cache_hit",
@@ -1065,22 +1167,49 @@ def agentic_retrieve(
                     {"query": planned_query},
                     {"error": "Subquery cache lookup failed"},
                 ))
+        queries_to_retrieve.append(planned_query)
 
-        started_at = _now_ms()
-        documents = retrieve_fn(planned_query, user_id, project_space_id, retrieve_limit, threshold)
-        trace_steps.append(_trace_step(
+    retrieval_outcomes = _retrieve_planned_queries(
+        queries_to_retrieve,
+        user_id,
+        project_space_id,
+        retrieve_limit,
+        threshold,
+        intent["routes"],
+        retrieve_fn,
+    )
+    retrieval_degraded = False
+    for outcome in retrieval_outcomes:
+        planned_query = str(outcome["query"])
+        documents = outcome["documents"]
+        error = outcome.get("error")
+        retrieval_summary = {
+            "hit_count": len(documents),
+            "top_similarity": max([float(doc.get("similarity") or 0) for doc in documents] or [0]),
+            "parallelism": min(QUERY_PARALLELISM, len(queries_to_retrieve)),
+            **_retrieval_channel_summary(documents),
+        }
+        if error:
+            retrieval_summary["error"] = error
+        if error or bool(getattr(documents, "degraded", False)):
+            retrieval_degraded = True
+        trace_steps.append(_completed_trace_step(
             "retrieve",
-            "success",
-            started_at,
-            {"query": planned_query, "limit": retrieve_limit, "threshold": threshold},
+            "failed" if error else _retrieval_trace_status(documents),
+            int(outcome["duration_ms"]),
             {
-                "hit_count": len(documents),
-                "top_similarity": max([float(doc.get("similarity") or 0) for doc in documents] or [0]),
-                **_retrieval_channel_summary(documents),
+                "query": planned_query,
+                "limit": retrieve_limit,
+                "threshold": threshold,
+                "routes": intent["routes"],
             },
+            retrieval_summary,
         ))
+        if error:
+            continue
 
         if cache_store and scope_fingerprint:
+            cache_started_at = _now_ms()
             try:
                 subquery_quality = evaluate_retrieval_quality(planned_query, documents)
                 subquery_quality, _ = _quality_with_verification(planned_query, documents, subquery_quality)
@@ -1108,66 +1237,80 @@ def agentic_retrieve(
                 trace_steps.append(_trace_step(
                     "cache_write",
                     "partial",
-                    started_at,
+                    cache_started_at,
                     {"cache_kind": "subquery", "query": planned_query},
                     {"stored": False, "error": "Cache write failed"},
                 ))
 
         _merge_documents(merged_by_key, documents, planned_query)
 
+    preliminary_verification = verify_evidence_support(query, list(merged_by_key.values()))
+    retry_reasons: list[str] = []
     if not merged_by_key:
+        retry_reasons.append("no_candidates")
+    if preliminary_verification.get("support_label") == "unsupported":
+        retry_reasons.append("unsupported_candidates")
+    if preliminary_verification.get("missing_markers"):
+        retry_reasons.append("missing_required_markers")
+    if retrieval_degraded:
+        retry_reasons.append("retrieval_degraded")
+
+    if retry_reasons:
         retry_query = _build_retry_query(query, intent)
-        planned_queries.append(retry_query)
+        if retry_query not in planned_queries:
+            planned_queries.append(retry_query)
         started_at = _now_ms()
-        documents = retrieve_fn(retry_query, user_id, project_space_id, retrieve_limit, threshold)
+        retry_error = None
+        try:
+            documents = _invoke_retriever(
+                retrieve_fn,
+                retry_query,
+                user_id,
+                project_space_id,
+                retrieve_limit,
+                max(0.0, threshold * 0.5),
+                intent["routes"],
+            )
+        except Exception:
+            documents = []
+            retry_error = "Retrieval retry failed"
         trace_steps.append(_trace_step(
             "retrieve_retry",
-            "success" if documents else "partial",
+            "failed" if retry_error else _retrieval_trace_status(documents),
             started_at,
-            {"query": retry_query, "limit": retrieve_limit, "threshold": threshold},
+            {
+                "query": retry_query,
+                "limit": retrieve_limit,
+                "threshold": max(0.0, threshold * 0.5),
+                "routes": intent["routes"],
+                "reasons": sorted(set(retry_reasons)),
+            },
             {
                 "hit_count": len(documents),
                 "top_similarity": max([float(doc.get("similarity") or 0) for doc in documents] or [0]),
                 **_retrieval_channel_summary(documents),
+                **({"error": retry_error} if retry_error else {}),
             },
         ))
         _merge_documents(merged_by_key, documents, retry_query)
 
-    source_depth_ids = _source_depth_ids(query, list(merged_by_key.values()))
-    if source_depth_fn is list_file_chunks_for_sources:
-        source_depth_ids = [
-            file_id for file_id in source_depth_ids
-            if _is_uuid(file_id)
-        ]
-    if source_depth_ids:
-        started_at = _now_ms()
-        depth_rows = source_depth_fn(
-            user_id,
-            project_space_id,
-            source_depth_ids,
-            SOURCE_DEPTH_CHUNK_LIMIT,
-        )
-        depth_documents = _source_depth_documents(query, depth_rows)
-        for document_key, document in list(merged_by_key.items()):
-            if _source_key(document) in source_depth_ids:
-                del merged_by_key[document_key]
-        _merge_documents(merged_by_key, depth_documents, query)
-        trace_steps.append(_trace_step(
-            "source_depth",
-            "success" if depth_documents else "partial",
-            started_at,
-            {
-                "file_ids": source_depth_ids,
-                "project_space_id": project_space_id,
-                "limit": SOURCE_DEPTH_CHUNK_LIMIT,
-            },
-            {"chunk_count": len(depth_rows), "bundle_count": len(depth_documents)},
-        ))
-
     started_at = _now_ms()
-    reranker_name = "local-evidence" if rerank_fn is default_rerank_documents else "custom"
+    reranker_name = (
+        settings.reranker_model
+        if rerank_fn is default_rerank_documents and settings.reranker_enabled
+        else LOCAL_RERANKER_VERSION
+        if rerank_fn is default_rerank_documents
+        else "custom"
+    )
+    reranker_mode = (
+        "provider_after_rrf"
+        if rerank_fn is default_rerank_documents and settings.reranker_enabled
+        else "deterministic_local_evidence"
+        if rerank_fn is default_rerank_documents
+        else "custom"
+    )
     ranked_documents = rerank_fn(query, list(merged_by_key.values()))
-    selected_documents = _select_diverse_documents(ranked_documents, limit, query)
+    selected_documents = _select_diverse_documents(ranked_documents, limit)
     trace_steps.append(_trace_step(
         "rerank",
         "success",
@@ -1175,6 +1318,7 @@ def agentic_retrieve(
         {"candidate_count": len(ranked_documents), "limit": limit},
         {
             "reranker": reranker_name,
+            "reranker_mode": reranker_mode,
             "selected_count": len(selected_documents),
             "selected_ids": [document.get("id") for document in selected_documents],
             "selected_sources": [
@@ -1189,6 +1333,56 @@ def agentic_retrieve(
             ],
         },
     ))
+
+    parent_candidates = [
+        document
+        for document in selected_documents
+        if str((document.get("metadata") or {}).get("parent_section_id") or "").strip()
+    ]
+    if parent_candidates:
+        started_at = _now_ms()
+        try:
+            parent_rows = parent_depth_fn(
+                user_id,
+                project_space_id,
+                parent_candidates,
+                PARENT_SECTION_LIMIT,
+                PARENT_SECTION_CHUNK_LIMIT,
+            )
+            expanded_documents = build_parent_section_documents(
+                selected_documents,
+                parent_rows,
+                max_parent_chars=PARENT_SECTION_MAX_CHARS,
+            )
+            expanded_count = sum(1 for document in expanded_documents if document.get("parent_child") is True)
+            selected_documents = expanded_documents
+            trace_steps.append(_trace_step(
+                "parent_expand",
+                "success" if expanded_count else "partial",
+                started_at,
+                {
+                    "matched_child_count": len(parent_candidates),
+                    "max_parents": PARENT_SECTION_LIMIT,
+                    "max_chunks_per_parent": PARENT_SECTION_CHUNK_LIMIT,
+                },
+                {
+                    "loaded_chunk_count": len(parent_rows),
+                    "expanded_parent_count": expanded_count,
+                    "context_document_count": len(selected_documents),
+                },
+            ))
+        except Exception:
+            trace_steps.append(_trace_step(
+                "parent_expand",
+                "partial",
+                started_at,
+                {"matched_child_count": len(parent_candidates)},
+                {
+                    "expanded_parent_count": 0,
+                    "context_document_count": len(selected_documents),
+                    "error": "Parent expansion failed; ranked child evidence was retained",
+                },
+            ))
 
     started_at = _now_ms()
     quality = evaluate_retrieval_quality(query, selected_documents)
@@ -1250,9 +1444,11 @@ def agentic_retrieve(
                 ),
             )
 
+    cache_info["metrics"] = cache_metrics_snapshot()
     return {
         "run_id": run_id,
         "mode": "agentic",
+        "query_resolution": query_resolution,
         "intent": intent,
         "planned_queries": planned_queries,
         "results": selected_documents,
@@ -1262,3 +1458,141 @@ def agentic_retrieve(
         "answer_guidance": answer_guidance,
         "cache": cache_info,
     }
+
+
+def agentic_retrieve(
+    query: str,
+    user_id: str,
+    project_space_id: str | None = None,
+    conversation_id: str | None = None,
+    conversation_context: list[dict] | None = None,
+    limit: int = 5,
+    threshold: float = 0.1,
+    retrieve_fn: RetrieveFn = retrieve_documents,
+    rerank_fn: RerankFn = default_rerank_documents,
+    inventory_fn: InventoryFn = list_files_for_inventory,
+    inventory_count_fn: InventoryCountFn | None = None,
+    cache_store: RetrievalCacheStore | None = None,
+    parent_depth_fn: ParentDepthFn = list_parent_chunks_for_matches,
+) -> dict:
+    """Coordinate identical exact-cache misses before running retrieval.
+
+    The lease is only a short-lived cache-fill lock. A timeout or Redis error
+    always continues with normal retrieval and never changes business state.
+    """
+
+    deterministic_resolution = resolve_standalone_query(query, conversation_context)
+    query_resolution = rewrite_query_resolution(deterministic_resolution, conversation_context)
+    query_resolution["available_context_turns"] = len(conversation_context or [])
+    retrieval_query = str(query_resolution.get("standalone_query") or query)
+    implementation_args = (
+        retrieval_query,
+        user_id,
+        project_space_id,
+        conversation_id,
+        query_resolution,
+        limit,
+        threshold,
+        retrieve_fn,
+        rerank_fn,
+        inventory_fn,
+        inventory_count_fn,
+        cache_store,
+        parent_depth_fn,
+    )
+    if not cache_store or _looks_like_inventory_query(retrieval_query):
+        return _agentic_retrieve_impl(*implementation_args)
+
+    acquire = getattr(cache_store, "acquire_singleflight", None)
+    wait_for_fill = getattr(cache_store, "wait_for_singleflight", None)
+    release = getattr(cache_store, "release_singleflight", None)
+    if not callable(acquire) or not callable(wait_for_fill) or not callable(release):
+        return _agentic_retrieve_impl(*implementation_args)
+
+    coordination_started_at = _now_ms()
+    lease: dict | None = None
+    coordination = {"role": "bypass", "reason": "coordination_unavailable"}
+    normalized_query = normalize_query(retrieval_query)
+    try:
+        intent = _classify_question(retrieval_query)
+        scope = cache_store.get_scope(user_id, project_space_id)
+        scope_fingerprint = _request_cache_fingerprint(
+            str(scope.get("fingerprint") or ""),
+            intent["routes"],
+            limit,
+            threshold,
+            rerank_fn,
+        )
+        existing = cache_store.find_exact(
+            user_id,
+            project_space_id,
+            conversation_id,
+            scope_fingerprint,
+            normalized_query,
+        )
+        if existing:
+            return _agentic_retrieve_impl(*implementation_args)
+
+        lease = acquire(
+            user_id,
+            project_space_id,
+            scope_fingerprint,
+            normalized_query,
+        ) or {"role": "bypass", "reason": "coordination_unavailable"}
+        coordination = dict(lease)
+        role = str(lease.get("role") or "bypass")
+        if role == "leader":
+            record_cache_metric("singleflight_leader")
+        elif role == "waiter":
+            record_cache_metric("singleflight_waiter")
+            waited_entry = wait_for_fill(
+                user_id,
+                project_space_id,
+                scope_fingerprint,
+                normalized_query,
+                wait_ms=lease.get("wait_ms"),
+            )
+            if waited_entry:
+                coordination["outcome"] = "coalesced_hit"
+                record_cache_metric("singleflight_coalesced")
+            else:
+                coordination["outcome"] = "timeout_fallback"
+                record_cache_metric("singleflight_timeout")
+        else:
+            record_cache_metric("singleflight_bypass")
+    except Exception:
+        coordination = {"role": "bypass", "reason": "coordination_error"}
+        record_cache_metric("singleflight_bypass")
+
+    try:
+        result = _agentic_retrieve_impl(*implementation_args)
+    finally:
+        if lease and lease.get("role") == "leader":
+            try:
+                release(lease)
+            except Exception:
+                record_cache_metric("singleflight_release_error")
+
+    if isinstance(result, dict):
+        duration_ms = max(0, _now_ms() - coordination_started_at)
+        public_coordination = {
+            "role": coordination.get("role"),
+            "outcome": coordination.get("outcome"),
+            "reason": coordination.get("reason"),
+            "wait_ms": duration_ms if coordination.get("role") == "waiter" else 0,
+        }
+        result.setdefault("trace_steps", []).append(_trace_step(
+            "cache_singleflight",
+            "partial" if public_coordination["outcome"] == "timeout_fallback" else "success",
+            coordination_started_at,
+            {
+                "user_id": user_id,
+                "project_space_id": project_space_id,
+                "normalized_query": normalized_query,
+            },
+            public_coordination,
+        ))
+        cache_info = result.setdefault("cache", _cache_summary("disabled"))
+        cache_info["singleflight"] = public_coordination
+        cache_info["metrics"] = cache_metrics_snapshot()
+    return result
