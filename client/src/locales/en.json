@@ -107,6 +107,8 @@
     "searchingWorkspaceDocuments": "Searching workspace documents...",
     "loadingContent": "Loading content...",
     "ragRetrievalFailed": "Workspace document retrieval failed. No answer was generated without evidence; please retry.",
+    "generationFailed": "Answer generation failed.",
+    "generationFailedRetryable": "Answer generation failed. Please retry.",
     "sources": "Sources & References",
     "viewOriginalDocument": "View original",
     "ragQuality": "RAG quality",

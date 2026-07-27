@@ -6,8 +6,12 @@ const apiMock = vi.hoisted(() => ({
   patch: vi.fn(),
   delete: vi.fn(),
 }));
+const authenticatedFetchMock = vi.hoisted(() => vi.fn());
 
-vi.mock('../lib/api', () => ({ default: apiMock }));
+vi.mock('../lib/api', () => ({
+  default: apiMock,
+  authenticatedFetch: authenticatedFetchMock,
+}));
 vi.mock('../i18n', () => ({
   default: { t: (key: string) => key },
 }));
@@ -53,6 +57,9 @@ beforeEach(() => {
   resetStore();
   vi.clearAllMocks();
   vi.unstubAllGlobals();
+  authenticatedFetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => (
+    fetch(input, init)
+  ));
 });
 
 describe('conversation request isolation', () => {
@@ -210,7 +217,9 @@ describe('conversation request isolation', () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await useChatStore.getState().selectConversation('conversation-b');
 
-    streamController.enqueue(new TextEncoder().encode('data: {"content":"answer A"}\n\n'));
+    streamController.enqueue(new TextEncoder().encode(
+      'data: {"content":"answer A"}\n\ndata: [DONE]\n\n',
+    ));
     streamController.close();
     await send;
 
@@ -220,11 +229,11 @@ describe('conversation request isolation', () => {
     expect(state.messagesCache['conversation-a'].at(-1)?.content).toBe('answer A');
   });
 
-  test('fail-closed RAG SSE leaves an explicit retryable error and no generated answer', async () => {
+  test('fail-closed RAG SSE rejects visibly and removes the empty assistant placeholder', async () => {
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(new TextEncoder().encode(
-          'data: {"ragError":{"code":"rag_retrieval_unavailable","retryable":true}}\n\ndata: [DONE]\n\n'
+          'data: {"ragError":{"code":"rag_retrieval_unavailable","message":"Workspace retrieval failed","retryable":true}}\n\ndata: [DONE]\n\n'
         ));
         controller.close();
       },
@@ -241,12 +250,75 @@ describe('conversation request isolation', () => {
       messagesCache: { 'conversation-a': [] },
     });
 
-    await useChatStore.getState().sendMessage('knowledge question');
+    await expect(useChatStore.getState().sendMessage('knowledge question')).rejects.toMatchObject({
+      name: 'ChatStreamError',
+      code: 'rag_retrieval_unavailable',
+      message: 'Workspace retrieval failed',
+      retryable: true,
+    });
 
-    const assistant = useChatStore.getState().messagesCache['conversation-a'].at(-1);
-    expect(assistant?.content).toBe('');
-    expect(assistant?.ragWarning).toBe(true);
-    expect(assistant?.ragError).toEqual({ code: 'rag_retrieval_unavailable', retryable: true });
+    const state = useChatStore.getState();
+    expect(state.messagesCache['conversation-a'].map((item) => item.role)).toEqual(['user']);
+    expect(state.messagesCache['conversation-a'].some((item) => item.content === '')).toBe(false);
+    expect(state.sendingMessage).toBe(false);
+  });
+
+  test('a formal stream error removes a partial assistant answer and rejects with its public message', async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"content":"partial answer"}\n\ndata: {"error":{"code":"chat_stream_failed","message":"Generation failed. Please retry.","retryable":true}}\n\n',
+        ));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      statusText: 'OK',
+      body: stream,
+    } as Response)));
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [],
+      messagesCache: { 'conversation-a': [] },
+    });
+
+    await expect(useChatStore.getState().sendMessage('question')).rejects.toMatchObject({
+      name: 'ChatStreamError',
+      code: 'chat_stream_failed',
+      message: 'Generation failed. Please retry.',
+      retryable: true,
+    });
+
+    const state = useChatStore.getState();
+    expect(state.messagesCache['conversation-a'].map((item) => item.content)).toEqual(['question']);
+    expect(state.sendingMessage).toBe(false);
+  });
+
+  test('a failed continuation restores the complete assistant message from before the stream', async () => {
+    const originalAssistant = message('assistant-original', 'complete original answer');
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(
+          'data: {"content":" partial continuation"}\n\ndata: {"error":{"code":"chat_stream_failed","message":"Continuation failed","retryable":true}}\n\n',
+        ));
+        controller.close();
+      },
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, body: stream } as Response)));
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [originalAssistant],
+      messagesCache: { 'conversation-a': [originalAssistant] },
+    });
+
+    await expect(useChatStore.getState().sendMessage('Continue', true)).rejects.toMatchObject({
+      code: 'chat_stream_failed',
+      message: 'Continuation failed',
+    });
+
+    expect(useChatStore.getState().messagesCache['conversation-a']).toEqual([originalAssistant]);
+    expect(useChatStore.getState().sendingMessage).toBe(false);
   });
 
   test('switching back to an active stream keeps its live cache instead of fetching stale history', async () => {
@@ -341,7 +413,17 @@ describe('conversation request isolation', () => {
     expect(requests[0].signal.aborted).toBe(true);
     expect(requests[1].signal.aborted).toBe(false);
 
-    requests.forEach((request) => request.resolve({ ok: true, body: null } as Response));
+    requests.forEach((request) => request.resolve({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"content":"answer"}\n\ndata: [DONE]\n\n',
+          ));
+          controller.close();
+        },
+      }),
+    } as Response));
     await Promise.all([sendA, sendB]);
   });
 
@@ -368,9 +450,13 @@ describe('conversation request isolation', () => {
     const newerSend = useChatStore.getState().sendMessage('newer question');
     await vi.waitFor(() => expect(streamControllers).toHaveLength(2));
 
-    streamControllers[0].enqueue(new TextEncoder().encode('data: {"content":"stale answer"}\n\n'));
+    streamControllers[0].enqueue(new TextEncoder().encode(
+      'data: {"content":"stale answer"}\n\ndata: [DONE]\n\n',
+    ));
     streamControllers[0].close();
-    streamControllers[1].enqueue(new TextEncoder().encode('data: {"content":"current answer"}\n\n'));
+    streamControllers[1].enqueue(new TextEncoder().encode(
+      'data: {"content":"current answer"}\n\ndata: [DONE]\n\n',
+    ));
     streamControllers[1].close();
     await Promise.all([olderSend, newerSend]);
 
@@ -571,7 +657,17 @@ describe('conversation regeneration', () => {
     const fetchMock = vi.fn<(
       url: string | URL | Request,
       init?: RequestInit,
-    ) => Promise<Response>>().mockResolvedValue({ ok: true, body: null } as Response);
+    ) => Promise<Response>>().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"content":"regenerated"}\n\ndata: [DONE]\n\n',
+          ));
+          controller.close();
+        },
+      }),
+    } as Response);
     vi.stubGlobal('fetch', fetchMock);
     useChatStore.setState({
       currentConversationId: 'conversation-a',
@@ -602,7 +698,17 @@ describe('conversation regeneration', () => {
     const fetchMock = vi.fn<(
       url: string | URL | Request,
       init?: RequestInit,
-    ) => Promise<Response>>().mockResolvedValue({ ok: true, body: null } as Response);
+    ) => Promise<Response>>().mockResolvedValue({
+      ok: true,
+      body: new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"content":"regenerated"}\n\ndata: [DONE]\n\n',
+          ));
+          controller.close();
+        },
+      }),
+    } as Response);
     vi.stubGlobal('fetch', fetchMock);
     useChatStore.setState({
       currentConversationId: 'conversation-a',

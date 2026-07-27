@@ -1,17 +1,16 @@
-import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { useEffect, useMemo, useState, useRef } from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore, type Conversation } from '../stores/useChatStore';
 import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
-import api from '../lib/api';
 import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
 import { useProjectSpaceStore, type ProjectSpace } from '../stores/useProjectSpaceStore';
 import { getAvatarUrl } from '../lib/avatar';
-import { isRequestAbortError, RequestGenerationGuard } from '../stores/requestGeneration';
+import { useKnowledgeFilesStore } from '../stores/useKnowledgeFilesStore';
 
 export default function MainLayout() {
   const { t } = useTranslation();
@@ -41,7 +40,8 @@ export default function MainLayout() {
     selectConversation,
   } = useChatStore();
 
-  const [knowledgeFiles, setKnowledgeFiles] = useState<{ filename: string; uploaded_at: string }[]>([]);
+  const knowledgeFileCount = useKnowledgeFilesStore((state) => state.files.length);
+  const fetchKnowledgeFiles = useKnowledgeFilesStore((state) => state.fetchFiles);
   const [deleteId, setDeleteId] = useState<string | null>(null);
 
   // Mobile Sidebar State
@@ -71,12 +71,6 @@ export default function MainLayout() {
   const [conversationFilter, setConversationFilter] = useState<'active' | 'archived'>('active');
   const [isWorkspaceBrowserOpen, setIsWorkspaceBrowserOpen] = useState(false);
   const [isConversationBrowserOpen, setIsConversationBrowserOpen] = useState(false);
-  const knowledgeRequestGuardRef = useRef<RequestGenerationGuard | null>(null);
-  if (!knowledgeRequestGuardRef.current) {
-    knowledgeRequestGuardRef.current = new RequestGenerationGuard();
-  }
-  const knowledgeRequestGuard = knowledgeRequestGuardRef.current;
-
   const baseProjectConversations = useMemo(
     () => conversations
       .filter((conv) => conv.project_space_id === currentProjectSpaceId)
@@ -109,23 +103,6 @@ export default function MainLayout() {
   const userDisplayName = user?.display_name || user?.username || 'User';
   const userAvatarUrl = getAvatarUrl(user?.avatar_url, userDisplayName, 64);
 
-  const fetchKnowledgeFiles = useCallback(async () => {
-    const ticket = knowledgeRequestGuard.begin('knowledge-files');
-    try {
-      const res = await api.get('/upload/files', {
-        params: { projectSpaceId: currentProjectSpaceId || undefined },
-        signal: ticket.controller.signal,
-      });
-      if (knowledgeRequestGuard.isCurrent(ticket)) setKnowledgeFiles(res.data);
-    } catch (err) {
-      if (knowledgeRequestGuard.isCurrent(ticket) && !isRequestAbortError(err)) {
-        console.error('Failed to fetch knowledge files:', toSafeError(err));
-      }
-    } finally {
-      knowledgeRequestGuard.finish(ticket);
-    }
-  }, [currentProjectSpaceId, knowledgeRequestGuard]);
-
   useEffect(() => {
     const initData = async () => {
       await fetchProjectSpaces();
@@ -135,18 +112,8 @@ export default function MainLayout() {
   }, [fetchConversations, fetchProjectSpaces]);
 
   useEffect(() => {
-    void Promise.resolve().then(() => fetchKnowledgeFiles());
-
-    const handleKnowledgeUpdate = () => {
-      fetchKnowledgeFiles();
-    };
-    window.addEventListener('knowledge-updated', handleKnowledgeUpdate);
-
-    return () => {
-      window.removeEventListener('knowledge-updated', handleKnowledgeUpdate);
-      knowledgeRequestGuard.abort('knowledge-files');
-    };
-  }, [currentProjectSpaceId, fetchKnowledgeFiles, knowledgeRequestGuard]);
+    void fetchKnowledgeFiles(currentProjectSpaceId);
+  }, [currentProjectSpaceId, fetchKnowledgeFiles]);
 
   useEffect(() => {
     if (editingId && editInputRef.current) {
@@ -279,7 +246,6 @@ export default function MainLayout() {
       await deleteProjectSpace(deleteProjectSpaceTarget.id);
       await fetchConversations({ includeArchived: true });
       setDeleteProjectSpaceTarget(null);
-      window.dispatchEvent(new Event('knowledge-updated'));
       if (isCurrentProjectSpace) {
         navigate('/knowledge');
       }
@@ -921,7 +887,7 @@ export default function MainLayout() {
                   <span className="mt-0.5 block truncate text-[11px] text-text-muted">
                     {t('workspace.workspaceSummary', {
                       conversations: currentWorkspaceTotalConversations,
-                      documents: knowledgeFiles.length,
+                      documents: knowledgeFileCount,
                     })}
                   </span>
                 </span>
@@ -1103,7 +1069,7 @@ export default function MainLayout() {
                 ? 'bg-primary-hover border-white/20'
                 : 'bg-bg-surface border-border group-hover:border-text-muted'
                 }`}>
-                {knowledgeFiles.length}
+                {knowledgeFileCount}
               </span>
             </button>
           </div>

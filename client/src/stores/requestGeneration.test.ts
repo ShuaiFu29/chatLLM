@@ -147,13 +147,15 @@ test('startNow requested during an active task runs immediately after that task 
 
 test('knowledge and evaluation polling never use overlapping setInterval loops', () => {
   const knowledgeSource = readFileSync(new URL('../pages/KnowledgeBase.tsx', import.meta.url), 'utf8');
+  const knowledgeStoreSource = readFileSync(new URL('./useKnowledgeFilesStore.ts', import.meta.url), 'utf8');
   const evaluationSource = readFileSync(new URL('../pages/RagEvaluation.tsx', import.meta.url), 'utf8');
 
   expect(knowledgeSource).not.toMatch(/setInterval\s*\(/);
   expect(evaluationSource).not.toMatch(/setInterval\s*\(/);
-  expect(knowledgeSource).toMatch(/createCompletionPoller/);
-  expect(knowledgeSource).toMatch(/pollerRef\.current\?\.startNow\(\)/);
-  expect(knowledgeSource).not.toMatch(/\bfetchFiles\(\);/);
+  expect(knowledgeStoreSource).not.toMatch(/setInterval\s*\(/);
+  expect(knowledgeStoreSource).toMatch(/createCompletionPoller/);
+  expect(knowledgeSource).toMatch(/startKnowledgePolling\(currentProjectSpaceId\)/);
+  expect(knowledgeSource).toMatch(/stopKnowledgePolling\(currentProjectSpaceId\)/);
   expect(evaluationSource).toMatch(/createCompletionPoller/);
 });
 
@@ -197,24 +199,26 @@ test('RAG mutations and modal closure invalidate stale dataset and run-detail re
   );
 });
 
-test('knowledge deletion invalidates an older file-list request before its optimistic update', () => {
+test('knowledge deletion cancels a shared stale list before its optimistic update', () => {
   const knowledgeSource = readFileSync(new URL('../pages/KnowledgeBase.tsx', import.meta.url), 'utf8');
   const deleteBody = knowledgeSource
     .split('const confirmDeleteFile', 2)[1]
     ?.split('const [isDragging', 1)[0] || '';
 
-  expect(deleteBody).toMatch(/requestGuard\.abort\('files'\)/);
-  expect(deleteBody).toMatch(/setIsLoading\(false\)/);
-  expect(deleteBody.indexOf("requestGuard.abort('files')")).toBeLessThan(deleteBody.indexOf('setFiles('));
+  expect(deleteBody).toMatch(/cancelKnowledgeFilesFetch\(currentProjectSpaceId\)/);
+  expect(deleteBody.indexOf('cancelKnowledgeFilesFetch(')).toBeLessThan(
+    deleteBody.indexOf('removeKnowledgeFile('),
+  );
 });
 
-test('knowledge retry invalidates an older file-list request before applying queued state', () => {
+test('knowledge retry cancels a shared stale list before applying queued state', () => {
   const knowledgeSource = readFileSync(new URL('../pages/KnowledgeBase.tsx', import.meta.url), 'utf8');
   const retryBody = knowledgeSource
     .split('const handleRetryFile', 2)[1]
     ?.split('const handleFileUpload', 1)[0] || '';
 
-  expect(retryBody).toMatch(/requestGuard\.abort\('files'\)/);
-  expect(retryBody).toMatch(/setIsLoading\(false\)/);
-  expect(retryBody.indexOf("requestGuard.abort('files')")).toBeLessThan(retryBody.indexOf('setFiles('));
+  expect(retryBody).toMatch(/cancelKnowledgeFilesFetch\(currentProjectSpaceId\)/);
+  expect(retryBody.indexOf('cancelKnowledgeFilesFetch(')).toBeLessThan(
+    retryBody.indexOf('upsertKnowledgeFile('),
+  );
 });

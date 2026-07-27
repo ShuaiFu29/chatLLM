@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useAuthStore } from '../stores/useAuthStore';
-import { useChatStore } from '../stores/useChatStore';
+import { ChatStreamError, useChatStore } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { isSupportedMarkdownDocument, uploadFile, type UploadProgress } from '../lib/uploadManager';
@@ -109,6 +109,16 @@ export default function ChatPage() {
     setInput('');
   }, [currentConversationId, user?.id]);
 
+  const showGenerationError = useCallback((error: unknown) => {
+    if (error instanceof ChatStreamError && error.code === 'rag_retrieval_unavailable') {
+      toast.error(t('chat.ragRetrievalFailed'));
+      return;
+    }
+
+    const retryable = !(error instanceof ChatStreamError) || error.retryable;
+    toast.error(t(retryable ? 'chat.generationFailedRetryable' : 'chat.generationFailed'));
+  }, [t]);
+
   const handlePersonaSuggestionPick = useCallback((question: string) => {
     handleInputChange(question);
     toast.success(t('persona.suggestionLoaded'));
@@ -132,8 +142,39 @@ export default function ChatPage() {
     const draftStorage = typeof window === 'undefined' ? undefined : window.localStorage;
     clearChatDraft(draftStorage, user?.id, currentConversationId);
     setInput('');
-    await sendMessage(content);
-  }, [input, sendingMessage, currentConversationId, createConversation, currentProjectSpaceId, sendMessage, user?.id]);
+    try {
+      await sendMessage(content);
+    } catch (error) {
+      setInput(content);
+      writeChatDraft(draftStorage, user?.id, currentConversationId, content);
+      showGenerationError(error);
+    }
+  }, [
+    input,
+    sendingMessage,
+    currentConversationId,
+    createConversation,
+    currentProjectSpaceId,
+    sendMessage,
+    showGenerationError,
+    user?.id,
+  ]);
+
+  const handleRegenerateMessage = useCallback(async () => {
+    try {
+      await regenerateMessage();
+    } catch (error) {
+      showGenerationError(error);
+    }
+  }, [regenerateMessage, showGenerationError]);
+
+  const handleContinueGeneration = useCallback(async () => {
+    try {
+      await continueGeneration();
+    } catch (error) {
+      showGenerationError(error);
+    }
+  }, [continueGeneration, showGenerationError]);
 
   const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -300,7 +341,7 @@ export default function ChatPage() {
         loadingOlderMessages={loadingOlderMessages}
         onLoadOlderMessages={() => loadOlderMessages(currentConversationId || undefined)}
         onCopy={handleCopyMessage}
-        onRegenerate={regenerateMessage}
+        onRegenerate={handleRegenerateMessage}
         onDelete={deleteMessage}
         onBranch={handleBranchConversation}
         onEditAsDraft={handleEditMessageAsDraft}
@@ -316,7 +357,7 @@ export default function ChatPage() {
         onFileUpload={handleFileUpload}
         onClearDraft={handleClearDraft}
         onStop={stopGeneration}
-        onContinue={continueGeneration}
+        onContinue={handleContinueGeneration}
         isSending={sendingMessage}
         isUploading={isUploading}
         isStopped={isStopped}

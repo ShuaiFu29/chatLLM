@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import { authSessionHintStorage } from '../lib/localStorage';
 import { toSafeError } from '../lib/safeError';
 
 interface UserSettings {
@@ -32,9 +33,9 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   checkAuth: async (force = false) => {
     // Check if user has logged in before to avoid unnecessary 401s on initial load
-    const hasLoggedIn = localStorage.getItem('has_logged_in');
+    const hasLoggedIn = authSessionHintStorage.read();
 
-    if (!force && !hasLoggedIn) {
+    if (!force && hasLoggedIn === false) {
       set({ user: null, loading: false });
       return;
     }
@@ -43,13 +44,13 @@ export const useAuthStore = create<AuthState>((set) => ({
       // api instance handles interceptors for 401->refresh
       const res = await api.get('/auth/me');
       set({ user: res.data.user });
-      localStorage.setItem('has_logged_in', 'true');
+      authSessionHintStorage.write(true);
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
 
       if (status === 401) {
         set({ user: null });
-        localStorage.removeItem('has_logged_in');
+        authSessionHintStorage.write(false);
       } else {
         set({ user: null });
       }
@@ -70,7 +71,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       console.warn('Logout request failed; clearing local session anyway.', toSafeError(err));
     } finally {
       set({ user: null });
-      localStorage.removeItem('has_logged_in');
+      authSessionHintStorage.write(false);
     }
   },
 
@@ -82,7 +83,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   deleteAccount: async () => {
     await api.delete('/auth/me');
     set({ user: null });
-    localStorage.removeItem('has_logged_in');
+    authSessionHintStorage.write(false);
     window.location.href = '/login';
   }
 }));

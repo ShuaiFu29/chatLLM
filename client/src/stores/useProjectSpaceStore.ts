@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import api from '../lib/api';
+import { currentProjectSpaceStorage } from '../lib/localStorage';
 import { toSafeError } from '../lib/safeError';
 import { isRequestAbortError, RequestGenerationGuard } from './requestGeneration';
 
@@ -24,12 +25,11 @@ interface ProjectSpaceState {
   selectProjectSpace: (id: string) => void;
 }
 
-const STORAGE_KEY = 'chatllm.currentProjectSpaceId';
 const projectSpaceRequestGuard = new RequestGenerationGuard();
 
 export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
   projectSpaces: [],
-  currentProjectSpaceId: localStorage.getItem(STORAGE_KEY),
+  currentProjectSpaceId: currentProjectSpaceStorage.read(),
   loadingProjectSpaces: false,
 
   fetchProjectSpaces: async () => {
@@ -45,11 +45,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
       const hasCurrent = currentId && spaces.some((space) => space.id === currentId);
       const nextCurrentId = hasCurrent ? currentId : spaces[0]?.id || null;
 
-      if (nextCurrentId) {
-        localStorage.setItem(STORAGE_KEY, nextCurrentId);
-      } else {
-        localStorage.removeItem(STORAGE_KEY);
-      }
+      currentProjectSpaceStorage.write(nextCurrentId);
 
       set({ projectSpaces: spaces, currentProjectSpaceId: nextCurrentId });
     } catch (err) {
@@ -70,7 +66,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
       currentProjectSpaceId: space.id,
       loadingProjectSpaces: false,
     }));
-    localStorage.setItem(STORAGE_KEY, space.id);
+    currentProjectSpaceStorage.write(space.id);
     return space.id;
   },
 
@@ -123,11 +119,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
       loadingProjectSpaces: false,
     });
 
-    if (nextCurrentId) {
-      localStorage.setItem(STORAGE_KEY, nextCurrentId);
-    } else {
-      localStorage.removeItem(STORAGE_KEY);
-    }
+    currentProjectSpaceStorage.write(nextCurrentId);
 
     try {
       await api.delete(`/project-spaces/${id}`, { signal: ticket.controller.signal });
@@ -141,11 +133,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
         return { projectSpaces, currentProjectSpaceId, loadingProjectSpaces: false };
       });
       const currentProjectSpaceId = get().currentProjectSpaceId;
-      if (currentProjectSpaceId) {
-        localStorage.setItem(STORAGE_KEY, currentProjectSpaceId);
-      } else {
-        localStorage.removeItem(STORAGE_KEY);
-      }
+      currentProjectSpaceStorage.write(currentProjectSpaceId);
     } catch (err) {
       if (!projectSpaceRequestGuard.isCurrent(ticket) || isRequestAbortError(err)) return;
       await get().fetchProjectSpaces();
@@ -157,7 +145,7 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
   },
 
   selectProjectSpace: (id: string) => {
-    localStorage.setItem(STORAGE_KEY, id);
+    currentProjectSpaceStorage.write(id);
     set({ currentProjectSpaceId: id });
   },
 }));

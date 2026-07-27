@@ -9,20 +9,9 @@ import DocumentViewerModal, { type DocumentReference } from '../components/Docum
 import Skeleton from '../components/Skeleton';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import {
-  createCompletionPoller,
-  isRequestAbortError,
-  RequestGenerationGuard,
-} from '../stores/requestGeneration';
-
-interface FileRecord {
-  id: string;
-  filename: string;
-  status: 'uploading' | 'pending' | 'processing' | 'completed' | 'failed';
-  progress: number;
-  created_at: string;
-  error_message?: string;
-  project_space_id?: string | null;
-}
+  useKnowledgeFilesStore,
+  type KnowledgeFile,
+} from '../stores/useKnowledgeFilesStore';
 
 interface UploadingFile {
   name: string;
@@ -34,22 +23,20 @@ interface UploadingFile {
 export default function KnowledgeBase() {
   const { t } = useTranslation();
   const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore();
-  const [files, setFiles] = useState<FileRecord[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
+  const files = useKnowledgeFilesStore((state) => state.files);
+  const isLoading = useKnowledgeFilesStore((state) => state.loading);
+  const refreshKnowledgeFiles = useKnowledgeFilesStore((state) => state.refreshFiles);
+  const startKnowledgePolling = useKnowledgeFilesStore((state) => state.startPolling);
+  const stopKnowledgePolling = useKnowledgeFilesStore((state) => state.stopPolling);
+  const cancelKnowledgeFilesFetch = useKnowledgeFilesStore((state) => state.cancelFetch);
+  const removeKnowledgeFile = useKnowledgeFilesStore((state) => state.removeFile);
+  const upsertKnowledgeFile = useKnowledgeFilesStore((state) => state.upsertFile);
   const [uploadState, setUploadState] = useState<UploadingFile | null>(null);
   const [deleteFileTarget, setDeleteFileTarget] = useState<{ id: string; filename: string } | null>(null);
   const [selectedDocument, setSelectedDocument] = useState<DocumentReference | null>(null);
   const [notification, setNotification] = useState<{ type: 'success' | 'error', message: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadClearTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const fetchFilesRef = useRef<() => Promise<void>>(async () => undefined);
-  const requestGuardRef = useRef<RequestGenerationGuard | null>(null);
-  if (!requestGuardRef.current) requestGuardRef.current = new RequestGenerationGuard();
-  const requestGuard = requestGuardRef.current;
-  const pollerRef = useRef<ReturnType<typeof createCompletionPoller> | null>(null);
-  if (!pollerRef.current) {
-    pollerRef.current = createCompletionPoller(() => fetchFilesRef.current(), 3_000);
-  }
 
   const clearUploadClearTimeout = useCallback(() => {
     if (uploadClearTimeout.current) {
@@ -58,63 +45,24 @@ export default function KnowledgeBase() {
     }
   }, []);
 
-  const stopPolling = useCallback(() => {
-    pollerRef.current?.stop();
-  }, []);
-
-  const startPolling = useCallback(() => {
-    pollerRef.current?.start();
-  }, []);
-
   const refreshFiles = useCallback(() => {
-    pollerRef.current?.startNow();
-  }, []);
-
-  const fetchFiles = useCallback(async () => {
-    const ticket = requestGuard.begin('files');
-    try {
-      const res = await api.get('/upload/files', {
-        params: { projectSpaceId: currentProjectSpaceId || undefined },
-        signal: ticket.controller.signal,
-      });
-      if (!requestGuard.isCurrent(ticket)) return;
-      setFiles(res.data);
-
-      // Check if any file is still processing or pending
-      const hasActive = res.data.some((f: FileRecord) => f.status === 'processing' || f.status === 'pending');
-      if (!hasActive) {
-        // Stop polling only if nothing is happening
-        // But we might want to keep polling slowly? 
-        // For now, let's stop to save resources, but ensure we restart on actions.
-        stopPolling();
-      } else {
-        // If there are active files, ensure we are polling
-        startPolling();
-      }
-    } catch (error) {
-      if (requestGuard.isCurrent(ticket) && !isRequestAbortError(error)) {
-        console.error('Failed to fetch files:', toSafeError(error));
-      }
-    } finally {
-      if (requestGuard.finish(ticket)) setIsLoading(false);
-    }
-  }, [currentProjectSpaceId, requestGuard, startPolling, stopPolling]);
+    void refreshKnowledgeFiles(currentProjectSpaceId);
+  }, [currentProjectSpaceId, refreshKnowledgeFiles]);
 
   const currentProjectSpace = projectSpaces.find((space) => space.id === currentProjectSpaceId);
 
   useEffect(() => {
-    fetchFilesRef.current = fetchFiles;
-  }, [fetchFiles]);
-
-  useEffect(() => {
-    fetchFilesRef.current = fetchFiles;
-    refreshFiles();
+    startKnowledgePolling(currentProjectSpaceId);
     return () => {
-      stopPolling();
-      requestGuard.abortAll();
+      stopKnowledgePolling(currentProjectSpaceId);
       clearUploadClearTimeout();
     };
-  }, [clearUploadClearTimeout, fetchFiles, refreshFiles, requestGuard, stopPolling]);
+  }, [
+    clearUploadClearTimeout,
+    currentProjectSpaceId,
+    startKnowledgePolling,
+    stopKnowledgePolling,
+  ]);
 
   const handleDeleteClick = (id: string, filename: string) => {
     setDeleteFileTarget({ id, filename });
@@ -130,19 +78,15 @@ export default function KnowledgeBase() {
 
     const { id } = deleteFileTarget;
 
-    requestGuard.abort('files');
-    setIsLoading(false);
-
+    cancelKnowledgeFilesFetch(currentProjectSpaceId);
     // Optimistic Update: Immediately remove from UI and close modal
-    setFiles(prev => prev.filter(f => f.id !== id));
+    removeKnowledgeFile(id);
     setDeleteFileTarget(null);
     showNotification('success', t('knowledge.deleteSuccess'));
 
     try {
       await api.delete(`/upload/files/${id}`);
-      requestGuard.abort('files');
-      setFiles(prev => prev.filter(f => f.id !== id));
-      window.dispatchEvent(new Event('knowledge-updated'));
+      removeKnowledgeFile(id);
     } catch (error) {
       console.error('Delete failed:', toSafeError(error));
       // Revert UI on failure
@@ -198,14 +142,12 @@ export default function KnowledgeBase() {
 
         if (progress.status === 'processing' || progress.status === 'completed') {
           refreshFiles();
-          window.dispatchEvent(new Event('knowledge-updated'));
         }
       }, { projectSpaceId: currentProjectSpaceId });
 
       setUploadState(null);
       refreshFiles();
       showNotification('success', t('knowledge.uploadComplete'));
-      window.dispatchEvent(new Event('knowledge-updated'));
 
     } catch (error) {
       console.error('Upload failed:', toSafeError(error));
@@ -228,13 +170,11 @@ export default function KnowledgeBase() {
 
   const handleRetryFile = async (id: string) => {
     try {
-      const { data } = await api.post(`/upload/files/${id}/retry`);
-      requestGuard.abort('files');
-      setIsLoading(false);
-      setFiles(prev => prev.map(file => file.id === id ? data : file));
+      const { data } = await api.post<KnowledgeFile>(`/upload/files/${id}/retry`);
+      cancelKnowledgeFilesFetch(currentProjectSpaceId);
+      upsertKnowledgeFile(data);
       showNotification('success', t('knowledge.retryQueued'));
-      startPolling();
-      window.dispatchEvent(new Event('knowledge-updated'));
+      startKnowledgePolling(currentProjectSpaceId);
     } catch (error) {
       console.error('Retry failed:', toSafeError(error));
       showNotification('error', t('knowledge.retryFailed'));
@@ -263,7 +203,7 @@ export default function KnowledgeBase() {
     return filename.replace(/\.(?:md|markdown)$/i, "").trim();
   };
 
-  const canViewFile = (file: FileRecord) => file.status === 'completed';
+  const canViewFile = (file: KnowledgeFile) => file.status === 'completed';
 
   return (
     <div className="h-full bg-bg-base text-text-main transition-colors duration-300 flex flex-col">

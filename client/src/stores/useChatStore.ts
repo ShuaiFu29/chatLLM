@@ -1,5 +1,5 @@
 import { create, type StoreApi } from 'zustand';
-import api from '../lib/api';
+import api, { authenticatedFetch } from '../lib/api';
 import { toSafeError } from '../lib/safeError';
 import i18n from '../i18n';
 import { chatRequestState } from './chatRequestState';
@@ -105,6 +105,89 @@ export interface MessagePageInfo {
   nextCursor: string | null;
   limit: number;
 }
+
+export interface ChatStreamErrorPayload {
+  code: string;
+  message: string;
+  retryable: boolean;
+}
+
+interface ChatSseData {
+  userMessageId?: string;
+  assistantMessageId?: string;
+  content?: string;
+  sources?: Message['sources'];
+  ragRunId?: string;
+  traceSummary?: RagTraceSummary;
+  qualitySummary?: RagQualitySummary;
+  ragSkipped?: boolean;
+  rag_warning?: boolean;
+  ragError?: unknown;
+  error?: unknown;
+}
+
+export class ChatStreamError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+
+  constructor(payload: ChatStreamErrorPayload) {
+    super(payload.message);
+    this.name = 'ChatStreamError';
+    this.code = payload.code;
+    this.retryable = payload.retryable;
+  }
+}
+
+const readChatStreamError = (data: ChatSseData) => {
+  const rawError = data.error ?? data.ragError;
+  if (!rawError) return null;
+
+  if (typeof rawError === 'string') {
+    return new ChatStreamError({
+      code: 'chat_stream_failed',
+      message: rawError,
+      retryable: true,
+    });
+  }
+  if (typeof rawError !== 'object') return null;
+
+  const candidate = rawError as Record<string, unknown>;
+  const isRagError = Boolean(data.ragError);
+  return new ChatStreamError({
+    code: typeof candidate.code === 'string' && candidate.code
+      ? candidate.code
+      : isRagError ? 'rag_retrieval_unavailable' : 'chat_stream_failed',
+    message: typeof candidate.message === 'string' && candidate.message
+      ? candidate.message
+      : isRagError
+        ? 'Workspace document retrieval failed. Retry before relying on an answer.'
+        : 'Failed to generate response',
+    retryable: candidate.retryable !== false,
+  });
+};
+
+const readHttpChatError = async (response: Response) => {
+  let message = response.statusText || `Chat request failed (${response.status})`;
+  try {
+    const body = await response.json() as { error?: unknown };
+    if (typeof body.error === 'string' && body.error) message = body.error;
+    if (
+      body.error
+      && typeof body.error === 'object'
+      && typeof (body.error as { message?: unknown }).message === 'string'
+    ) {
+      message = (body.error as { message: string }).message;
+    }
+  } catch {
+    // The status text remains the safe fallback for non-JSON responses.
+  }
+
+  return new ChatStreamError({
+    code: `chat_http_${response.status}`,
+    message,
+    retryable: response.status === 429 || response.status >= 500,
+  });
+};
 
 interface ChatState {
   conversations: Conversation[];
@@ -799,6 +882,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     let tempUserId = '';
     let tempAiId = '';
+    let initialAssistantMessage: Message | null = null;
+    let streamEstablished = false;
 
     // If continue, we don't add user message, and we reuse the last assistant message ID
     if (isContinue) {
@@ -806,6 +891,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const lastMsg = messages[messages.length - 1];
       if (lastMsg?.role === 'assistant') {
         tempAiId = lastMsg.id;
+        initialAssistantMessage = { ...lastMsg };
       } else {
         // Fallback if somehow last msg is not assistant
         isContinue = false;
@@ -842,10 +928,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
       replaceConversationMessages(set, currentConversationId, newMessages);
     };
 
+    const rollbackFailedAssistant = (removeOptimisticUser: boolean) => {
+      const currentMsgs = getConversationMessages(get(), currentConversationId);
+      if (isContinue && initialAssistantMessage) {
+        const assistantToRestore = initialAssistantMessage;
+        updateMessages(currentMsgs.map((message) => (
+          message.id === tempAiId ? assistantToRestore : message
+        )));
+        return;
+      }
+
+      updateMessages(currentMsgs.filter((message) => (
+        message.id !== tempAiId
+        && (!removeOptimisticUser || message.id !== tempUserId)
+      )));
+    };
+
     try {
-      // Use native fetch for streaming
-      // Since we use HttpOnly cookies for auth, we just need to ensure credentials are included.
-      const response = await fetch(`/api/chat/conversations/${currentConversationId}/messages`, {
+      const response = await authenticatedFetch(`/api/chat/conversations/${currentConversationId}/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -858,15 +958,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
       });
 
       if (!response.ok) {
-        throw new Error(response.statusText);
+        throw await readHttpChatError(response);
       }
 
-      if (!response.body) return;
+      if (!response.body) {
+        throw new ChatStreamError({
+          code: 'chat_stream_unavailable',
+          message: 'Chat response stream is unavailable',
+          retryable: true,
+        });
+      }
 
+      streamEstablished = true;
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let aiContent = isContinue ? (messages.find(m => m.id === tempAiId)?.content || '') : '';
       let buffer = '';
+      let receivedDone = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -887,10 +995,21 @@ export const useChatStore = create<ChatState>((set, get) => ({
           if (line.trim() === '') continue;
           if (line.startsWith('data: ')) {
             const dataStr = line.slice(6);
-            if (dataStr === '[DONE]') continue;
+            if (dataStr === '[DONE]') {
+              receivedDone = true;
+              continue;
+            }
 
+            let data: ChatSseData;
             try {
-              const data = JSON.parse(dataStr);
+              data = JSON.parse(dataStr) as ChatSseData;
+            } catch (error) {
+              console.error('Error parsing SSE data', toSafeError(error));
+              continue;
+            }
+
+            const streamError = readChatStreamError(data);
+            if (streamError) throw streamError;
 
               if (data.userMessageId && tempUserId) {
                 const currentMsgs = getConversationMessages(get(), currentConversationId);
@@ -950,7 +1069,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
                 }
               }
 
-              if (data.ragError || data.rag_warning) {
+              if (data.rag_warning) {
                 const currentMsgs = getConversationMessages(get(), currentConversationId);
                 const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
                 if (lastMsgIndex !== -1) {
@@ -958,10 +1077,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     ragWarning: true,
-                    ragError: data.ragError ? {
-                      code: String(data.ragError.code || 'rag_retrieval_unavailable'),
-                      retryable: data.ragError.retryable !== false,
-                    } : undefined,
                     sources: [],
                     ragRunId: null,
                     traceSummary: null,
@@ -1002,11 +1117,23 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updateMessages(updatedMsgs);
                 }
               }
-            } catch (e) {
-              console.error('Error parsing SSE data', toSafeError(e));
-            }
           }
         }
+      }
+
+      if (!receivedDone) {
+        throw new ChatStreamError({
+          code: 'chat_stream_incomplete',
+          message: 'Chat response ended before completion',
+          retryable: true,
+        });
+      }
+      if (!isContinue && !aiContent) {
+        throw new ChatStreamError({
+          code: 'chat_stream_empty',
+          message: 'Chat response did not contain an answer',
+          retryable: true,
+        });
       }
 
       if (chatRequestState.isCurrentStream(currentConversationId, abortController)) {
@@ -1014,16 +1141,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
       }
 
     } catch (err: unknown) {
-      if ((err as Error).name === 'AbortError') {
+      if (isAbortError(err)) {
         return;
-      } else {
-        console.error('Failed to send message:', toSafeError(err));
-        // Rollback only if it was a new message
-        if (!isContinue) {
-          const currentMsgs = getConversationMessages(get(), currentConversationId);
-          updateMessages(currentMsgs.filter(m => m.id !== tempUserId && m.id !== tempAiId));
-        }
       }
+      console.error('Failed to send message:', toSafeError(err));
+      if (chatRequestState.isCurrentStream(currentConversationId, abortController)) {
+        rollbackFailedAssistant(!streamEstablished);
+      }
+      throw err;
     } finally {
       const finishedCurrentStream = chatRequestState.finishStream(
         currentConversationId,

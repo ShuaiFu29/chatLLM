@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
-import { useEffect, lazy, Suspense, useState } from 'react';
+import { useEffect, lazy, Suspense } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import MainLayout from './layouts/MainLayout';
 import Loading from './components/Loading';
@@ -23,7 +23,6 @@ const PersonaCenterPage = lazy(() => import('./pages/PersonaCenter'));
 function App() {
   const checkAuth = useAuthStore((state) => state.checkAuth);
   const applyTheme = useThemeStore((state) => state.applyTheme);
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     // Check for login success param from OAuth callback
@@ -49,17 +48,7 @@ function App() {
       }, 500);
     }
     
-    // Simulate minimum loading time for better UX and preload resources
-    const timer = setTimeout(() => {
-      setIsLoading(false);
-    }, 1500);
-
-    return () => clearTimeout(timer);
   }, [checkAuth, applyTheme]);
-
-  if (isLoading) {
-    return <Loading />;
-  }
 
   return (
     <BrowserRouter>

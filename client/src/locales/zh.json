@@ -107,6 +107,8 @@
     "searchingWorkspaceDocuments": "正在搜索工作区文档...",
     "loadingContent": "正在加载内容...",
     "ragRetrievalFailed": "工作区文档检索失败，为避免无依据回答，本次未生成答案。请重试。",
+    "generationFailed": "回答生成失败。",
+    "generationFailedRetryable": "回答生成失败，请重试。",
     "sources": "来源与引用",
     "viewOriginalDocument": "查看原文",
     "ragQuality": "RAG 质量",
