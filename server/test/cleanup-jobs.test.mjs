@@ -120,12 +120,15 @@ test('late upload publication cannot revive a deleting file and requeues object 
   assert.match(files, /lease_token = null/i);
 });
 
-test('parallel generation migration permits durable generation cleanup jobs', () => {
-  const migration = readSource('migrations/0034_parallel_conversion_generations.sql');
+test('parallel generation migrations permit durable generation cleanup jobs', () => {
+  const parallelMigration = readSource('migrations/0034_parallel_conversion_generations.sql');
+  const cleanupMigration = readSource('migrations/0035_conversion_generation_cleanup_jobs.sql');
 
-  assert.match(migration, /file_chunks_legacy_file_chunk_index_uidx/i);
-  assert.match(migration, /file_chunks_generation_chunk_index_uidx/i);
-  assert.match(migration, /resource_type in[\s\S]*'conversion_generation'/i);
+  assert.match(parallelMigration, /file_chunks_legacy_file_chunk_index_uidx/i);
+  assert.match(parallelMigration, /file_chunks_generation_chunk_index_uidx/i);
+  assert.doesNotMatch(parallelMigration, /artifact_cleanup_jobs_resource_type_check/i);
+  assert.match(cleanupMigration, /drop constraint if exists artifact_cleanup_jobs_resource_type_check/i);
+  assert.match(cleanupMigration, /resource_type in[\s\S]*'conversion_generation'/i);
 });
 
 test('file cleanup snapshots raw, multipart, and every conversion generation object key', async () => {
