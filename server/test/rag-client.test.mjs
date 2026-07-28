@@ -121,6 +121,39 @@ test('transient retrieval failure retries once inside the total deadline', async
   assert.deepEqual(transport.calls.map((call) => call.config.timeout), [100, 100]);
 });
 
+test('retrieval transport preserves JSON multi-format chunk provenance', async () => {
+  const responseFixture = JSON.parse(JSON.stringify({
+    results: [{
+      id: 'chunk-pdf-1',
+      content: 'Transported PDF evidence.',
+      metadata: {
+        filename: 'transport.pdf',
+        file_id: 'file-pdf-1',
+        chunk_index: 6,
+        document_kind: 'pdf',
+        conversion_generation_id: 'generation-hit-1',
+        source_unit_ids: ['u_11111111111111111111111111111111'],
+        source_locator: {
+          type: 'pdf',
+          page_start: 12,
+          page_end: 12,
+          locators: [{ type: 'pdf', kind: 'page_text', page: 12, block: 3 }],
+        },
+      },
+      similarity: 0.88,
+    }],
+  }));
+  const transport = createTransport(() => ok(responseFixture));
+  const client = createClient({ transport });
+
+  const [document] = await client.retrieveRagDocuments(retrieveInput);
+
+  assert.equal(transport.calls[0].url, 'http://rag.test/retrieve');
+  assert.deepEqual(document.metadata, responseFixture.results[0].metadata);
+  assert.equal(document.metadata.conversion_generation_id, 'generation-hit-1');
+  assert.equal(document.metadata.source_locator.page_start, 12);
+});
+
 test('retrieval retry never repeats caller-caused 4xx responses', async () => {
   const transport = createTransport(() => { throw axiosStatusError(400); });
   const client = createClient({ transport, retrieveMaxAttempts: 2 });

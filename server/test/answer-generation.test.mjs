@@ -12,6 +12,7 @@ const {
   buildGroundedAnswerMessages,
   buildRetrievalConversationContext,
   generateGroundedAnswer,
+  prepareGroundedAnswer,
   streamGroundedAnswer,
 } = require(path.join(serverRoot, 'dist', 'services', 'answerGeneration.js'));
 const {
@@ -93,6 +94,65 @@ test('empty RAG context preserves fail-closed guidance instead of forwarding the
 test('deterministic insufficient-evidence answer follows the question language', () => {
   assert.match(buildInsufficientEvidenceAnswer('发布版本是什么？'), /工作区资料不足/);
   assert.match(buildInsufficientEvidenceAnswer('What is the launch version?'), /source material is insufficient/);
+});
+
+test('prepared answer preserves multi-format provenance in display, verification, and trace sources', async () => {
+  const prepared = await prepareGroundedAnswer({
+    question: 'What is the approved response window?',
+    userId: 'user-1',
+    retrieve: async () => ({
+      run_id: 'run-1',
+      mode: 'hybrid',
+      planned_queries: ['approved response window'],
+      results: [{
+        id: 'chunk-1',
+        content: 'The approved response window is T+3.',
+        metadata: {
+          filename: 'policy.pdf',
+          file_id: 'file-1',
+          chunk_index: 2,
+          document_kind: 'pdf',
+          conversion_generation_id: 'generation-hit-1',
+          active_conversion_generation_id: 'generation-active-pointer-must-not-leak',
+          source_unit_ids: ['u_11111111111111111111111111111111'],
+          source_locator: {
+            type: 'pdf',
+            page_start: 7,
+            page_end: 7,
+            locators: [{ type: 'pdf', kind: 'page_text', page: 7, block: 1 }],
+          },
+        },
+        similarity: 0.92,
+      }],
+      trace_steps: [],
+      quality: {
+        retrieval_score: 0.9,
+        citation_score: 0.9,
+        evidence_score: 0.9,
+        overall_score: 0.9,
+        evidence_label: 'strong',
+      },
+    }),
+  });
+  const contextStep = prepared.traceSummary.trace_steps.at(-1);
+  const mappedSources = [
+    prepared.assistantSources[0],
+    prepared.verificationSources[0],
+    contextStep.output.source_map[0],
+  ];
+
+  for (const source of mappedSources) {
+    assert.equal(source.document_kind, 'pdf');
+    assert.equal(source.conversion_generation_id, 'generation-hit-1');
+    assert.deepEqual(source.source_unit_ids, ['u_11111111111111111111111111111111']);
+    assert.deepEqual(source.source_locator, {
+      type: 'pdf',
+      page_start: 7,
+      page_end: 7,
+      locators: [{ type: 'pdf', kind: 'page_text', page: 7, block: 1 }],
+    });
+    assert.equal(Object.hasOwn(source, 'active_conversion_generation_id'), false);
+  }
 });
 
 test('token context packing deduplicates passages and claim metrics reject number and polarity conflicts', () => {

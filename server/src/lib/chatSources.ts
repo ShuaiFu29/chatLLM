@@ -1,3 +1,48 @@
+import type { DocumentKind } from './uploadInput';
+
+export interface SourceLocatorSheet {
+  sheet?: string;
+  sheet_index?: number;
+}
+
+export interface SourceLocator {
+  type?: string;
+  types?: string[];
+  kind?: string;
+  line_start?: number;
+  line_end?: number;
+  page?: number;
+  page_start?: number;
+  page_end?: number;
+  block?: number;
+  paragraph?: number;
+  paragraph_start?: number;
+  paragraph_end?: number;
+  table?: number;
+  table_start?: number;
+  table_end?: number;
+  slide?: number;
+  slide_start?: number;
+  slide_end?: number;
+  shape?: number;
+  shape_id?: number;
+  heading_level?: number;
+  row_start?: number;
+  row_end?: number;
+  column_count?: number;
+  sheet?: string;
+  sheet_index?: number;
+  sheets?: SourceLocatorSheet[];
+  locators?: SourceLocator[];
+}
+
+export interface SourceProvenance {
+  document_kind?: DocumentKind;
+  conversion_generation_id?: string;
+  source_unit_ids?: string[];
+  source_locator?: SourceLocator;
+}
+
 export interface RagDocument {
   id?: string;
   content?: string;
@@ -17,6 +62,10 @@ export interface RagDocument {
     parent_content?: string;
     context_truncated?: boolean;
     original_content_length?: number;
+    document_kind?: DocumentKind;
+    conversion_generation_id?: string;
+    source_unit_ids?: string[];
+    source_locator?: SourceLocator;
   };
   similarity?: number;
   agentic_score?: number;
@@ -24,7 +73,7 @@ export interface RagDocument {
   source_role?: string;
 }
 
-export interface ChatSource {
+export interface ChatSource extends SourceProvenance {
   chunk_id?: string;
   file_id?: string;
   filename: string;
@@ -66,16 +115,18 @@ export interface RagContextAllocation {
   truncated: boolean;
 }
 
+export interface RagContextSourceMapEntry extends SourceProvenance {
+  source_number: number;
+  chunk_id?: string;
+  file_id?: string;
+  filename: string;
+  chunk_index?: number;
+}
+
 export interface RagContextBuildResult {
   text: string;
   allocations: RagContextAllocation[];
-  source_map: Array<{
-    source_number: number;
-    chunk_id?: string;
-    file_id?: string;
-    filename: string;
-    chunk_index?: number;
-  }>;
+  source_map: RagContextSourceMapEntry[];
 }
 
 export interface RagAnswerContextBuildResult extends RagContextBuildResult {
@@ -213,6 +264,111 @@ const normalizeSnippet = (content = '') => {
   return `${normalized.slice(0, MAX_SOURCE_SNIPPET_LENGTH)}...`;
 };
 
+const DOCUMENT_KINDS = new Set<DocumentKind>([
+  'markdown',
+  'plaintext',
+  'pdf',
+  'docx',
+  'pptx',
+  'xlsx',
+  'csv',
+]);
+
+const optionalString = (value: unknown) => (
+  typeof value === 'string' && value.trim() ? value : undefined
+);
+
+const optionalFiniteNumber = (value: unknown) => (
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined
+);
+
+const SOURCE_LOCATOR_STRING_FIELDS = ['type', 'kind', 'sheet'] as const;
+const SOURCE_LOCATOR_NUMBER_FIELDS = [
+  'line_start',
+  'line_end',
+  'page',
+  'page_start',
+  'page_end',
+  'block',
+  'paragraph',
+  'paragraph_start',
+  'paragraph_end',
+  'table',
+  'table_start',
+  'table_end',
+  'slide',
+  'slide_start',
+  'slide_end',
+  'shape',
+  'shape_id',
+  'heading_level',
+  'row_start',
+  'row_end',
+  'column_count',
+  'sheet_index',
+] as const;
+
+const normalizeSourceLocator = (value: unknown, depth = 0): SourceLocator | undefined => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as Record<string, unknown>;
+  const locator: SourceLocator = {};
+  for (const field of SOURCE_LOCATOR_STRING_FIELDS) {
+    const fieldValue = optionalString(source[field]);
+    if (fieldValue) locator[field] = fieldValue;
+  }
+  for (const field of SOURCE_LOCATOR_NUMBER_FIELDS) {
+    const fieldValue = optionalFiniteNumber(source[field]);
+    if (fieldValue !== undefined) locator[field] = fieldValue;
+  }
+
+  if (Array.isArray(source.types)) {
+    const types = source.types.map(optionalString).filter((item): item is string => Boolean(item));
+    if (types.length > 0) locator.types = types;
+  }
+  if (Array.isArray(source.sheets)) {
+    const sheets: SourceLocatorSheet[] = [];
+    for (const value of source.sheets) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const rawSheet = value as Record<string, unknown>;
+      const sheet = optionalString(rawSheet.sheet);
+      const sheetIndex = optionalFiniteNumber(rawSheet.sheet_index);
+      if (sheet || sheetIndex !== undefined) {
+        sheets.push({
+          ...(sheet ? { sheet } : {}),
+          ...(sheetIndex !== undefined ? { sheet_index: sheetIndex } : {}),
+        });
+      }
+    }
+    if (sheets.length > 0) locator.sheets = sheets;
+  }
+  if (depth === 0 && Array.isArray(source.locators)) {
+    const locators = source.locators
+      .map((item) => normalizeSourceLocator(item, depth + 1))
+      .filter((item): item is SourceLocator => Boolean(item));
+    if (locators.length > 0) locator.locators = locators;
+  }
+
+  return Object.keys(locator).length > 0 ? locator : undefined;
+};
+
+const buildSourceProvenance = (metadata: RagDocument['metadata']): SourceProvenance => {
+  if (!metadata) return {};
+  const documentKind = DOCUMENT_KINDS.has(metadata.document_kind as DocumentKind)
+    ? metadata.document_kind as DocumentKind
+    : undefined;
+  const conversionGenerationId = optionalString(metadata.conversion_generation_id);
+  const sourceUnitIds = Array.isArray(metadata.source_unit_ids)
+    ? metadata.source_unit_ids.filter((item): item is string => typeof item === 'string' && Boolean(item.trim()))
+    : undefined;
+  const sourceLocator = normalizeSourceLocator(metadata.source_locator);
+  return {
+    ...(documentKind ? { document_kind: documentKind } : {}),
+    ...(conversionGenerationId ? { conversion_generation_id: conversionGenerationId } : {}),
+    ...(sourceUnitIds ? { source_unit_ids: sourceUnitIds } : {}),
+    ...(sourceLocator ? { source_locator: sourceLocator } : {}),
+  };
+};
+
 export const buildChatSources = (documents: RagDocument[]): ChatSource[] => {
   return documents
     .filter((doc) => doc.metadata?.retrieval_mode !== 'metadata_inventory' && String(doc.content || '').trim())
@@ -223,6 +379,7 @@ export const buildChatSources = (documents: RagDocument[]): ChatSource[] => {
       chunk_index: doc.metadata?.chunk_index,
       similarity: typeof doc.similarity === 'number' ? doc.similarity : 0,
       content: normalizeSnippet(doc.content),
+      ...buildSourceProvenance(doc.metadata),
       ...(doc.source_role ? { source_role: doc.source_role } : {}),
     }));
 };
@@ -236,6 +393,7 @@ export const buildVerificationSources = (documents: RagDocument[]): ChatSource[]
     chunk_index: doc.metadata?.chunk_index,
     similarity: typeof doc.similarity === 'number' ? doc.similarity : 0,
     content: String(doc.content || '').trim(),
+    ...buildSourceProvenance(doc.metadata),
     ...(doc.source_role ? { source_role: doc.source_role } : {}),
   }));
 
@@ -304,6 +462,7 @@ export const buildRagContext = (
       file_id: entry.doc.metadata?.file_id,
       filename: entry.filename,
       chunk_index: entry.doc.metadata?.chunk_index,
+      ...buildSourceProvenance(entry.doc.metadata),
     }));
   return { text, allocations, source_map };
 };
@@ -511,6 +670,7 @@ export const packRagAnswerContext = (
       file_id: entry.document.metadata?.file_id,
       filename: entry.filename,
       chunk_index: entry.document.metadata?.chunk_index,
+      ...buildSourceProvenance(entry.document.metadata),
     }));
   return {
     text,

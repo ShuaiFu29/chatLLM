@@ -54,6 +54,78 @@ test('buildChatSources preserves basic citation fields for UI display and storag
   ]);
 });
 
+test('citation, verification, and context mappings preserve only hit-chunk provenance fields', () => {
+  const sourceLocator = {
+    type: 'pdf',
+    page_start: 4,
+    page_end: 5,
+    locators: [
+      { type: 'pdf', kind: 'page_text', page: 4, block: 2, internal_note: 'do not expose' },
+      { type: 'pdf', kind: 'page_text', page: 5, block: 1 },
+    ],
+    internal_note: 'do not expose',
+  };
+  const documents = [{
+    id: 'chunk-pdf-1',
+    content: 'The approved response window is T+3.',
+    metadata: {
+      filename: 'regional-policy.pdf',
+      file_id: 'file-pdf-1',
+      chunk_index: 8,
+      document_kind: 'pdf',
+      conversion_generation_id: 'generation-hit-1',
+      active_conversion_generation_id: 'generation-active-pointer-must-not-leak',
+      source_unit_ids: ['u_11111111111111111111111111111111', 'u_22222222222222222222222222222222'],
+      source_locator: sourceLocator,
+      arbitrary_metadata: 'do not expose',
+    },
+    similarity: 0.94,
+  }];
+  const provenance = {
+    document_kind: 'pdf',
+    conversion_generation_id: 'generation-hit-1',
+    source_unit_ids: ['u_11111111111111111111111111111111', 'u_22222222222222222222222222222222'],
+    source_locator: {
+      type: 'pdf',
+      page_start: 4,
+      page_end: 5,
+      locators: [
+        { type: 'pdf', kind: 'page_text', page: 4, block: 2 },
+        { type: 'pdf', kind: 'page_text', page: 5, block: 1 },
+      ],
+    },
+  };
+
+  const [displaySource] = buildChatSources(documents);
+  const [verificationSource] = buildVerificationSources(documents);
+  const [contextSource] = buildRagContext(documents).source_map;
+
+  for (const mapped of [displaySource, verificationSource, contextSource]) {
+    assert.deepEqual({
+      document_kind: mapped.document_kind,
+      conversion_generation_id: mapped.conversion_generation_id,
+      source_unit_ids: mapped.source_unit_ids,
+      source_locator: mapped.source_locator,
+    }, provenance);
+    assert.equal(Object.hasOwn(mapped, 'active_conversion_generation_id'), false);
+    assert.equal(Object.hasOwn(mapped, 'arbitrary_metadata'), false);
+    assert.equal(Object.hasOwn(mapped.source_locator, 'internal_note'), false);
+    assert.equal(Object.hasOwn(mapped.source_locator.locators[0], 'internal_note'), false);
+  }
+  assert.notStrictEqual(displaySource.source_locator, sourceLocator);
+
+  const grounding = verifyAnswerGrounding(
+    'The approved response window is T+3. [Source 1]',
+    [displaySource],
+    { support_label: 'supported', evidence_label: 'strong' },
+    false,
+    [verificationSource],
+  );
+  assert.equal(grounding.status, 'supported');
+  assert.deepEqual(grounding.verified_sources[0].source_locator, provenance.source_locator);
+  assert.equal(grounding.verified_sources[0].conversion_generation_id, 'generation-hit-1');
+});
+
 test('buildChatSources truncates long citation snippets', () => {
   const longContent = 'a'.repeat(900);
   const [source] = buildChatSources([
