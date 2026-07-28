@@ -7,6 +7,7 @@ import {
   httpResponse,
 } from '../../common/http/http-response';
 import { serverEnv } from '../../lib/env';
+import { normalizeGithubId, parseJsonPreservingIntegers } from '../../lib/githubId';
 import { generateAccessToken } from '../../lib/jwt';
 import {
   DUMMY_PASSWORD_HASH,
@@ -32,6 +33,8 @@ const REMEMBERED_SESSION_DURATION = 7 * 24 * 60 * 60 * 1000;
 const BROWSER_SESSION_DURATION = 24 * 60 * 60 * 1000;
 const ACCESS_TOKEN_DURATION = 15 * 60 * 1000;
 const generateRefreshToken = () => crypto.randomBytes(32).toString('base64url');
+const GITHUB_OAUTH_CONTEXT_COOKIE = 'github_oauth_context';
+const GITHUB_OAUTH_CONTEXT_VERSION = 1;
 
 export type AuthCookies = Readonly<Record<string, string | undefined>>;
 
@@ -58,6 +61,18 @@ export interface LocalRegisterInput extends LocalLoginInput {
   displayName: string;
 }
 
+interface GithubOauthContext {
+  state: string;
+  rememberMe: boolean;
+}
+
+interface GithubUser {
+  id: string;
+  login: string;
+  avatar_url: string;
+  name?: string | null;
+}
+
 let proxyAgent: ProxyAgent | undefined;
 const getDispatcher = () => {
   const proxy = serverEnv.HTTPS_PROXY || serverEnv.HTTP_PROXY;
@@ -66,26 +81,109 @@ const getDispatcher = () => {
   return proxyAgent;
 };
 
-const fetchJson = async (url: string, init: any) => {
+const fetchText = async (url: string, init: any) => {
   const response = await undiciFetch(url, {
     ...init,
     dispatcher: getDispatcher(),
   });
   const text = await response.text();
-  const data = text ? (() => {
-    try {
-      return JSON.parse(text);
-    } catch {
-      return text;
-    }
-  })() : null;
-
   if (!response.ok) {
+    const data = text ? (() => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return text;
+      }
+    })() : null;
     const details = typeof data === 'string' ? data : JSON.stringify(data);
     throw new Error(`HTTP ${response.status}: ${details}`);
   }
+  return text;
+};
 
-  return data;
+const fetchJson = async (url: string, init: any) => {
+  const text = await fetchText(url, init);
+  return text ? JSON.parse(text) : null;
+};
+
+const parseGithubUser = (text: string): GithubUser => {
+  const data = parseJsonPreservingIntegers(text);
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('GitHub user response must be an object');
+  }
+  const input = data as Record<string, unknown>;
+  const id = normalizeGithubId(input.id);
+  if (typeof input.login !== 'string' || !input.login) {
+    throw new Error('GitHub user response is missing login');
+  }
+  if (typeof input.avatar_url !== 'string') {
+    throw new Error('GitHub user response is missing avatar_url');
+  }
+  if (input.name !== undefined && input.name !== null && typeof input.name !== 'string') {
+    throw new Error('GitHub user response has an invalid name');
+  }
+  return {
+    id,
+    login: input.login,
+    avatar_url: input.avatar_url,
+    name: input.name as string | null | undefined,
+  };
+};
+
+const signGithubOauthPayload = (payload: string) => (
+  crypto.createHmac('sha256', serverEnv.JWT_SECRET)
+    .update('github-oauth-context:v1:', 'utf8')
+    .update(payload, 'utf8')
+    .digest('base64url')
+);
+
+const createGithubOauthContext = (state: string, rememberMe: boolean) => {
+  const payload = Buffer.from(JSON.stringify({
+    version: GITHUB_OAUTH_CONTEXT_VERSION,
+    state,
+    rememberMe,
+  }), 'utf8').toString('base64url');
+  return `${payload}.${signGithubOauthPayload(payload)}`;
+};
+
+const parseGithubOauthContext = (value: string | undefined): GithubOauthContext | null => {
+  if (!value) return null;
+  const parts = value.split('.');
+  if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+  const [payload, signature] = parts;
+  const expectedSignature = Buffer.from(signGithubOauthPayload(payload), 'base64url');
+  const providedSignature = Buffer.from(signature, 'base64url');
+  if (
+    providedSignature.length !== expectedSignature.length
+    || !crypto.timingSafeEqual(providedSignature, expectedSignature)
+  ) {
+    return null;
+  }
+
+  try {
+    const context = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as unknown;
+    if (!context || typeof context !== 'object' || Array.isArray(context)) return null;
+    const input = context as Record<string, unknown>;
+    if (
+      Object.keys(input).length !== 3
+      || input.version !== GITHUB_OAUTH_CONTEXT_VERSION
+      || typeof input.state !== 'string'
+      || !/^[a-f0-9]{32}$/.test(input.state)
+      || typeof input.rememberMe !== 'boolean'
+    ) {
+      return null;
+    }
+    return { state: input.state, rememberMe: input.rememberMe };
+  } catch {
+    return null;
+  }
+};
+
+const matchesOauthState = (provided: string, expected: string) => {
+  const providedBuffer = Buffer.from(provided, 'utf8');
+  const expectedBuffer = Buffer.from(expected, 'utf8');
+  return providedBuffer.length === expectedBuffer.length
+    && crypto.timingSafeEqual(providedBuffer, expectedBuffer);
 };
 
 const cookieLifetime = (durationMs: number) => ({
@@ -152,6 +250,11 @@ const clearAuthCookies = (): ResponseCookie[] => [
 const clearGithubOauthCookies = (): ResponseCookie[] => [
   {
     action: 'clear',
+    name: GITHUB_OAUTH_CONTEXT_COOKIE,
+    options: { path: '/api/auth' },
+  },
+  {
+    action: 'clear',
     name: 'github_oauth_state',
     options: { path: '/api/auth' },
   },
@@ -210,20 +313,8 @@ export class AuthService {
       [
         {
           action: 'set',
-          name: 'github_oauth_state',
-          value: state,
-          options: {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'lax',
-            path: '/api/auth',
-            ...cookieLifetime(10 * 60 * 1000),
-          },
-        },
-        {
-          action: 'set',
-          name: 'github_oauth_remember',
-          value: rememberMe ? '1' : '0',
+          name: GITHUB_OAUTH_CONTEXT_COOKIE,
+          value: createGithubOauthContext(state, rememberMe),
           options: {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
@@ -289,7 +380,7 @@ export class AuthService {
 
   async githubCallback(input: GithubCallbackInput) {
     const { code, state, cookies, requestId } = input;
-    const storedState = cookies.github_oauth_state;
+    const oauthContext = parseGithubOauthContext(cookies[GITHUB_OAUTH_CONTEXT_COOKIE]);
 
     if (!code) {
       return httpResponse(
@@ -297,7 +388,7 @@ export class AuthService {
         { statusCode: 400, cookies: clearGithubOauthCookies() },
       );
     }
-    if (!state || !storedState || state !== storedState) {
+    if (!state || !oauthContext || !matchesOauthState(state, oauthContext.state)) {
       return httpResponse(
         { error: 'Invalid state' },
         { statusCode: 403, cookies: clearGithubOauthCookies() },
@@ -305,7 +396,7 @@ export class AuthService {
     }
 
     const oauthCookies = clearGithubOauthCookies();
-    const rememberMe = cookies.github_oauth_remember === '1';
+    const rememberMe = oauthContext.rememberMe;
     try {
       const tokenBody = new URLSearchParams({
         client_id: serverEnv.GITHUB_CLIENT_ID || '',
@@ -331,15 +422,15 @@ export class AuthService {
         );
       }
 
-      const githubUser: any = await fetchJson('https://api.github.com/user', {
+      const githubUser = parseGithubUser(await fetchText('https://api.github.com/user', {
         method: 'GET',
         headers: {
           Accept: 'application/vnd.github+json',
           Authorization: `Bearer ${githubAccessToken}`,
           'User-Agent': 'chatLLM-server',
         },
-      });
-      let user = await findUserByGithubId(Number(githubUser.id));
+      }));
+      let user = await findUserByGithubId(githubUser.id);
       if (user?.deletion_status === 'pending') {
         return httpResponse(
           { error: 'Account deletion is in progress' },
@@ -348,7 +439,7 @@ export class AuthService {
       }
       if (!user) {
         user = await createUser({
-          github_id: Number(githubUser.id),
+          github_id: githubUser.id,
           username: githubUser.login,
           avatar_url: githubUser.avatar_url,
           display_name: githubUser.name || githubUser.login,
@@ -388,7 +479,17 @@ export class AuthService {
         );
       }
 
-      const newAccessToken = generateAccessToken(session.user);
+      const remainingSessionSeconds = Math.floor(
+        (new Date(session.expires_at).getTime() - Date.now()) / 1000,
+      );
+      if (!Number.isSafeInteger(remainingSessionSeconds) || remainingSessionSeconds <= 0) {
+        return httpResponse(
+          { error: 'Invalid or expired refresh token' },
+          { statusCode: 401, cookies: clearAuthCookies() },
+        );
+      }
+
+      const newAccessToken = generateAccessToken(session.user, remainingSessionSeconds);
       return httpResponse(
         { success: true },
         {

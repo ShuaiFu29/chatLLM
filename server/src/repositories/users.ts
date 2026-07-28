@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../lib/db';
+import { normalizeGithubId, normalizeNullableGithubId } from '../lib/githubId';
 import { User } from '../types';
 import { enqueueAvatarCleanupWithClient } from './cleanupJobs';
 
@@ -8,7 +9,7 @@ export interface DbUser extends User {
 }
 
 interface DbUserRow extends Omit<DbUser, 'github_id'> {
-  github_id?: number | string | null;
+  github_id: string | null;
 }
 
 export interface LocalUserCredentials {
@@ -40,17 +41,17 @@ const userColumns = `
 `;
 
 const toDbUser = (row: DbUserRow): DbUser => {
-  if (row.github_id === undefined) return row as DbUser;
   return {
     ...row,
-    github_id: row.github_id === null ? null : Number(row.github_id),
+    github_id: normalizeNullableGithubId(row.github_id),
   };
 };
 
-export const findUserByGithubId = async (githubId: number) => {
+export const findUserByGithubId = async (githubId: string) => {
+  const normalizedGithubId = normalizeGithubId(githubId);
   const { rows } = await query<DbUserRow>(
     `select ${userColumns} from users where github_id = $1`,
-    [githubId]
+    [normalizedGithubId]
   );
   return rows[0] ? toDbUser(rows[0]) : null;
 };
@@ -78,16 +79,17 @@ export const findUserCredentialsByEmail = async (email: string) => {
 };
 
 export const createUser = async (input: {
-  github_id: number;
+  github_id: string;
   username: string;
   avatar_url: string;
   display_name?: string | null;
 }) => {
+  const githubId = normalizeGithubId(input.github_id);
   const { rows } = await query<DbUserRow>(
     `insert into users (github_id, username, avatar_url, display_name)
      values ($1, $2, $3, $4)
      returning ${userColumns}`,
-    [input.github_id, input.username, input.avatar_url, input.display_name || input.username]
+    [githubId, input.username, input.avatar_url, input.display_name || input.username]
   );
   return toDbUser(rows[0]);
 };

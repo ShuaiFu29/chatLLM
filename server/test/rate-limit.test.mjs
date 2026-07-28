@@ -41,7 +41,7 @@ const readSource = (relativePath) => readFileSync(path.join(serverRoot, relative
 
 const createUser = (id) => ({
   id,
-  github_id: Math.floor(Math.random() * 1000000),
+  github_id: String(Math.floor(Math.random() * 1000000) + 1),
   username: id,
   avatar_url: '',
   display_name: id,

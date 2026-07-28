@@ -2,11 +2,21 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
+  normalizeGithubId,
   parseSseEvents,
   prepareResumeResults,
   summarizeSseEvents,
   validateQuestionManifest,
 } from './rag-answer-run.mjs';
+
+test('normalizeGithubId preserves PostgreSQL bigint identities without number coercion', () => {
+  assert.equal(normalizeGithubId('9007199254740993'), '9007199254740993');
+  assert.equal(normalizeGithubId(12345), '12345');
+  assert.equal(normalizeGithubId(9007199254740992), null);
+  assert.equal(normalizeGithubId('09223372036854775807'), null);
+  assert.equal(normalizeGithubId('9223372036854775808'), null);
+  assert.equal(normalizeGithubId('not-an-id'), null);
+});
 
 test('validateQuestionManifest accepts questions-only input and rejects expectation leakage', () => {
   const valid = validateQuestionManifest({

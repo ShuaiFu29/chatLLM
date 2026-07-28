@@ -48,7 +48,7 @@ const createExecutionContext = (request) => ({
 test('resolveAuthenticatedUser returns the current database user rather than stale token fields', async () => {
   const token = generateAccessToken({
     id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
-    github_id: 12345,
+    github_id: '12345',
     username: 'old-name',
     avatar_url: 'https://example.com/old.png',
     display_name: 'Old Name',
@@ -56,7 +56,7 @@ test('resolveAuthenticatedUser returns the current database user rather than sta
 
   const databaseUser = {
     id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
-    github_id: 12345,
+    github_id: '12345',
     username: 'new-name',
     avatar_url: 'https://example.com/new.png',
     display_name: 'New Name',
@@ -87,7 +87,7 @@ test('resolveAuthenticatedUser does not query the database for invalid tokens', 
 test('resolveAuthenticatedUser rejects users whose deletion is pending', async () => {
   const token = generateAccessToken({
     id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
-    github_id: 12345,
+    github_id: '12345',
     username: 'pending-user',
     avatar_url: '',
     display_name: 'Pending User',
@@ -151,12 +151,11 @@ test('AuthGuard rejects requests without an access token before authentication l
   assert.equal(authenticationWasCalled, false);
 });
 
-test('GitHub OAuth state cookie uses the same baseline security options as auth cookies', () => {
-  assert.match(authControllerSource, /name:\s*'github_oauth_state'[\s\S]*httpOnly:\s*true/);
-  assert.match(authControllerSource, /name:\s*'github_oauth_state'[\s\S]*secure:\s*process\.env\.NODE_ENV === 'production'/);
-  assert.match(authControllerSource, /name:\s*'github_oauth_state'[\s\S]*sameSite:\s*'lax'/);
-  assert.match(authControllerSource, /name:\s*'github_oauth_state'[\s\S]*path:\s*'\/api\/auth'/);
-  assert.match(authControllerSource, /action:\s*'clear'[\s\S]*name:\s*'github_oauth_state'[\s\S]*path:\s*'\/api\/auth'/);
+test('GitHub OAuth state and remember preference are integrity-bound in one HMAC cookie', () => {
+  assert.match(authControllerSource, /GITHUB_OAUTH_CONTEXT_COOKIE\s*=\s*'github_oauth_context'/);
+  assert.match(authControllerSource, /createHmac\('sha256',\s*serverEnv\.JWT_SECRET\)/);
+  assert.match(authControllerSource, /timingSafeEqual\(providedSignature, expectedSignature\)/);
+  assert.doesNotMatch(authControllerSource, /cookies\.github_oauth_remember\s*===/);
 });
 
 test('AuthController delegates plain Nest values without native request or reply parameters', async () => {
@@ -236,10 +235,21 @@ test('AuthService expresses redirects, failures, and cookie clearing as Nest res
   assert.equal(login.options.statusCode, 302);
   assert.match(login.options.headers.Location, /^https:\/\/github\.com\/login\/oauth\/authorize\?/);
   assert.equal(login.options.cookies[0].action, 'set');
-  assert.equal(login.options.cookies[0].name, 'github_oauth_state');
-  assert.equal(login.options.cookies[1].name, 'github_oauth_remember');
-  assert.equal(login.options.cookies[1].value, '0');
-  assert.equal(service.githubLogin(true).options.cookies[1].value, '1');
+  assert.equal(login.options.cookies[0].name, 'github_oauth_context');
+  assert.match(login.options.cookies[0].value, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.equal(login.options.cookies.length, 1);
+  assert.notEqual(service.githubLogin(true).options.cookies[0].value, login.options.cookies[0].value);
+  assert.deepEqual(
+    login.options.cookies[0].options,
+    {
+      httpOnly: true,
+      secure: false,
+      sameSite: 'lax',
+      path: '/api/auth',
+      maxAge: 10 * 60,
+      expires: login.options.cookies[0].options.expires,
+    },
+  );
   assert.deepEqual(missingCode.body, { error: 'Missing code' });
   assert.equal(missingCode.options.statusCode, 400);
   assert.deepEqual(missingRefresh.body, { error: 'No refresh token provided' });
@@ -299,7 +309,7 @@ test('AuthModule emits redirects and cookies through the Nest response pipeline'
 
     assert.equal(login.statusCode, 302);
     assert.match(login.headers.location, /^https:\/\/github\.com\/login\/oauth\/authorize\?/);
-    assert.match(String(login.headers['set-cookie']), /github_oauth_state=/);
+    assert.match(String(login.headers['set-cookie']), /github_oauth_context=/);
     assert.equal(callback.statusCode, 400);
     assert.deepEqual(callback.json(), { error: 'Missing code' });
     assert.equal(refresh.statusCode, 401);

@@ -55,7 +55,7 @@ test('verifyAccessToken accepts tokens generated for a complete user', () => {
     (() => {
       const user = {
         id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
-        github_id: 12345,
+        github_id: '9007199254740993',
         username: 'octocat',
         avatar_url: 'https://example.com/avatar.png',
         display_name: 'Octo Cat'
@@ -67,7 +67,7 @@ test('verifyAccessToken accepts tokens generated for a complete user', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(parseLastJsonLine(result.stdout), {
     id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
-    github_id: 12345,
+    github_id: '9007199254740993',
     username: 'octocat',
     avatar_url: 'https://example.com/avatar.png',
     display_name: 'Octo Cat',
@@ -111,4 +111,45 @@ test('verifyAccessToken rejects signed tokens with missing user fields', () => {
 
   assert.equal(result.status, 0, result.stderr);
   assert.equal(parseLastJsonLine(result.stdout), null);
+});
+
+test('verifyAccessToken rejects non-canonical, numeric, and out-of-range GitHub ids', () => {
+  for (const githubId of ['12345', '0012345', '9223372036854775808']) {
+    const serializedId = githubId === '12345' ? '12345' : JSON.stringify(githubId);
+    const result = runJwtExpression(`
+      (() => {
+        const token = jsonwebtoken.sign(
+          {
+            id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
+            github_id: ${serializedId},
+            username: 'octocat'
+          },
+          ${JSON.stringify(jwtSecret)}
+        );
+        return verifyAccessToken(token);
+      })()
+    `);
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(parseLastJsonLine(result.stdout), null);
+  }
+});
+
+test('generateAccessToken honors a positive maximum lifetime and rejects non-positive limits', () => {
+  const result = runJwtExpression(`
+    (() => {
+      const user = {
+        id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
+        github_id: null,
+        username: 'Ada'
+      };
+      const token = generateAccessToken(user, 3);
+      const payload = jsonwebtoken.decode(token);
+      let rejected = false;
+      try { generateAccessToken(user, 0); } catch (error) { rejected = error instanceof RangeError; }
+      return { lifetime: payload.exp - payload.iat, rejected };
+    })()
+  `);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(parseLastJsonLine(result.stdout), { lifetime: 3, rejected: true });
 });

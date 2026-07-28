@@ -364,6 +364,7 @@ test('avatar replacement repository locks the active user and durably queues the
   const calls = [];
   const newUser = {
     id: 'user-1',
+    github_id: null,
     avatar_object_key: 'new-avatar',
     deletion_status: 'active',
   };

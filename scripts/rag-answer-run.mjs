@@ -11,8 +11,30 @@ const serverRequire = createRequire(path.join(repositoryRoot, 'server', 'package
 
 const sha256 = (value) => crypto.createHash('sha256').update(value).digest('hex');
 const fileSha256 = (filePath) => sha256(fs.readFileSync(filePath));
+const MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807n;
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+export function normalizeGithubId(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || value <= 0) return null;
+    return String(value);
+  }
+
+  if (typeof value === 'bigint') {
+    return value > 0n && value <= MAX_POSTGRES_BIGINT ? value.toString() : null;
+  }
+
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!/^[1-9]\d*$/.test(normalized)) return null;
+
+  try {
+    return BigInt(normalized) <= MAX_POSTGRES_BIGINT ? normalized : null;
+  } catch {
+    return null;
+  }
+}
 
 export function validateQuestionManifest(manifest) {
   if (!manifest || manifest.answerDataUsedDuringGeneration !== false) {
@@ -224,12 +246,13 @@ const loadRuntime = (args) => {
   if (!process.env.JWT_SECRET) throw new Error('JWT_SECRET is missing from Server environment');
 
   const state = JSON.parse(fs.readFileSync(path.resolve(args.state), 'utf8'));
-  if (!state.userId || !state.spaceId || !state.username || !Number.isFinite(Number(state.githubId))) {
+  const githubId = normalizeGithubId(state.githubId);
+  if (!state.userId || !state.spaceId || !state.username || !githubId) {
     throw new Error('State file must contain userId, spaceId, username, and githubId');
   }
   const token = jwt.sign({
     id: state.userId,
-    github_id: Number(state.githubId),
+    github_id: githubId,
     username: state.username,
     avatar_url: '',
     display_name: '',

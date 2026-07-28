@@ -15,10 +15,13 @@ process.env.DEEPSEEK_API_KEY = 'sk-test';
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
+const dbModule = require(path.join(serverRoot, 'dist', 'lib', 'db.js'));
+const githubIdModule = require(path.join(serverRoot, 'dist', 'lib', 'githubId.js'));
 const passwordModule = require(path.join(serverRoot, 'dist', 'lib', 'password.js'));
 const usersModule = require(path.join(serverRoot, 'dist', 'repositories', 'users.js'));
 const sessionsModule = require(path.join(serverRoot, 'dist', 'repositories', 'sessions.js'));
 const undiciModule = require('undici');
+const jsonwebtoken = require('jsonwebtoken');
 const { AuthService } = require(path.join(
   serverRoot,
   'dist',
@@ -38,6 +41,50 @@ const localUser = {
   deletion_status: 'active',
   created_at: '2026-07-28T00:00:00.000Z',
 };
+
+const startGithubOauth = (service, rememberMe) => {
+  const response = service.githubLogin(rememberMe);
+  const state = new URL(response.options.headers.Location).searchParams.get('state');
+  const contextCookie = response.options.cookies.find(({ name }) => name === 'github_oauth_context');
+  assert.ok(state);
+  assert.ok(contextCookie);
+  return { state, contextCookie };
+};
+
+test('GitHub ids remain canonical decimal strings across the PostgreSQL bigint range', () => {
+  assert.equal(githubIdModule.normalizeGithubId('9007199254740993'), '9007199254740993');
+  assert.equal(
+    githubIdModule.normalizeGithubId('9223372036854775807'),
+    '9223372036854775807',
+  );
+  for (const value of [9007199254740993, '0', '-1', '01', '9223372036854775808']) {
+    assert.throws(() => githubIdModule.normalizeGithubId(value));
+  }
+});
+
+test('user repository queries and returns PostgreSQL bigint GitHub ids without number conversion', async () => {
+  const originalQuery = dbModule.query;
+  const githubId = '9007199254740993';
+  let queryParameters;
+  dbModule.query = async (_sql, parameters) => {
+    queryParameters = parameters;
+    return {
+      rows: [{
+        ...localUser,
+        github_id: githubId,
+      }],
+    };
+  };
+
+  try {
+    const user = await usersModule.findUserByGithubId(githubId);
+    assert.deepEqual(queryParameters, [githubId]);
+    assert.equal(user.github_id, githubId);
+    await assert.rejects(usersModule.findUserByGithubId('01'));
+  } finally {
+    dbModule.query = originalQuery;
+  }
+});
 
 test('password hashes are salted, versioned, and verified with scrypt', async () => {
   const first = await passwordModule.hashPassword('correct horse battery staple');
@@ -196,56 +243,96 @@ test('refresh preserves the remembered session absolute expiry instead of extend
   }
 });
 
-test('GitHub callback carries the trusted OAuth remember cookie into the session policy', async () => {
+test('refresh access tokens never outlive the session absolute expiry', async () => {
+  const originalRotateSession = sessionsModule.rotateSession;
+  const expiresAt = new Date(Date.now() + 5_000).toISOString();
+  sessionsModule.rotateSession = async () => ({
+    id: 'near-expiry-session',
+    user_id: localUser.id,
+    expires_at: expiresAt,
+    remember_me: true,
+    created_at: '2026-07-28T00:00:00.000Z',
+    user: localUser,
+  });
+
+  try {
+    const result = await new AuthService().refresh({ refresh_token: 'old-token' });
+    assert.equal(result.options.statusCode, undefined);
+    const accessCookie = result.options.cookies.find(({ name }) => name === 'access_token');
+    const payload = jsonwebtoken.decode(accessCookie.value);
+    assert.ok(payload.exp > payload.iat);
+    assert.ok(payload.exp <= Math.floor(Date.parse(expiresAt) / 1000));
+  } finally {
+    sessionsModule.rotateSession = originalRotateSession;
+  }
+});
+
+test('GitHub callback verifies the signed remember context and preserves raw bigint ids', async () => {
   const originals = {
     fetch: undiciModule.fetch,
     findUserByGithubId: usersModule.findUserByGithubId,
     createSession: sessionsModule.createSession,
   };
   const sessions = [];
+  const githubIds = [];
+  let fetchCalls = 0;
   undiciModule.fetch = async (url) => ({
     ok: true,
     status: 200,
-    text: async () => JSON.stringify(
-      String(url).includes('access_token')
-        ? { access_token: 'github-access-token' }
-        : {
-            id: 12345,
-            login: 'octocat',
-            avatar_url: 'https://example.com/avatar.png',
-            name: 'Octo Cat',
-          },
-    ),
+    text: async () => {
+      fetchCalls += 1;
+      return String(url).includes('access_token')
+        ? JSON.stringify({ access_token: 'github-access-token' })
+        : '{"id":9007199254740993,"login":"octocat","avatar_url":"https://example.com/avatar.png","name":"Octo Cat"}';
+    },
   });
-  usersModule.findUserByGithubId = async () => ({
-    ...localUser,
-    github_id: 12345,
-    username: 'octocat',
-    display_name: 'Octo Cat',
-  });
+  usersModule.findUserByGithubId = async (githubId) => {
+    githubIds.push(githubId);
+    return {
+      ...localUser,
+      github_id: githubId,
+      username: 'octocat',
+      display_name: 'Octo Cat',
+    };
+  };
   sessionsModule.createSession = async (...input) => {
     sessions.push(input);
   };
 
   try {
     const service = new AuthService();
-    const remembered = await service.githubCallback({
+    const rememberedStart = startGithubOauth(service, true);
+    const browserStart = startGithubOauth(service, false);
+    const tamperedContext = `${rememberedStart.contextCookie.value[0] === 'A' ? 'B' : 'A'}${rememberedStart.contextCookie.value.slice(1)}`;
+    const tampered = await service.githubCallback({
       code: 'oauth-code',
-      state: 'remembered-state',
+      state: rememberedStart.state,
+      cookies: { github_oauth_context: tamperedContext },
+    });
+    const legacy = await service.githubCallback({
+      code: 'oauth-code',
+      state: rememberedStart.state,
       cookies: {
-        github_oauth_state: 'remembered-state',
+        github_oauth_state: rememberedStart.state,
         github_oauth_remember: '1',
       },
     });
+    assert.equal(tampered.options.statusCode, 403);
+    assert.equal(legacy.options.statusCode, 403);
+    assert.equal(fetchCalls, 0);
+
+    const remembered = await service.githubCallback({
+      code: 'oauth-code',
+      state: rememberedStart.state,
+      cookies: { github_oauth_context: rememberedStart.contextCookie.value },
+    });
     const browserSession = await service.githubCallback({
       code: 'oauth-code',
-      state: 'browser-state',
-      cookies: {
-        github_oauth_state: 'browser-state',
-        github_oauth_remember: '0',
-      },
+      state: browserStart.state,
+      cookies: { github_oauth_context: browserStart.contextCookie.value },
     });
 
+    assert.deepEqual(githubIds, ['9007199254740993', '9007199254740993']);
     assert.equal(sessions[0][3], true);
     assert.equal(sessions[1][3], false);
     const rememberedRefresh = remembered.options.cookies.find(({ name }) => name === 'refresh_token');
@@ -254,8 +341,9 @@ test('GitHub callback carries the trusted OAuth remember cookie into the session
     assert.ok(rememberedRefresh.options.maxAge >= 7 * 24 * 60 * 60 - 2);
     assert.equal(browserRefresh.options.maxAge, undefined);
     assert.deepEqual(
-      remembered.options.cookies.slice(0, 2).map(({ action, name }) => [action, name]),
+      remembered.options.cookies.slice(0, 3).map(({ action, name }) => [action, name]),
       [
+        ['clear', 'github_oauth_context'],
         ['clear', 'github_oauth_state'],
         ['clear', 'github_oauth_remember'],
       ],

@@ -117,7 +117,7 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
         return {
           rows: [{
             id: userId,
-            github_id: '12345',
+            github_id: '9007199254740993',
             username: 'octocat',
             avatar_url: '',
             avatar_object_key: null,
@@ -141,6 +141,7 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
   assert.equal(results.filter(Boolean).length, 1);
   assert.equal(insertedSessions, 1);
   assert.equal(results.find(Boolean).user.id, userId);
+  assert.equal(results.find(Boolean).user.github_id, '9007199254740993');
   assert.equal(results.find(Boolean).remember_me, true);
   assert.equal(results.find(Boolean).expires_at, expiresAt);
   assert.ok(replacementTokens.map(sessionsModule.hashRefreshToken).includes(activeHash));

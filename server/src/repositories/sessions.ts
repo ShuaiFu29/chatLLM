@@ -1,5 +1,6 @@
 import { createHash } from 'crypto';
 import { query, withTransaction } from '../lib/db';
+import { normalizeNullableGithubId } from '../lib/githubId';
 import { DbUser } from './users';
 
 export interface DbSession {
@@ -16,7 +17,7 @@ export interface SessionWithUser extends DbSession {
 
 interface SessionUserRow extends DbSession {
   user_id_actual: string;
-  github_id: number | string | null;
+  github_id: string | null;
   username: string;
   avatar_url: string;
   avatar_object_key?: string | null;
@@ -34,7 +35,7 @@ const toSessionWithUser = (row: SessionUserRow): SessionWithUser => ({
   created_at: row.created_at,
   user: {
     id: row.user_id_actual,
-    github_id: row.github_id === null ? null : Number(row.github_id),
+    github_id: normalizeNullableGithubId(row.github_id),
     username: row.username,
     avatar_url: row.avatar_url,
     avatar_object_key: row.avatar_object_key,
@@ -176,7 +177,7 @@ export const rotateSession = async (
       ...session,
       user: {
         ...user,
-        github_id: user.github_id === null ? null : Number(user.github_id),
+        github_id: normalizeNullableGithubId(user.github_id),
       },
     };
   });
