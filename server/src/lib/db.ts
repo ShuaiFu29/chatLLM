@@ -53,6 +53,81 @@ export const checkDatabaseReady = async () => {
   return true;
 };
 
+interface DocumentSchemaReadinessRow extends QueryResultRow {
+  migrations_ready: boolean;
+  generation_table_ready: boolean;
+  columns_ready: boolean;
+}
+
+const documentSchemaReadinessSql = `
+  with required_migrations(filename) as (
+    values
+      ('0032_multi_format_documents.sql'),
+      ('0033_conversion_generation_integrity.sql')
+  ), required_columns(table_name, column_name) as (
+    values
+      ('files', 'document_kind'),
+      ('files', 'declared_mime_type'),
+      ('files', 'detected_mime_type'),
+      ('files', 'conversion_warning_count'),
+      ('files', 'active_conversion_generation_id'),
+      ('file_conversion_generations', 'attempt_id'),
+      ('file_conversion_generations', 'document_kind'),
+      ('file_conversion_generations', 'source_object_key'),
+      ('file_conversion_generations', 'markdown_object_key'),
+      ('file_conversion_generations', 'source_map_object_key'),
+      ('file_conversion_generations', 'manifest_object_key'),
+      ('file_conversion_generations', 'markdown_hash'),
+      ('file_conversion_generations', 'source_map_hash'),
+      ('file_conversion_generations', 'manifest_hash'),
+      ('file_conversion_generations', 'markdown_byte_size'),
+      ('file_conversion_generations', 'source_map_byte_size'),
+      ('file_conversion_generations', 'manifest_byte_size'),
+      ('file_conversion_generations', 'error_code'),
+      ('file_conversion_generations', 'status'),
+      ('file_ingestion_jobs', 'conversion_generation_id'),
+      ('file_chunks', 'conversion_generation_id'),
+      ('file_chunks', 'source_unit_ids'),
+      ('file_chunks', 'source_locator'),
+      ('file_chunks', 'content_hash'),
+      ('file_chunks', 'token_count')
+  )
+  select
+    not exists (
+      select 1
+      from required_migrations required
+      left join schema_migrations applied on applied.filename = required.filename
+      where applied.filename is null
+    ) as migrations_ready,
+    to_regclass(current_schema() || '.file_conversion_generations') is not null
+      as generation_table_ready,
+    not exists (
+      select 1
+      from required_columns required
+      left join information_schema.columns available
+        on available.table_schema = current_schema()
+       and available.table_name = required.table_name
+       and available.column_name = required.column_name
+      where available.column_name is null
+    ) as columns_ready
+`;
+
+export const checkDocumentSchemaReady = async (
+  runQuery: typeof query = query,
+) => {
+  const { rows } = await runQuery<DocumentSchemaReadinessRow>(documentSchemaReadinessSql);
+  const readiness = rows[0];
+  if (
+    !readiness
+    || readiness.migrations_ready !== true
+    || readiness.generation_table_ready !== true
+    || readiness.columns_ready !== true
+  ) {
+    throw new Error('Required document schema is not ready');
+  }
+  return true;
+};
+
 export const closeDatabasePool = async () => {
   await pool.end();
 };

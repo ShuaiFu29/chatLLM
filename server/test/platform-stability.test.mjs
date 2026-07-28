@@ -108,6 +108,7 @@ test('database layer configures pool limits and exposes readiness helpers', () =
   assert.match(dbSource, /pool\.idleCount/);
   assert.match(dbSource, /pool\.waitingCount/);
   assert.match(dbSource, /export const checkDatabaseReady/);
+  assert.match(dbSource, /export const checkDocumentSchemaReady/);
   assert.match(dbSource, /export const closeDatabasePool/);
 });
 

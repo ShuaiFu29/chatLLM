@@ -215,6 +215,7 @@ test('readReadyHealth never logs downstream Axios request configuration or paylo
   try {
     result = await healthModule.readReadyHealth({
       checkDatabaseReady: async () => true,
+      checkDocumentSchemaReady: async () => true,
       checkRedisReady: async () => true,
       checkRagServiceReady: async () => { throw makeSensitiveAxiosError(); },
     }, 'request-id-health');
@@ -225,7 +226,7 @@ test('readReadyHealth never logs downstream Axios request configuration or paylo
   assert.equal(result.statusCode, 503);
   assert.deepEqual(result.body, {
     status: 'not_ready',
-    checks: { postgres: 'ok', redis: 'ok', rag: 'error' },
+    checks: { postgres: 'ok', postgres_schema: 'ok', redis: 'ok', rag: 'error' },
   });
   assert.equal(logs.length, 1);
   assert.deepEqual(logs[0][1], {
