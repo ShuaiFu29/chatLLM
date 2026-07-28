@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "documentTypes": [
+    {
+      "documentKind": "markdown",
+      "extensions": ["md", "markdown"],
+      "canonicalMimeType": "text/markdown",
+      "acceptedMimeTypes": ["text/markdown", "text/x-markdown"],
+      "maxBytes": 104857600,
+      "conversionProfile": "markdown-v1"
+    },
+    {
+      "documentKind": "plaintext",
+      "extensions": ["txt"],
+      "canonicalMimeType": "text/plain",
+      "acceptedMimeTypes": ["text/plain"],
+      "maxBytes": 33554432,
+      "conversionProfile": "plaintext-v1"
+    },
+    {
+      "documentKind": "pdf",
+      "extensions": ["pdf"],
+      "canonicalMimeType": "application/pdf",
+      "acceptedMimeTypes": ["application/pdf"],
+      "maxBytes": 52428800,
+      "conversionProfile": "pdf-text-v1"
+    },
+    {
+      "documentKind": "docx",
+      "extensions": ["docx"],
+      "canonicalMimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      "acceptedMimeTypes": [
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      ],
+      "maxBytes": 33554432,
+      "conversionProfile": "docx-v1"
+    },
+    {
+      "documentKind": "pptx",
+      "extensions": ["pptx"],
+      "canonicalMimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "acceptedMimeTypes": [
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+      ],
+      "maxBytes": 33554432,
+      "conversionProfile": "pptx-v1"
+    },
+    {
+      "documentKind": "xlsx",
+      "extensions": ["xlsx"],
+      "canonicalMimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "acceptedMimeTypes": [
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      ],
+      "maxBytes": 33554432,
+      "conversionProfile": "xlsx-v1"
+    },
+    {
+      "documentKind": "csv",
+      "extensions": ["csv"],
+      "canonicalMimeType": "text/csv",
+      "acceptedMimeTypes": ["text/csv", "application/csv"],
+      "maxBytes": 33554432,
+      "conversionProfile": "csv-v1"
+    }
+  ]
+}

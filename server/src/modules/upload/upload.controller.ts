@@ -45,6 +45,11 @@ import {
 export class UploadController {
   constructor(private readonly uploadService: UploadService) {}
 
+  @Get('capabilities')
+  capabilities() {
+    return this.uploadService.getDocumentCapabilities();
+  }
+
   @Post('check')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadCheck)

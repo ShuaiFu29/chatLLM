@@ -58,13 +58,14 @@ import { artifactCleanupQueue } from '../../services/cleanupQueue';
 import { verifyMergedUploadFile } from '../../lib/uploadIntegrity';
 import { assertCompletedMultipartObject } from '../../lib/multipartCompletion';
 import {
+  DOCUMENT_TYPE_REGISTRY,
   MAX_MULTIPART_UPLOAD_PARTS,
   SUPPORTED_DOCUMENT_ERROR,
   UPLOAD_HASH_ERROR,
   UPLOAD_SIZE_ERROR,
   UPLOAD_TOO_LARGE_ERROR,
   chooseMultipartPartSize,
-  getSupportedDocumentContentType,
+  getSupportedDocumentType,
   parseMultipartPartNumbers,
   parseUploadFileHash,
   parseUploadFileSize,
@@ -196,13 +197,17 @@ export interface UploadQuery {
   project_space_id?: string;
 }
 
-const ensureSupportedDocumentFilename = (filename?: string) => {
-  const contentType = getSupportedDocumentContentType(filename);
-  if (!contentType) {
+const ensureSupportedDocument = (filename?: string) => {
+  const documentType = getSupportedDocumentType(filename);
+  if (!documentType) {
     throw new Error(SUPPORTED_DOCUMENT_ERROR);
   }
-  return contentType;
+  return documentType;
 };
+
+const ensureSupportedDocumentFilename = (filename?: string) => (
+  ensureSupportedDocument(filename).canonicalMimeType
+);
 
 const requireUploadHash = (value: unknown) => {
   const hash = parseUploadFileHash(value);
@@ -210,8 +215,9 @@ const requireUploadHash = (value: unknown) => {
   return hash;
 };
 
-const requireUploadSize = (value: unknown) => {
-  const size = parseUploadFileSize(value, serverEnv.MAX_DOCUMENT_BYTES);
+const requireUploadSize = (value: unknown, typeMaximumBytes = serverEnv.MAX_DOCUMENT_BYTES) => {
+  const maximumBytes = Math.min(serverEnv.MAX_DOCUMENT_BYTES, typeMaximumBytes);
+  const size = parseUploadFileSize(value, maximumBytes);
   if (size === null && parseUploadFileSize(value) !== null) {
     throw new Error(UPLOAD_TOO_LARGE_ERROR);
   }
@@ -359,17 +365,26 @@ const MULTIPART_COMPLETION_REJECTED = 'Multipart completion was rejected by stor
 
 @Injectable()
 export class UploadService {
+  getDocumentCapabilities() {
+    return DOCUMENT_TYPE_REGISTRY;
+  }
+
   async checkFile(userId: string, body: UploadBody, requestId?: string) {
     const { hash, filename } = body;
 
     try {
       const normalizedHash = requireUploadHash(hash);
-      ensureSupportedDocumentFilename(filename);
+      const documentType = ensureSupportedDocument(filename);
       const requestedProjectSpaceId = readProjectSpaceId(body.project_space_id ?? body.projectSpaceId);
       const projectSpaceId = await resolveProjectSpaceId(userId, requestedProjectSpaceId);
       if (!projectSpaceId) return errorResponse(404, 'Project space not found');
 
-      const claimedFile = await findClaimedFileByUserAndHash(userId, normalizedHash, projectSpaceId);
+      const claimedFile = await findClaimedFileByUserAndHash(
+        userId,
+        normalizedHash,
+        projectSpaceId,
+        documentType.conversionProfile,
+      );
 
       if (claimedFile && !needsFileBytes(claimedFile)) {
         return {
@@ -436,8 +451,9 @@ export class UploadService {
 
     try {
       const normalizedHash = requireUploadHash(hash);
-      const normalizedSize = requireUploadSize(size);
-      const contentType = ensureSupportedDocumentFilename(normalizedFilename);
+      const documentType = ensureSupportedDocument(normalizedFilename);
+      const normalizedSize = requireUploadSize(size, documentType.maxBytes);
+      const contentType = documentType.canonicalMimeType;
       const requestedProjectSpaceId = readProjectSpaceId(body.project_space_id ?? body.projectSpaceId);
       const projectSpaceId = await resolveProjectSpaceId(userId, requestedProjectSpaceId);
       if (!projectSpaceId) return errorResponse(404, 'Project space not found');
@@ -448,7 +464,10 @@ export class UploadService {
         filename: normalizedFilename,
         hash: normalizedHash,
         size: normalizedSize,
-        type: getSupportedDocumentContentType(normalizedFilename) || type || contentType,
+        type: contentType,
+        declaredMimeType: type,
+        documentKind: documentType.documentKind,
+        conversionProfile: documentType.conversionProfile,
       });
       const file = reservation.file;
 
@@ -483,8 +502,9 @@ export class UploadService {
 
     try {
       const normalizedHash = requireUploadHash(hash);
-      const normalizedSize = requireUploadSize(size);
-      const contentType = ensureSupportedDocumentFilename(normalizedFilename);
+      const documentType = ensureSupportedDocument(normalizedFilename);
+      const normalizedSize = requireUploadSize(size, documentType.maxBytes);
+      const contentType = documentType.canonicalMimeType;
       const requestedProjectSpaceId = readProjectSpaceId(body.project_space_id ?? body.projectSpaceId);
       const projectSpaceId = await resolveProjectSpaceId(userId, requestedProjectSpaceId);
       if (!projectSpaceId) return errorResponse(404, 'Project space not found');
@@ -495,7 +515,10 @@ export class UploadService {
         filename: normalizedFilename,
         hash: normalizedHash,
         size: normalizedSize,
-        type: getSupportedDocumentContentType(normalizedFilename) || type || contentType,
+        type: contentType,
+        declaredMimeType: type,
+        documentKind: documentType.documentKind,
+        conversionProfile: documentType.conversionProfile,
       });
       const file = reservation.file;
       if (!needsFileBytes(file)) {

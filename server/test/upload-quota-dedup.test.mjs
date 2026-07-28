@@ -48,7 +48,9 @@ const fileRow = (overrides = {}) => ({
   ...overrides,
 });
 
-const claimKey = (userId, scopeKey, hash) => `${userId}:${scopeKey}:${hash}`;
+const claimKey = (userId, scopeKey, hash, conversionProfile = 'markdown-v1') => (
+  `${userId}:${scopeKey}:${hash}:${conversionProfile}`
+);
 
 const createFakeUploadDatabase = ({
   files = [],
@@ -59,7 +61,7 @@ const createFakeUploadDatabase = ({
   const state = {
     files: new Map(files.map((file) => [file.id, { ...file }])),
     claims: new Map(claims.map((claim) => [
-      claimKey(claim.userId, claim.scopeKey, claim.hash),
+      claimKey(claim.userId, claim.scopeKey, claim.hash, claim.conversionProfile),
       claim.fileId,
     ])),
     users: new Map(users.map((user) => [user.id, { ...user }])),
@@ -97,7 +99,7 @@ const createFakeUploadDatabase = ({
         }
 
         if (normalized.includes('from file_content_claims') && normalized.includes('join files')) {
-          const id = state.claims.get(claimKey(params[0], params[1], params[2]));
+          const id = state.claims.get(claimKey(params[0], params[1], params[2], params[3]));
           return { rows: id && state.files.has(id) ? [{ ...state.files.get(id) }] : [], rowCount: id ? 1 : 0 };
         }
 
@@ -121,18 +123,20 @@ const createFakeUploadDatabase = ({
             file_hash: params[3],
             file_size: params[4],
             file_type: params[5],
-            max_attempts: params[6],
-            reserved_bytes: params[7],
+            declared_mime_type: params[6],
+            document_kind: params[7],
+            max_attempts: params[8],
+            reserved_bytes: params[9],
           });
           state.files.set(id, created);
           return { rows: [{ ...created }], rowCount: 1 };
         }
 
         if (normalized.startsWith('insert into file_content_claims')) {
-          const key = claimKey(params[0], params[1], params[2]);
+          const key = claimKey(params[0], params[1], params[2], params[3]);
           if (state.claims.has(key)) return { rows: [], rowCount: 0 };
-          state.claims.set(key, params[3]);
-          return { rows: [{ file_id: params[3] }], rowCount: 1 };
+          state.claims.set(key, params[4]);
+          return { rows: [{ file_id: params[4] }], rowCount: 1 };
         }
 
         if (normalized.startsWith('update files') && normalized.includes("status = 'uploading'")) {
@@ -144,7 +148,9 @@ const createFakeUploadDatabase = ({
             filename: params[1],
             file_size: params[2],
             file_type: params[3],
-            reserved_bytes: params[4],
+            declared_mime_type: params[4],
+            document_kind: params[5],
+            reserved_bytes: params[6],
             error_message: null,
           };
           state.files.set(existing.id, resumed);
@@ -219,6 +225,28 @@ test('concurrent identical reservations return one canonical file and consume qu
   assert.equal(database.state.claims.size, 1);
   assert.equal([...database.state.files.values()][0].reserved_bytes, 60);
   assert.match(database.calls[0].sql, /select id\s+from users[\s\S]*for update/i);
+});
+
+test('identical bytes with different conversion profiles keep distinct canonical documents', async () => {
+  const database = createFakeUploadDatabase();
+  const expandedLimits = {
+    maxDocumentBytes: 100,
+    maxUserStorageBytes: 200,
+    maxUserActiveUploadBytes: 200,
+  };
+
+  const markdown = await reserve(baseInput, database, expandedLimits);
+  const plaintext = await reserve({
+    ...baseInput,
+    filename: 'notes.txt',
+    type: 'text/plain',
+    documentKind: 'plaintext',
+    conversionProfile: 'plaintext-v1',
+  }, database, expandedLimits);
+
+  assert.notEqual(markdown.file.id, plaintext.file.id);
+  assert.equal(database.state.files.size, 2);
+  assert.equal(database.state.claims.size, 2);
 });
 
 test('the per-user lock serializes different hashes so active reservations cannot oversubscribe', async () => {

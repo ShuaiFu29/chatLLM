@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 import { serverEnv } from '../lib/env';
+import type { DocumentKind } from '../lib/uploadInput';
 
 export interface FileRow {
   id: string;
@@ -11,6 +12,11 @@ export interface FileRow {
   file_hash: string;
   file_size?: number | null;
   file_type?: string | null;
+  document_kind?: DocumentKind;
+  declared_mime_type?: string | null;
+  detected_mime_type?: string | null;
+  active_conversion_generation_id?: string | null;
+  conversion_warning_count?: number;
   object_key?: string | null;
   status: 'uploading' | 'pending' | 'processing' | 'completed' | 'failed' | 'deleting';
   progress: number;
@@ -33,6 +39,11 @@ const columns = `
   file_hash,
   file_size,
   file_type,
+  document_kind,
+  declared_mime_type,
+  detected_mime_type,
+  active_conversion_generation_id,
+  conversion_warning_count,
   object_key,
   status,
   progress,
@@ -55,6 +66,11 @@ const claimedColumns = `
   file.file_hash,
   file.file_size,
   file.file_type,
+  file.document_kind,
+  file.declared_mime_type,
+  file.detected_mime_type,
+  file.active_conversion_generation_id,
+  file.conversion_warning_count,
   file.object_key,
   file.status,
   file.progress,
@@ -77,7 +93,8 @@ const findClaimedFileWithClient = async (
   client: PoolClient,
   userId: string,
   hash: string,
-  projectSpaceId?: string | null
+  projectSpaceId?: string | null,
+  conversionProfile = 'markdown-v1'
 ) => {
   const { rows } = await client.query<FileRow>(
     `select ${claimedColumns}
@@ -85,8 +102,9 @@ const findClaimedFileWithClient = async (
      join files file on file.id = claim.file_id
      where claim.user_id = $1
        and claim.scope_key = $2
-       and claim.file_hash = $3`,
-    [userId, getFileContentScopeKey(projectSpaceId), hash]
+       and claim.file_hash = $3
+       and claim.conversion_profile = $4`,
+    [userId, getFileContentScopeKey(projectSpaceId), hash, conversionProfile]
   );
   return rows[0] || null;
 };
@@ -94,7 +112,8 @@ const findClaimedFileWithClient = async (
 export const findClaimedFileByUserAndHash = async (
   userId: string,
   hash: string,
-  projectSpaceId?: string | null
+  projectSpaceId?: string | null,
+  conversionProfile = 'markdown-v1'
 ) => {
   const { rows } = await query<FileRow>(
     `select ${claimedColumns}
@@ -102,8 +121,9 @@ export const findClaimedFileByUserAndHash = async (
      join files file on file.id = claim.file_id
      where claim.user_id = $1
        and claim.scope_key = $2
-       and claim.file_hash = $3`,
-    [userId, getFileContentScopeKey(projectSpaceId), hash]
+       and claim.file_hash = $3
+       and claim.conversion_profile = $4`,
+    [userId, getFileContentScopeKey(projectSpaceId), hash, conversionProfile]
   );
   return rows[0] || null;
 };
@@ -111,18 +131,20 @@ export const findClaimedFileByUserAndHash = async (
 export const findCompletedFileByUserAndHash = async (
   userId: string,
   hash: string,
-  projectSpaceId?: string | null
+  projectSpaceId?: string | null,
+  conversionProfile = 'markdown-v1'
 ) => {
-  const file = await findClaimedFileByUserAndHash(userId, hash, projectSpaceId);
+  const file = await findClaimedFileByUserAndHash(userId, hash, projectSpaceId, conversionProfile);
   return file?.status === 'completed' ? file : null;
 };
 
 export const findUploadingFileByUserAndHash = async (
   userId: string,
   hash: string,
-  projectSpaceId?: string | null
+  projectSpaceId?: string | null,
+  conversionProfile = 'markdown-v1'
 ) => {
-  const file = await findClaimedFileByUserAndHash(userId, hash, projectSpaceId);
+  const file = await findClaimedFileByUserAndHash(userId, hash, projectSpaceId, conversionProfile);
   return file?.status === 'uploading' ? { id: file.id } : null;
 };
 
@@ -132,6 +154,9 @@ export interface UploadReservationInput {
   hash: string;
   size: number;
   type?: string;
+  declaredMimeType?: string;
+  documentKind?: DocumentKind;
+  conversionProfile?: string;
   projectSpaceId?: string | null;
 }
 
@@ -204,6 +229,8 @@ export const reserveUploadFile = async (
   options: ReserveUploadFileOptions = {}
 ) => {
   const limits = options.limits || defaultUploadQuotaLimits();
+  const documentKind = input.documentKind || 'markdown';
+  const conversionProfile = input.conversionProfile || 'markdown-v1';
   if (!Number.isSafeInteger(input.size) || input.size < 1) {
     throw new Error('Invalid upload size');
   }
@@ -242,7 +269,8 @@ export const reserveUploadFile = async (
       client,
       input.userId,
       input.hash,
-      input.projectSpaceId
+      input.projectSpaceId,
+      conversionProfile
     );
     if (claimed) {
       const canResumeUpload = !claimed.object_key
@@ -267,14 +295,24 @@ export const reserveUploadFile = async (
                filename = $2,
                file_size = $3,
                file_type = $4,
-               reserved_bytes = $5,
+               declared_mime_type = $5,
+               document_kind = $6,
+               reserved_bytes = $7,
                storage_bytes = 0,
                progress = 0,
                error_message = null,
                updated_at = now()
            where id = $1
            returning ${columns}`,
-          [claimed.id, input.filename, input.size, input.type || null, input.size]
+          [
+            claimed.id,
+            input.filename,
+            input.size,
+            input.type || null,
+            input.declaredMimeType || null,
+            documentKind,
+            input.size,
+          ]
         );
         return { file: rows[0], created: false };
       }
@@ -292,12 +330,14 @@ export const reserveUploadFile = async (
          file_hash,
          file_size,
          file_type,
+         declared_mime_type,
+         document_kind,
          status,
          max_attempts,
          reserved_bytes,
          storage_bytes
        )
-       values ($1, $2, $3, $4, $5, $6, 'uploading', $7, $8, 0)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, 'uploading', $9, $10, 0)
        returning ${columns}`,
       [
         input.userId,
@@ -306,6 +346,8 @@ export const reserveUploadFile = async (
         input.hash,
         input.size,
         input.type || null,
+        input.declaredMimeType || null,
+        documentKind,
         serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
         input.size,
       ]
@@ -313,11 +355,23 @@ export const reserveUploadFile = async (
     const file = inserted.rows[0];
 
     const claim = await client.query<{ file_id: string }>(
-      `insert into file_content_claims (user_id, scope_key, file_hash, file_id)
-       values ($1, $2, $3, $4)
+      `insert into file_content_claims (
+         user_id,
+         scope_key,
+         file_hash,
+         conversion_profile,
+         file_id
+       )
+       values ($1, $2, $3, $4, $5)
        on conflict do nothing
        returning file_id`,
-      [input.userId, getFileContentScopeKey(input.projectSpaceId), input.hash, file.id]
+      [
+        input.userId,
+        getFileContentScopeKey(input.projectSpaceId),
+        input.hash,
+        conversionProfile,
+        file.id,
+      ]
     );
     if (claim.rows[0]) return { file, created: true };
 
@@ -325,7 +379,8 @@ export const reserveUploadFile = async (
       client,
       input.userId,
       input.hash,
-      input.projectSpaceId
+      input.projectSpaceId,
+      conversionProfile
     );
     await client.query('delete from files where id = $1', [file.id]);
     if (!canonical) throw new Error('Canonical upload claim disappeared');

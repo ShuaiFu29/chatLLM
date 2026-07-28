@@ -9,8 +9,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const serverRoot = path.resolve(__dirname, '..');
 
 const {
+  DOCUMENT_TYPE_CAPABILITIES,
+  DOCUMENT_TYPE_REGISTRY,
   MAX_UPLOAD_CHUNKS,
+  SUPPORTED_DOCUMENT_ERROR,
   getSupportedDocumentContentType,
+  getSupportedDocumentType,
   parseUploadChunkIndex,
   parseUploadFileSize,
   parseUploadTotalChunks,
@@ -39,12 +43,62 @@ test('parseUploadTotalChunks accepts only bounded positive integer counts', () =
   assert.equal(parseUploadTotalChunks(MAX_UPLOAD_CHUNKS + 1), null);
 });
 
-test('getSupportedDocumentContentType accepts markdown document names only', () => {
-  assert.equal(getSupportedDocumentContentType('notes.md'), 'text/markdown');
-  assert.equal(getSupportedDocumentContentType('notes.markdown'), 'text/markdown');
-  assert.equal(getSupportedDocumentContentType('paper.PDF'), null);
-  assert.equal(getSupportedDocumentContentType('notes.txt'), null);
+test('document type registry exposes canonical MIME types for supported formats', () => {
+  assert.equal(DOCUMENT_TYPE_REGISTRY.schemaVersion, 1);
+  assert.deepEqual(
+    DOCUMENT_TYPE_CAPABILITIES.flatMap((documentType) => documentType.extensions),
+    ['md', 'markdown', 'txt', 'pdf', 'docx', 'pptx', 'xlsx', 'csv']
+  );
+
+  const cases = [
+    ['notes.md', 'text/markdown', 'markdown'],
+    ['notes.markdown', 'text/markdown', 'markdown'],
+    ['notes.txt', 'text/plain', 'plaintext'],
+    ['paper.PDF', 'application/pdf', 'pdf'],
+    [
+      'report.docx',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'docx',
+    ],
+    [
+      'slides.pptx',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+      'pptx',
+    ],
+    [
+      'data.xlsx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      'xlsx',
+    ],
+    ['records.csv', 'text/csv', 'csv'],
+  ];
+
+  for (const [filename, canonicalMimeType, documentKind] of cases) {
+    assert.equal(getSupportedDocumentContentType(filename), canonicalMimeType);
+    assert.equal(getSupportedDocumentType(filename)?.documentKind, documentKind);
+    assert.equal(Number.isSafeInteger(getSupportedDocumentType(filename)?.maxBytes), true);
+    assert.equal(getSupportedDocumentType(filename).maxBytes > 0, true);
+  }
+});
+
+test('document type lookup rejects legacy Office, macro, image, and ambiguous names', () => {
+  for (const filename of [
+    'legacy.doc',
+    'legacy.xls',
+    'legacy.ppt',
+    'macro.docm',
+    'macro.xlsm',
+    'macro.pptm',
+    'scan.png',
+    'photo.jpg',
+    'notes.md.exe',
+  ]) {
+    assert.equal(getSupportedDocumentContentType(filename), null);
+    assert.equal(getSupportedDocumentType(filename), null);
+  }
+
   assert.equal(getSupportedDocumentContentType(''), null);
+  assert.match(SUPPORTED_DOCUMENT_ERROR, /\.md, \.markdown, \.txt, \.pdf, \.docx, \.pptx, \.xlsx, \.csv/);
 });
 
 test('parseUploadFileSize enforces the configured document byte ceiling', () => {
