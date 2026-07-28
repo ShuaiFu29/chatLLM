@@ -3,7 +3,9 @@ uvicorn
 python-dotenv
 psycopg[binary]
 boto3
+charset-normalizer
 pymilvus
 langchain
 langchain-text-splitters
 redis
+zstandard
