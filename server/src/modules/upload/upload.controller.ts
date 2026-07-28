@@ -194,6 +194,15 @@ export class UploadController {
     return this.uploadService.getFileContent(user.id, id, requestId);
   }
 
+  @Get('files/:id/original')
+  fileOriginal(
+    @CurrentUser() user: User,
+    @Param('id') id: string,
+    @RequestId() requestId?: string,
+  ) {
+    return this.uploadService.getFileOriginal(user.id, id, requestId);
+  }
+
   @Post('files/:id/retry')
   @HttpCode(200)
   @ValidateMutation(mutationSchemas.uploadRetryFile)

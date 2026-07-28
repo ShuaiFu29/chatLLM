@@ -8,6 +8,8 @@ import { toSafeError } from '../../lib/safeError';
 import {
   abortMultipartObjectUpload,
   buildAvatarKey,
+  buildContentDisposition,
+  buildDerivedMarkdownFilename,
   buildDocumentKey,
   completeMultipartObjectUpload,
   createMultipartObjectUpload,
@@ -25,6 +27,7 @@ import {
 import {
   type FileRow,
   findClaimedFileByUserAndHash,
+  findActiveConvertedFileContentForUser,
   findFileForUser,
   listFilesForUser,
   reserveUploadFile,
@@ -177,6 +180,70 @@ const requestError = (status: number, error: string) => (
 const errorResponse = (statusCode: number, error: string) => (
   httpResponse({ error }, { statusCode })
 );
+
+export interface DocumentReadDependencies {
+  findActiveContent: typeof findActiveConvertedFileContentForUser;
+  findOriginal: typeof findFileForUser;
+  openObject: typeof getObjectStream;
+}
+
+const defaultDocumentReadDependencies: DocumentReadDependencies = {
+  findActiveContent: findActiveConvertedFileContentForUser,
+  findOriginal: findFileForUser,
+  openObject: getObjectStream,
+};
+
+const documentReadDependencies = (
+  overrides: Partial<DocumentReadDependencies>,
+): DocumentReadDependencies => ({
+  ...defaultDocumentReadDependencies,
+  ...overrides,
+});
+
+const readMimeType = (value: unknown) => {
+  if (typeof value !== 'string') return null;
+  const mimeType = value.split(';', 1)[0]?.trim().toLowerCase() || '';
+  return /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+$/.test(mimeType)
+    ? mimeType
+    : null;
+};
+
+export const resolveOriginalDocumentContentType = (
+  file: Pick<
+    FileRow,
+    'status' | 'document_kind' | 'detected_mime_type' | 'file_type'
+  >,
+  storedContentType?: string,
+) => {
+  const capability = DOCUMENT_TYPE_REGISTRY.documentTypes.find(
+    (documentType) => documentType.documentKind === file.document_kind,
+  );
+  if (!capability) return 'application/octet-stream';
+
+  const acceptedMimeTypes = new Set([
+    capability.canonicalMimeType,
+    ...capability.acceptedMimeTypes,
+  ].map((mimeType) => mimeType.toLowerCase()));
+  const readAcceptedMimeType = (value: unknown) => {
+    const mimeType = readMimeType(value);
+    return mimeType && acceptedMimeTypes.has(mimeType) ? mimeType : null;
+  };
+
+  const detectedMimeType = readAcceptedMimeType(file.detected_mime_type);
+  if (detectedMimeType) return detectedMimeType;
+
+  // Until conversion has validated the original, do not trust its extension,
+  // declared MIME type, or object metadata as an inline-capable response type.
+  if (file.status !== 'completed') return 'application/octet-stream';
+  return readAcceptedMimeType(storedContentType)
+    || readAcceptedMimeType(file.file_type)
+    || 'application/octet-stream';
+};
+
+const markdownEtag = (value: unknown) => {
+  const hash = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  return /^[0-9a-f]{64}$/.test(hash) ? `"${hash}"` : null;
+};
 
 export interface UploadBody {
   hash?: string;
@@ -1257,35 +1324,82 @@ export class UploadService {
     }
   }
 
-  async getFileContent(userId: string, id: string, requestId?: string) {
-    let file;
+  async getFileContent(
+    userId: string,
+    id: string,
+    requestId?: string,
+    dependencyOverrides: Partial<DocumentReadDependencies> = {},
+  ) {
+    const dependencies = documentReadDependencies(dependencyOverrides);
+    let content;
     try {
-      file = await findFileForUser(id, userId);
+      content = await dependencies.findActiveContent(id, userId);
     } catch (err) {
       console.warn('[Upload] File content lookup failed:', toSafeError(err, requestId));
-      throw new HttpException(
-        { error: 'File content not found', details: 'File content not found' },
-        404,
-      );
+      throw requestError(503, 'File content is unavailable');
     }
-    if (!file || file.status !== 'completed' || !file.object_key) {
+    if (!content) {
       throw requestError(404, 'File content not found');
     }
+
     try {
-      const { stream } = await getObjectStream(file.object_key);
+      const { stream } = await dependencies.openObject(content.markdown_object_key);
+      const etag = markdownEtag(content.markdown_hash);
       return httpResponse(new StreamableFile(stream), {
         headers: {
           'Content-Type': 'text/markdown; charset=utf-8',
-          'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+          'Content-Disposition': buildContentDisposition(
+            'inline',
+            buildDerivedMarkdownFilename(content.filename),
+          ),
           'Cache-Control': 'private, max-age=60',
+          'X-Content-Type-Options': 'nosniff',
+          ...(etag ? { ETag: etag } : {}),
         },
       });
     } catch (error) {
+      if (isObjectNotFoundError(error)) {
+        throw requestError(404, 'File content not found');
+      }
       console.warn('[Upload] File content lookup failed:', toSafeError(error, requestId));
-      throw new HttpException(
-        { error: 'File content not found', details: 'File content not found' },
-        404,
-      );
+      throw requestError(503, 'File content is unavailable');
+    }
+  }
+
+  async getFileOriginal(
+    userId: string,
+    id: string,
+    requestId?: string,
+    dependencyOverrides: Partial<DocumentReadDependencies> = {},
+  ) {
+    const dependencies = documentReadDependencies(dependencyOverrides);
+    let file;
+    try {
+      file = await dependencies.findOriginal(id, userId);
+    } catch (error) {
+      console.warn('[Upload] File original lookup failed:', toSafeError(error, requestId));
+      throw requestError(503, 'File original is unavailable');
+    }
+    if (!file || !file.object_key || ['uploading', 'deleting'].includes(file.status)) {
+      throw requestError(404, 'File original not found');
+    }
+
+    try {
+      const object = await dependencies.openObject(file.object_key);
+      return httpResponse(new StreamableFile(object.stream), {
+        headers: {
+          'Content-Type': resolveOriginalDocumentContentType(file, object.contentType),
+          'Content-Disposition': buildContentDisposition('attachment', file.filename),
+          'Cache-Control': 'private, max-age=60',
+          'X-Content-Type-Options': 'nosniff',
+        },
+      });
+    } catch (error) {
+      if (isObjectNotFoundError(error)) {
+        throw requestError(404, 'File original not found');
+      }
+      console.warn('[Upload] File original lookup failed:', toSafeError(error, requestId));
+      throw requestError(503, 'File original is unavailable');
     }
   }
 

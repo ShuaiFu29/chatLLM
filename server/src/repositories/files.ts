@@ -403,6 +403,43 @@ export const findFileForUser = async (fileId: string, userId: string) => {
   return rows[0] || null;
 };
 
+export interface ActiveConvertedFileContentRow {
+  file_id: string;
+  filename: string;
+  document_kind: DocumentKind;
+  conversion_generation_id: string;
+  markdown_object_key: string;
+  markdown_hash: string;
+  markdown_byte_size: number | string;
+}
+
+export const findActiveConvertedFileContentForUser = async (
+  fileId: string,
+  userId: string,
+  runQuery: typeof query = query,
+) => {
+  const { rows } = await runQuery<ActiveConvertedFileContentRow>(
+    `select
+       target_file.id as file_id,
+       target_file.filename,
+       target_file.document_kind,
+       generation.id as conversion_generation_id,
+       generation.markdown_object_key,
+       generation.markdown_hash,
+       generation.markdown_byte_size
+     from files target_file
+     join file_conversion_generations generation
+       on generation.id = target_file.active_conversion_generation_id
+      and generation.file_id = target_file.id
+     where target_file.id = $1
+       and target_file.user_id = $2
+       and target_file.status = 'completed'
+       and generation.status in ('completed', 'completed_with_warnings')`,
+    [fileId, userId],
+  );
+  return rows[0] || null;
+};
+
 export const listFilesForUser = async (userId: string, projectSpaceId?: string) => {
   const values: unknown[] = [userId];
   let projectSpaceFilter = '';

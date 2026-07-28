@@ -51,6 +51,37 @@ export const ensureBucket = async () => {
 export const sanitizeFilename = (filename: string) =>
   path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
 
+const normalizeDownloadFilename = (filename: string) => (
+  Array.from(path.basename(String(filename || '')))
+    .filter((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint >= 32 && codePoint !== 127;
+    })
+    .join('')
+    .trim() || 'document'
+);
+
+const encodeContentDispositionFilename = (filename: string) => (
+  encodeURIComponent(filename).replace(/['()*]/g, (character) => (
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  ))
+);
+
+export const buildDerivedMarkdownFilename = (filename: string) => {
+  const normalized = normalizeDownloadFilename(filename);
+  const stem = path.parse(normalized).name.trim() || 'document';
+  return `${stem}.md`;
+};
+
+export const buildContentDisposition = (
+  disposition: 'inline' | 'attachment',
+  filename: string,
+) => {
+  const normalized = normalizeDownloadFilename(filename);
+  const fallback = sanitizeFilename(normalized) || 'document';
+  return `${disposition}; filename="${fallback}"; filename*=UTF-8''${encodeContentDispositionFilename(normalized)}`;
+};
+
 export const buildDocumentKey = (userId: string, fileId: string, filename: string) => {
   const extension = path.extname(sanitizeFilename(filename)).toLowerCase();
   const safeExtension = /^\.[a-z0-9]{1,16}$/.test(extension) ? extension : '';
@@ -283,6 +314,10 @@ export const getObjectStream = async (key: string) => {
   return {
     stream: response.Body as Readable,
     contentType: response.ContentType,
+    contentLength: Number.isSafeInteger(response.ContentLength)
+      ? Number(response.ContentLength)
+      : undefined,
+    etag: typeof response.ETag === 'string' ? response.ETag : undefined,
   };
 };
 
