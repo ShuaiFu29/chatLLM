@@ -2,7 +2,10 @@ import { randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 import { serverEnv } from '../lib/env';
-import type { DocumentKind } from '../lib/uploadInput';
+import {
+  DOCUMENT_TYPE_CAPABILITIES,
+  type DocumentKind,
+} from '../lib/uploadInput';
 
 export interface FileRow {
   id: string;
@@ -776,19 +779,23 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
   });
 };
 
-export interface MarkdownReingestionOptions {
+export interface DocumentReingestionOptions {
   limit?: number;
   projectSpaceId?: string | null;
+  includeActive?: boolean;
+  documentKind?: DocumentKind | null;
 }
 
-const markdownReingestionPredicate = `
+export const SUPPORTED_REINGESTION_DOCUMENT_KINDS = Object.freeze(
+  DOCUMENT_TYPE_CAPABILITIES.map((capability) => capability.documentKind),
+);
+
+const documentReingestionPredicate = `
   files.object_key is not null
   and files.status in ('completed', 'failed')
-  and (
-    lower(files.filename) like '%.md'
-    or lower(files.filename) like '%.markdown'
-  )
   and ($1::uuid is null or files.project_space_id = $1::uuid)
+  and files.document_kind = any($2::text[])
+  and ($3::boolean or files.active_conversion_generation_id is null)
   and not exists (
     select 1
     from file_ingestion_jobs active_job
@@ -798,40 +805,58 @@ const markdownReingestionPredicate = `
   )
 `;
 
-export const countMarkdownFilesForReingestion = async (
-  projectSpaceId?: string | null,
+const documentReingestionParameters = (options: DocumentReingestionOptions) => {
+  if (options.documentKind
+    && !SUPPORTED_REINGESTION_DOCUMENT_KINDS.includes(options.documentKind)) {
+    throw new Error('Unsupported document kind for reingestion');
+  }
+  return [
+    options.projectSpaceId || null,
+    options.documentKind
+      ? [options.documentKind]
+      : [...SUPPORTED_REINGESTION_DOCUMENT_KINDS],
+    Boolean(options.includeActive),
+  ];
+};
+
+export const countDocumentsForReingestion = async (
+  options: DocumentReingestionOptions = {},
   runQuery: typeof query = query,
 ) => {
   const { rows } = await runQuery<{ count: number | string }>(
     `select count(*)::bigint as count
      from files
-     where ${markdownReingestionPredicate}`,
-    [projectSpaceId || null],
+     where ${documentReingestionPredicate}`,
+    documentReingestionParameters(options),
   );
   return Number(rows[0]?.count || 0);
 };
 
-export const queueMarkdownFilesForReingestion = async (options: MarkdownReingestionOptions = {}) => {
+export const queueDocumentsForReingestion = async (
+  options: DocumentReingestionOptions = {},
+  runInTransaction: typeof withTransaction = withTransaction,
+) => {
   const boundedLimit = Number.isSafeInteger(options.limit)
     ? Math.min(Math.max(Number(options.limit), 1), 1000)
     : 100;
+  const parameters = documentReingestionParameters(options);
 
-  return withTransaction(async (client) => {
+  return runInTransaction(async (client) => {
     const { rows } = await client.query<FileRow>(
        `with candidates as (
          select files.id
          from files
-         where ${markdownReingestionPredicate}
+         where ${documentReingestionPredicate}
          order by files.updated_at asc, files.id asc
          for update skip locked
-         limit $2
+         limit $4
        )
        update files
        set status = 'pending',
            progress = 0,
            error_message = null,
            attempts = 0,
-           max_attempts = $3,
+           max_attempts = $5,
            next_attempt_at = null,
            last_attempt_at = null,
            updated_at = now()
@@ -839,7 +864,7 @@ export const queueMarkdownFilesForReingestion = async (options: MarkdownReingest
        where files.id = candidates.id
        returning files.*`,
       [
-        options.projectSpaceId || null,
+        ...parameters,
         boundedLimit,
         serverEnv.FILE_QUEUE_MAX_ATTEMPTS,
       ],

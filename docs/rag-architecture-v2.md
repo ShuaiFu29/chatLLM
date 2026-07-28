@@ -1,6 +1,6 @@
-# ChatLLM 通用 Markdown RAG v3
+# ChatLLM 多格式文档 RAG v4
 
-本文记录本次轻量改造后的运行边界、评分语义与部署步骤。系统仍只接收 `.md` / `.markdown`，不处理 PDF、DOCX、PPTX 或 OCR。
+本文记录当前运行边界、评分语义与部署步骤。系统接收 Markdown、TXT、文本型 PDF、DOCX、PPTX、XLSX 与 CSV，在本地转换为统一 Markdown 并保留来源映射；不提供 OCR、扫描件识别、旧版 Office 或云端商业解析。
 
 ## 检索链路
 
@@ -14,7 +14,7 @@
 
 图通道不是普通问答的必经步骤。启用 `GRAPH_EXTRACTION_ENABLED` 后，必须独立配置完整的 `GRAPH_EXTRACTION_API_KEY/BASE_URL/MODEL`，不会隐式复用 Judge Provider。兼容 LLM 只允许返回严格 JSON，并且实体 mention、指代、关系端点和关系证据都必须逐字存在于同一 Section 的有界窗口中；`GRAPH_CONTEXT_WINDOW_CHUNKS=1` 表示目标 Chunk 加前后各一个，设为 `2` 时是前后各两个。单个目标窗口的非法输出只让该目标退回保守规则抽取，不会把规则结果混入已经成功的 LLM 抽取。来源中的开放 `entity_type_label` 和 `relation_label` 会被保留，同时映射到受控安全大类以限制存储和遍历；无法安全映射的关系使用 `RELATED_TO`，不宣称自动生成无限本体。实体按规范名与 aliases 检索，对唯一、双向可证明的 canonical/alias 对应进行合并，歧义 alias 不自动合并。检索从精确实体种子沿真实 `RELATED_TO` 做最多三跳遍历，并限制种子、分支、路径、Hub 度数和证据数量。每条路径都必须能回到原始 Chunk 和 evidence span；规则 fallback 路径会降权，`graph_rank_score` 只是排序特征，不冒充概率或可信度。检索 Trace 会显式返回 `not_routed`、`rules_fallback` 或 `llm_primary_with_rule_fallback`。
 
-## Markdown 摄取
+## 文档摄取
 
 - Markdown Header Splitter 读取 H1-H6 层级；二次切分后，每个子 Chunk 都显式带完整标题路径。
 - 大文件流式分支维护同样的标题状态，并忽略代码围栏内的伪标题。
@@ -23,22 +23,23 @@
 - Elasticsearch v2 mapping 同时索引 `filename`、`heading` 和 `content`，每个文本入口都有 standard/CJK 检索面，BM25 首轮召回按 `filename > heading > content` 加权；mapping `_meta.chatllm_schema_version` 固定为 `markdown-fields-v2`，不兼容时明确报错而不是吞掉 HTTP 400。
 - PostgreSQL Chunk、Milvus、Elasticsearch 与 Neo4j 在同一次摄取任务中重建。旧索引不会仅因服务启动或读取 scope 就被标成 v4，也不会自动获得 `markdown-fields-v2` mapping。
 
-历史 Markdown 先预览待重建数量：
+历史文档先预览缺少 active Conversion Generation 的数量：
 
 ```powershell
-npm --prefix server run reindex:markdown -- -- --limit 100
+npm --prefix server run reindex:documents -- --limit 100
 ```
 
-确认后分批入队：
+可按格式预览，确认后再分批入队：
 
 ```powershell
-npm --prefix server run reindex:markdown -- -- --force --project-space-id <uuid> --limit 100
-npm --prefix server run reindex:markdown -- -- --force --confirm-all --limit 100
+npm --prefix server run reindex:documents -- --document-kind pdf --limit 100
+npm --prefix server run reindex:documents -- --force --project-space-id <uuid> --limit 100
+npm --prefix server run reindex:documents -- --force --confirm-all --limit 100
 ```
 
-默认只 dry-run 并输出目标数。连续两个 `--` 分别结束外层 npm 与脚本参数解析，不能省略，否则 npm 会吞掉 `--limit` / `--force`。实际执行必须显式 `--force`；项目级执行使用 `--project-space-id <uuid>`，全库执行还必须二次确认 `--confirm-all`，旧 `--apply` 是非法参数。命令仅选择文件名为 `.md` / `.markdown`、对象仍存在且没有有效摄取租约的稳定态文件，把它们原子恢复为 `pending`；正常 Worker 再按 PostgreSQL claim/lease、BullMQ 投递和现有摄取链路重建各索引。建议观察队列完成后重复 dry-run，直到数量为 0。
+默认只 dry-run 并输出目标数。`--` 用于结束 npm 自身的参数解析。实际执行必须显式 `--force`；项目级执行使用 `--project-space-id <uuid>`，全库执行还必须二次确认 `--confirm-all`，旧 `--apply` 是非法参数。命令覆盖七种 `document_kind`，只选择原件对象仍存在、处于 `completed` / `failed` 稳定态、没有有效 queued/processing ingestion lease 且缺少 active Generation 的文件。`--document-kind` 可限制格式；只有显式 `--include-active` 才重建已经有 active Generation 的文件。命令把目标原子恢复为 `pending`，正常 Worker 再按 PostgreSQL claim/lease、BullMQ 投递和现有摄取链路重建各索引。
 
-该命令支持受控强制重摄取所有符合范围的稳定态 Markdown，因此可以重建现有资料，但它不是在线索引完整性探针，也不证明 Elasticsearch、Milvus、Neo4j 当前数据完整。运行前应先 dry-run，生产环境应分项目、分批执行并观察 Worker；外部数据库本身仍应保留独立备份。
+该命令支持受控强制重摄取符合范围的稳定态文档，但它不是在线索引完整性探针，也不证明 Elasticsearch、Milvus、Neo4j 当前数据完整。运行前应先 dry-run，生产环境应分项目、分批执行并观察 Worker；外部数据库本身仍应保留独立备份。
 
 `/health/ready` 会额外返回当前 Chunk 策略、已经物化的 Markdown 数量、旧策略文件/Chunk 数和 `reindex_required`。主动关闭的可选模型能力标记为 `disabled`；已启用但依赖不可用或索引仍陈旧时才标记为 `degraded`。旧索引不会让仍可服务的进程返回 503；PostgreSQL、Milvus、Elasticsearch 或 Neo4j 连接失败才影响基础 readiness。
 
@@ -53,7 +54,7 @@ Redis 7 提供：
 - 原子固定窗口限流。限流存储异常时保持 fail-closed，避免故障绕过配额。
 - BullMQ 的投递存储。默认显式配置 `512mb` 内存预算、AOF 和 `noeviction`，但仍不把 Redis 当业务状态源；容量不足时应扩容，而不是驱逐队列键。
 
-BullMQ 有三个独立队列：Markdown 摄取、RAG 测评、资源清理。消息只携带数据库记录 ID，使用确定性 jobId 去重，`attempts=1`。Worker 收到消息后必须重新到 PostgreSQL claim 并取得有效 lease；业务重试与退避只由 PostgreSQL 计算。Dispatcher 周期扫描 PostgreSQL，因此 Redis 消息丢失或被清空后仍可重建投递。
+BullMQ 有三个独立队列：文档摄取、RAG 测评、资源清理。消息只携带数据库记录 ID，使用确定性 jobId 去重，`attempts=1`。Worker 收到消息后必须重新到 PostgreSQL claim 并取得有效 lease；业务重试与退避只由 PostgreSQL 计算。Dispatcher 周期扫描 PostgreSQL，因此 Redis 消息丢失或被清空后仍可重建投递。
 
 缓存只允许 exact query 跳过检索。词项相似 Query 不再短路；会话证据继续按 `conversation_id` 隔离，只作为当前请求的新检索候选。相同 exact key 的并发 miss 通过 Redis `SET NX EX` 短锁合并；等待者超时、锁丢失或 Cache Redis 故障时正常回源。Trace 返回 hit/miss/bypass/rejected 原因、是否跳过检索、估算节省的 Query/通道调用数和进程内有效命中率。
 

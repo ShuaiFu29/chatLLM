@@ -194,17 +194,18 @@ EMBEDDING_DIMENSION=1024
 
 `EMBEDDING_PROVIDER=local` 只建议用于本地 smoke / 开发验证。生产或真实语义检索仍应使用千问百炼等供应商的兼容 embedding 接口。
 
-### Markdown 索引升级
+### 多格式文档索引重建
 
-当前 Chunk 策略为 `markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100`。升级已有环境后必须重新摄取旧 Markdown，才能让 PostgreSQL、Milvus、Elasticsearch 与 Neo4j 同步使用新的 Parent-child 元数据和文件名/标题向量。先预览，再分批入队：
+Markdown、TXT、文本型 PDF、DOCX、PPTX、XLSX 与 CSV 都通过本地转换管线生成统一 Markdown 和来源映射，再进入现有索引链路。升级已有环境后，应先重建尚未生成 active Conversion Generation 的文档；命令默认只预览这些缺失项：
 
 ```powershell
-npm --prefix server run reindex:markdown -- -- --limit 100
-npm --prefix server run reindex:markdown -- -- --force --project-space-id <uuid> --limit 100
-npm --prefix server run reindex:markdown -- -- --force --confirm-all --limit 100
+npm --prefix server run reindex:documents -- --limit 100
+npm --prefix server run reindex:documents -- --document-kind pdf --limit 100
+npm --prefix server run reindex:documents -- --force --project-space-id <uuid> --limit 100
+npm --prefix server run reindex:documents -- --force --confirm-all --limit 100
 ```
 
-命令默认是 dry-run。这里连续两个 `--` 分别结束外层 npm 与脚本参数解析，不能省略，否则 npm 会吞掉 `--limit` / `--force`。实际重摄取必须显式添加 `--force`；项目级操作必须带 `--project-space-id <uuid>`，全库操作必须再带 `--confirm-all`，旧 `--apply` 会被拒绝。它只选择稳定态的 `.md` / `.markdown`，随后复用 PostgreSQL 状态、BullMQ 投递和现有摄取 Worker，不直接写外部索引。Worker 完成后可重复预览直到数量为 0。不要把旧 `chatllm_chunks` 直接改名冒充新 schema；新 mapping 不兼容时服务会明确要求使用新索引并重新摄取 Markdown。
+`--` 用于结束 npm 自身的参数解析。实际重建必须显式添加 `--force`；项目级操作使用 `--project-space-id <uuid>`，全库操作还必须带 `--confirm-all`，旧 `--apply` 会被拒绝。可用 `--document-kind` 选择七种格式之一。默认条件包含原件对象存在、文件处于 `completed` / `failed` 稳定态、没有有效 ingestion lease，且 `active_conversion_generation_id` 为空；只有显式添加 `--include-active` 才会把已有 active Generation 的文件纳入范围。命令只恢复 PostgreSQL ingestion 状态并复用 BullMQ 与现有 Worker，不直接写外部索引。默认模式下可在 Worker 完成后重复预览，直到缺失 active Generation 的数量为 0。
 
 可选语义 Query Rewrite 默认关闭。确定性模式已支持连续省略追问、条件/比较/序号追问并最多回溯三个用户问题；只有同时配置 `QUERY_REWRITE_ENABLED=true`、API key、base URL 与 model 才会调用兼容模型。模型必须返回严格 JSON，新增或丢失精确 ID、裸数字、版本、文件名、引号短语或否定约束时会安全退回确定性改写。RRF 后的本地 `local-evidence-v2` 会综合正文、标题路径、精确标记、短语邻近度、答案承载和同源重复抑制；它不冒充 Cross-encoder，完整配置 `/rerank` Provider 后才执行语义精排。评测用例可进一步标注 Chunk ID、逐字证据、可回答性、Graph 三元组和人工三维评分；未标注或未配置能力一律显示 `N/A`。系统聚合 P50/P95 延迟与回答/Judge Token，用于容量分析；未配置供应商价格时不计算或伪造货币成本。
 
