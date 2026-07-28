@@ -1,6 +1,7 @@
 import hashlib
 import json
 import re
+import uuid
 from collections.abc import Iterable
 from contextlib import contextmanager
 from queue import Empty, LifoQueue
@@ -13,6 +14,43 @@ from psycopg.rows import dict_row
 LEGACY_CHUNK_STRATEGY_VERSION = "markdown-v1:chunk1000-overlap100"
 CHUNK_STRATEGY_VERSION = "markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100"
 MIXED_CHUNK_STRATEGY_VERSION = "markdown-mixed:v1-v4-reindex-required"
+
+
+_ACTIVE_RETRIEVAL_CHUNK_PREDICATE = """
+  target_chunk.user_id::text = %s
+  and target_file.user_id::text = %s
+  and (%s::text is null or target_file.project_space_id::text = %s)
+  and (
+    (
+      target_file.active_conversion_generation_id is not null
+      and target_chunk.conversion_generation_id = target_file.active_conversion_generation_id
+      and active_generation.status in ('completed', 'completed_with_warnings')
+    )
+    or (
+      target_file.active_conversion_generation_id is null
+      and target_file.document_kind = 'markdown'
+      and target_chunk.conversion_generation_id is null
+    )
+  )
+"""
+
+
+_RETRIEVAL_CHUNK_PROJECTION = """
+  target_chunk.id,
+  target_chunk.file_id,
+  target_chunk.user_id,
+  target_chunk.chunk_index,
+  target_chunk.content,
+  target_chunk.metadata,
+  target_chunk.conversion_generation_id,
+  target_chunk.source_unit_ids,
+  target_chunk.source_locator,
+  target_chunk.content_hash,
+  target_file.project_space_id,
+  target_file.filename,
+  target_file.document_kind,
+  target_file.active_conversion_generation_id
+"""
 
 
 class IngestionLeaseLostError(RuntimeError):
@@ -1559,31 +1597,45 @@ def replace_file_chunks(file_id: str, user_id: str, chunks: list, file_data: dic
         return inserted
 
 
-def get_chunks_by_ids(chunk_ids: Iterable[str]) -> list[dict]:
-    ids = list(chunk_ids)
+def get_active_chunks_by_ids(
+    chunk_ids: Iterable[str],
+    user_id: str,
+    project_space_id: str | None = None,
+) -> list[dict]:
+    ids: list[str] = []
+    seen_ids: set[str] = set()
+    for value in chunk_ids:
+        try:
+            chunk_id = str(uuid.UUID(str(value).strip()))
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if chunk_id in seen_ids:
+            continue
+        seen_ids.add(chunk_id)
+        ids.append(chunk_id)
     if not ids:
         return []
 
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
-                select id, file_id, user_id, chunk_index, content, metadata, project_space_id
-                from (
-                    select
-                        file_chunks.id,
-                        file_chunks.file_id,
-                        file_chunks.user_id,
-                        file_chunks.chunk_index,
-                        file_chunks.content,
-                        file_chunks.metadata,
-                        files.project_space_id
-                    from file_chunks
-                    join files on files.id = file_chunks.file_id
-                    where file_chunks.id = any(%s::uuid[])
-                ) chunks
+                f"""
+                select {_RETRIEVAL_CHUNK_PROJECTION}
+                from file_chunks target_chunk
+                join files target_file on target_file.id = target_chunk.file_id
+                left join file_conversion_generations active_generation
+                  on active_generation.id = target_file.active_conversion_generation_id
+                 and active_generation.file_id = target_file.id
+                where target_chunk.id = any(%s::uuid[])
+                  and {_ACTIVE_RETRIEVAL_CHUNK_PREDICATE}
                 """,
-                (ids,),
+                (
+                    ids,
+                    user_id,
+                    user_id,
+                    project_space_id,
+                    project_space_id,
+                ),
             )
             rows = cur.fetchall()
 
@@ -1625,36 +1677,44 @@ def list_parent_chunks_for_matches(
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 with requested(file_id, parent_section_id, matched_chunk_index, request_rank) as (
                   select *
                   from unnest(%s::uuid[], %s::text[], %s::integer[]) with ordinality
                 ), ranked as (
                   select
-                    file_chunks.id,
-                    file_chunks.file_id,
-                    file_chunks.user_id,
-                    file_chunks.chunk_index,
-                    file_chunks.content,
-                    file_chunks.metadata,
-                    files.project_space_id,
-                    files.filename,
+                    target_chunk.id,
+                    target_chunk.file_id,
+                    target_chunk.user_id,
+                    target_chunk.chunk_index,
+                    target_chunk.content,
+                    target_chunk.metadata,
+                    target_chunk.conversion_generation_id,
+                    target_chunk.source_unit_ids,
+                    target_chunk.source_locator,
+                    target_chunk.content_hash,
+                    target_file.project_space_id,
+                    target_file.filename,
+                    target_file.document_kind,
+                    target_file.active_conversion_generation_id,
                     requested.parent_section_id,
                     requested.matched_chunk_index,
                     requested.request_rank,
                     row_number() over (
                       partition by requested.file_id, requested.parent_section_id
                       order by
-                        abs(file_chunks.chunk_index - requested.matched_chunk_index) asc,
-                        file_chunks.chunk_index asc
+                        abs(target_chunk.chunk_index - requested.matched_chunk_index) asc,
+                        target_chunk.chunk_index asc
                     ) as parent_chunk_rank
                   from requested
-                  join file_chunks
-                    on file_chunks.file_id = requested.file_id
-                   and file_chunks.metadata->>'parent_section_id' = requested.parent_section_id
-                  join files on files.id = file_chunks.file_id
-                  where file_chunks.user_id::text = %s
-                    and (%s::text is null or files.project_space_id::text = %s)
+                  join file_chunks target_chunk
+                    on target_chunk.file_id = requested.file_id
+                   and target_chunk.metadata->>'parent_section_id' = requested.parent_section_id
+                  join files target_file on target_file.id = target_chunk.file_id
+                  left join file_conversion_generations active_generation
+                    on active_generation.id = target_file.active_conversion_generation_id
+                   and active_generation.file_id = target_file.id
+                  where {_ACTIVE_RETRIEVAL_CHUNK_PREDICATE}
                 )
                 select *
                 from ranked
@@ -1665,6 +1725,7 @@ def list_parent_chunks_for_matches(
                     file_ids,
                     parent_ids,
                     matched_indices,
+                    user_id,
                     user_id,
                     project_space_id,
                     project_space_id,
@@ -1681,29 +1742,32 @@ def search_chunks_by_text(query: str, user_id: str, project_space_id: str | None
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 select
-                  file_chunks.id,
-                  file_chunks.file_id,
-                  file_chunks.user_id,
-                  file_chunks.chunk_index,
-                  file_chunks.content,
-                  file_chunks.metadata,
-                  files.project_space_id,
-                  files.filename,
+                  {_RETRIEVAL_CHUNK_PROJECTION},
                   ts_rank_cd(
-                    to_tsvector('simple', file_chunks.content),
+                    to_tsvector('simple', target_chunk.content),
                     websearch_to_tsquery('simple', %s)
                   ) as lexical_score
-                from file_chunks
-                join files on files.id = file_chunks.file_id
-                where file_chunks.user_id::text = %s
-                  and (%s::text is null or files.project_space_id::text = %s)
-                  and to_tsvector('simple', file_chunks.content) @@ websearch_to_tsquery('simple', %s)
-                order by lexical_score desc, file_chunks.created_at desc
+                from file_chunks target_chunk
+                join files target_file on target_file.id = target_chunk.file_id
+                left join file_conversion_generations active_generation
+                  on active_generation.id = target_file.active_conversion_generation_id
+                 and active_generation.file_id = target_file.id
+                where {_ACTIVE_RETRIEVAL_CHUNK_PREDICATE}
+                  and to_tsvector('simple', target_chunk.content) @@ websearch_to_tsquery('simple', %s)
+                order by lexical_score desc, target_chunk.created_at desc
                 limit %s
                 """,
-                (query, user_id, project_space_id, project_space_id, query, limit),
+                (
+                    query,
+                    user_id,
+                    user_id,
+                    project_space_id,
+                    project_space_id,
+                    query,
+                    limit,
+                ),
             )
             return cur.fetchall()
 

@@ -195,6 +195,7 @@ def search_keyword_chunks(
 
     body = {
         "size": limit,
+        "_source": False,
         "query": {
             "bool": {
                 "must": [{
@@ -224,22 +225,11 @@ def search_keyword_chunks(
     hits = response.get("hits", {}).get("hits", [])
     results = []
     for hit in hits:
-        source = hit.get("_source") or {}
-        results.append({
-            "id": str(source.get("chunk_id") or hit.get("_id")),
-            "file_id": source.get("file_id"),
-            "user_id": source.get("user_id"),
-            "chunk_index": source.get("chunk_index"),
-            "content": source.get("content") or "",
-            "metadata": {
-                "filename": source.get("filename"),
-                "file_id": source.get("file_id"),
-                "chunk_index": source.get("chunk_index"),
-                "project_space_id": source.get("project_space_id") or None,
-            },
-            "project_space_id": source.get("project_space_id") or None,
-            "filename": source.get("filename"),
-            "lexical_score": float(hit.get("_score") or 0),
-        })
+        chunk_id = hit.get("_id")
+        if chunk_id:
+            results.append({
+                "chunk_id": str(chunk_id),
+                "lexical_score": float(hit.get("_score") or 0),
+            })
 
     return results

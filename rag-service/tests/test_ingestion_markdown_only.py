@@ -11,7 +11,6 @@ from ingestion import (
 )
 from parent_context import build_parent_section_documents
 
-
 ATTEMPT_ID = "11111111-1111-4111-8111-111111111111"
 LEASE_TOKEN = "22222222-2222-4222-8222-222222222222"
 
@@ -106,6 +105,59 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
         self.assertIn("First detail", expanded[0]["content"])
         self.assertIn("Second detail", expanded[0]["content"])
 
+    def test_parent_section_expansion_is_generation_scoped_and_aggregates_provenance(self):
+        parent_id = "shared-parent"
+        active_generation = "11111111-1111-4111-8111-111111111111"
+        stale_generation = "22222222-2222-4222-8222-222222222222"
+        children = [{
+            "id": "active-2",
+            "content": "Active second page.",
+            "metadata": {
+                "file_id": "file-1",
+                "conversion_generation_id": active_generation,
+                "parent_section_id": parent_id,
+                "chunk_index": 2,
+            },
+        }]
+        rows = [
+            {
+                "id": "active-1",
+                "file_id": "file-1",
+                "conversion_generation_id": active_generation,
+                "chunk_index": 1,
+                "content": "Active first page.",
+                "source_unit_ids": ["u_0123456789abcdef0123456789abcdef"],
+                "source_locator": {"type": "pdf", "page_start": 1, "page_end": 1},
+                "metadata": {"parent_section_id": parent_id},
+            },
+            {
+                "id": "active-2",
+                "file_id": "file-1",
+                "conversion_generation_id": active_generation,
+                "chunk_index": 2,
+                "content": "Active second page.",
+                "source_unit_ids": ["u_abcdef0123456789abcdef0123456789"],
+                "source_locator": {"type": "pdf", "page_start": 2, "page_end": 2},
+                "metadata": {"parent_section_id": parent_id},
+            },
+            {
+                "id": "stale-1",
+                "file_id": "file-1",
+                "conversion_generation_id": stale_generation,
+                "chunk_index": 1,
+                "content": "Stale generation must not leak.",
+                "metadata": {"parent_section_id": parent_id},
+            },
+        ]
+
+        expanded = build_parent_section_documents(children, rows)
+
+        self.assertEqual(len(expanded), 1)
+        self.assertNotIn("Stale generation", expanded[0]["content"])
+        self.assertEqual(expanded[0]["metadata"]["conversion_generation_id"], active_generation)
+        self.assertEqual(len(expanded[0]["metadata"]["source_unit_ids"]), 2)
+        self.assertEqual(len(expanded[0]["metadata"]["source_locator"]["locators"]), 2)
+
     def test_parent_section_loading_centers_window_on_ranked_child(self):
         with patch("db.get_conn") as get_conn:
             cursor = get_conn.return_value.__enter__.return_value.cursor.return_value.__enter__.return_value
@@ -127,7 +179,7 @@ class MarkdownOnlyIngestionTests(unittest.TestCase):
             )
 
         statement, params = cursor.execute.call_args.args
-        self.assertIn("abs(file_chunks.chunk_index - requested.matched_chunk_index)", statement)
+        self.assertIn("abs(target_chunk.chunk_index - requested.matched_chunk_index)", statement)
         self.assertEqual(params[2], [47])
         self.assertEqual(params[-1], 6)
 

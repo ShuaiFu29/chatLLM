@@ -1,12 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from db import get_chunks_by_ids, search_chunks_by_text
+from db import get_active_chunks_by_ids, search_chunks_by_text
 from embeddings import get_embedding
 from fusion import reciprocal_rank_fuse
 from graph_store import search_graph
 from keyword_store import KeywordStoreUnavailableError, search_keyword_chunks
 from vector_store import search_vectors
-
 
 RETRIEVAL_CHANNEL_ORDER = ("vector", "bm25", "graph")
 DEFAULT_RETRIEVAL_ROUTES = ("vector", "bm25")
@@ -34,6 +33,69 @@ class KeywordDocuments(list):
         self.backend_degraded = backend_degraded
 
 
+def _explicit_or_metadata(document: dict, metadata: dict, field: str, default):
+    if field in document:
+        return document.get(field)
+    return metadata.get(field, default)
+
+
+def _authoritative_chunk(chunk: dict) -> dict:
+    document = dict(chunk)
+    metadata = dict(document.get("metadata") or {})
+    project_space_id = document.get("project_space_id")
+    conversion_generation_id = _explicit_or_metadata(
+        document, metadata, "conversion_generation_id", None,
+    )
+    source_unit_ids = _explicit_or_metadata(document, metadata, "source_unit_ids", []) or []
+    source_locator = _explicit_or_metadata(document, metadata, "source_locator", {}) or {}
+    metadata.update({
+        "filename": document.get("filename") or metadata.get("filename"),
+        "file_id": str(document.get("file_id") or metadata.get("file_id") or ""),
+        "chunk_index": document.get("chunk_index"),
+        "project_space_id": str(project_space_id) if project_space_id else None,
+        "document_kind": document.get("document_kind") or metadata.get("document_kind") or "markdown",
+        "conversion_generation_id": (
+            str(conversion_generation_id) if conversion_generation_id else None
+        ),
+        "source_unit_ids": [str(value) for value in source_unit_ids],
+        "source_locator": dict(source_locator),
+    })
+    document["metadata"] = metadata
+    return document
+
+
+def _candidate_chunk_id(hit: dict) -> str:
+    return str(hit.get("chunk_id") or hit.get("id") or "").strip()
+
+
+def _hydrate_scored_hits(
+    hits: list[dict],
+    user_id: str,
+    project_space_id: str | None,
+    score_field: str,
+) -> list[dict]:
+    candidate_ids = [_candidate_chunk_id(hit) for hit in hits]
+    chunks = get_active_chunks_by_ids(candidate_ids, user_id, project_space_id)
+    chunks_by_id = {
+        str(chunk["id"]): _authoritative_chunk(chunk)
+        for chunk in chunks
+    }
+    documents = []
+    emitted_ids: set[str] = set()
+    for hit in hits:
+        chunk_id = _candidate_chunk_id(hit)
+        if not chunk_id or chunk_id in emitted_ids:
+            continue
+        chunk = chunks_by_id.get(chunk_id)
+        if not chunk:
+            continue
+        document = dict(chunk)
+        document[score_field] = float(hit.get(score_field) or 0)
+        documents.append(document)
+        emitted_ids.add(chunk_id)
+    return documents
+
+
 def _prepare_chunk_result(
     chunk: dict,
     similarity: float,
@@ -47,6 +109,11 @@ def _prepare_chunk_result(
 ):
     metadata = dict(chunk.get("metadata") or {})
     chunk_project_space_id = chunk.get("project_space_id")
+    conversion_generation_id = _explicit_or_metadata(
+        chunk, metadata, "conversion_generation_id", None,
+    )
+    source_unit_ids = _explicit_or_metadata(chunk, metadata, "source_unit_ids", []) or []
+    source_locator = _explicit_or_metadata(chunk, metadata, "source_locator", {}) or {}
     metadata.update({
         "filename": chunk.get("filename") or metadata.get("filename"),
         "file_id": str(chunk.get("file_id") or metadata.get("file_id") or ""),
@@ -59,6 +126,12 @@ def _prepare_chunk_result(
         "retrieval_channels": retrieval_channels or [],
         "channel_ranks": channel_ranks or {},
         "channel_scores": channel_scores or {},
+        "document_kind": chunk.get("document_kind") or metadata.get("document_kind") or "markdown",
+        "conversion_generation_id": (
+            str(conversion_generation_id) if conversion_generation_id else None
+        ),
+        "source_unit_ids": [str(value) for value in source_unit_ids],
+        "source_locator": dict(source_locator),
     })
 
     result = {
@@ -82,33 +155,19 @@ def _prepare_chunk_result(
     return result
 
 
-def _vector_documents_from_hits(vector_hits: list[dict], project_space_id: str | None) -> list[dict]:
-    chunks = get_chunks_by_ids([hit["chunk_id"] for hit in vector_hits])
-    chunks_by_id = {str(chunk["id"]): chunk for chunk in chunks}
-    documents = []
-
-    for hit in vector_hits:
-        chunk = chunks_by_id.get(str(hit["chunk_id"]))
-        if not chunk:
-            continue
-        chunk_project_space_id = chunk.get("project_space_id")
-        if project_space_id and str(chunk_project_space_id) != project_space_id:
-            continue
-
-        chunk = dict(chunk)
-        chunk["filename"] = hit.get("filename") or (chunk.get("metadata") or {}).get("filename")
-        metadata = dict(chunk.get("metadata") or {})
-        chunk["metadata"] = metadata
-        metadata.update({
-            "filename": hit.get("filename") or metadata.get("filename"),
-            "file_id": hit.get("file_id"),
-            "chunk_index": hit.get("chunk_index"),
-            "project_space_id": str(chunk_project_space_id) if chunk_project_space_id else None,
-        })
-        chunk["similarity"] = float(hit.get("similarity") or 0)
-        chunk["retrieval_score"] = chunk["similarity"]
-        documents.append(chunk)
-
+def _vector_documents_from_hits(
+    vector_hits: list[dict],
+    user_id: str,
+    project_space_id: str | None,
+) -> list[dict]:
+    documents = _hydrate_scored_hits(
+        vector_hits,
+        user_id,
+        project_space_id,
+        "similarity",
+    )
+    for document in documents:
+        document["retrieval_score"] = document["similarity"]
     return documents
 
 
@@ -127,7 +186,7 @@ def _retrieve_vector_documents(
         threshold=threshold,
         project_space_id=project_space_id,
     )
-    return _vector_documents_from_hits(vector_hits, project_space_id)
+    return _vector_documents_from_hits(vector_hits, user_id, project_space_id)
 
 
 def _keyword_documents(query: str, user_id: str, project_space_id: str | None, limit: int) -> list[dict]:
@@ -143,25 +202,30 @@ def _keyword_documents(query: str, user_id: str, project_space_id: str | None, l
         backend_degraded = True
         keyword_hits = []
 
-    if not keyword_hits:
-        keyword_hits = search_chunks_by_text(
-            query=query,
-            user_id=user_id,
-            project_space_id=project_space_id,
-            limit=limit,
-        )
+    documents = _hydrate_scored_hits(
+        keyword_hits,
+        user_id,
+        project_space_id,
+        "lexical_score",
+    ) if keyword_hits else []
+    if not documents:
+        if keyword_hits:
+            backend_degraded = True
+        documents = [
+            _authoritative_chunk(hit)
+            for hit in search_chunks_by_text(
+                query=query,
+                user_id=user_id,
+                project_space_id=project_space_id,
+                limit=limit,
+            )
+        ]
 
-    max_lexical_score = max([float(hit.get("lexical_score") or 0) for hit in keyword_hits] or [0])
-    documents = []
-    for hit in keyword_hits:
-        if project_space_id and str(hit.get("project_space_id")) != project_space_id:
-            continue
-
-        document = dict(hit)
-        lexical_score = float(hit.get("lexical_score") or 0)
+    max_lexical_score = max([float(document.get("lexical_score") or 0) for document in documents] or [0])
+    for document in documents:
+        lexical_score = float(document.get("lexical_score") or 0)
         document["similarity"] = 0.0
         document["retrieval_score"] = lexical_score / max_lexical_score if max_lexical_score > 0 else 0.0
-        documents.append(document)
 
     return KeywordDocuments(documents, backend_degraded=backend_degraded)
 
@@ -247,8 +311,8 @@ def retrieve_documents(
     routes: list[str] | tuple[str, ...] | None = None,
 ):
     selected_routes = _normalize_routes(routes, hybrid)
-    search_limit = min(max(limit * 5, limit), 50) if project_space_id else limit
-    keyword_limit = min(max(limit * 5, limit), 50)
+    search_limit = min(max(limit * 5, limit), 50)
+    keyword_limit = search_limit
     graph_limit = min(max(limit * 3, limit), 30)
     lane_calls = {
         "vector": lambda: _retrieve_vector_documents(
@@ -276,7 +340,7 @@ def retrieve_documents(
                 documents_by_channel[channel] = future.result()
                 if bool(getattr(documents_by_channel[channel], "backend_degraded", False)):
                     degraded_channels.add(channel)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 - each retrieval lane is an isolation boundary
                 channel_errors[channel] = error
 
     if channel_errors and len(channel_errors) == len(selected_routes):

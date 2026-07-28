@@ -8,6 +8,7 @@ import urllib.request
 from urllib.parse import urlparse
 
 from config import settings
+from db import get_active_chunks_by_ids
 from graph_extraction import (
     build_chunk_windows,
     extraction_cache_key,
@@ -18,7 +19,6 @@ from graph_extraction import (
     window_content_hash,
 )
 from http_safety import validate_http_url
-
 
 STOP_TERMS = {
     "the",
@@ -1530,30 +1530,15 @@ def search_graph(
         for relation in path["relations"]
         for chunk_id in relation.get("evidence_chunk_ids") or []
     ))
-    evidence_rows = _run_cypher(
-        """
-        UNWIND $chunk_ids AS chunk_id
-        MATCH (c:Chunk {chunk_id: chunk_id})
-        WHERE c.user_id = $user_id
-          AND ($project_space_id IS NULL OR c.project_space_id = $project_space_id)
-        RETURN {
-          chunk_id: c.chunk_id,
-          file_id: c.file_id,
-          filename: c.filename,
-          chunk_index: c.chunk_index,
-          content: c.content
-        } AS row
-        """,
-        {
-            "chunk_ids": evidence_ids,
-            "user_id": user_id,
-            "project_space_id": project_space_id,
-        },
-    ) if evidence_ids else []
+    evidence_rows = get_active_chunks_by_ids(
+        evidence_ids,
+        user_id,
+        project_space_id,
+    )
     evidence_by_id = {
-        str(row.get("chunk_id")): row
+        str(row.get("id")): row
         for row in evidence_rows
-        if row.get("chunk_id")
+        if row.get("id")
     }
     rows = []
     for graph_rank_score, graph_features, path in ranked_paths:
@@ -1617,18 +1602,35 @@ def search_graph(
             "graph_rank_score": graph_rank_score,
         }
         for chunk in evidence_chunks:
-            chunk_id = str(chunk.get("chunk_id") or "")
+            chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
             if not chunk_id:
                 continue
             existing = documents_by_chunk.get(chunk_id)
             if existing is None:
+                canonical_metadata = dict(chunk.get("metadata") or {})
+                canonical_metadata.update({
+                    "filename": chunk.get("filename"),
+                    "file_id": str(chunk.get("file_id") or ""),
+                    "chunk_index": chunk.get("chunk_index"),
+                    "project_space_id": (
+                        str(chunk["project_space_id"])
+                        if chunk.get("project_space_id")
+                        else None
+                    ),
+                    "document_kind": chunk.get("document_kind"),
+                    "conversion_generation_id": (
+                        str(chunk["conversion_generation_id"])
+                        if chunk.get("conversion_generation_id")
+                        else None
+                    ),
+                    "source_unit_ids": list(chunk.get("source_unit_ids") or []),
+                    "source_locator": dict(chunk.get("source_locator") or {}),
+                })
                 existing = {
                     "id": chunk_id,
                     "content": chunk.get("content") or "",
                     "metadata": {
-                        "filename": chunk.get("filename"),
-                        "file_id": chunk.get("file_id"),
-                        "chunk_index": chunk.get("chunk_index"),
+                        **canonical_metadata,
                         "retrieval_mode": "graph",
                         "graph_entities": [],
                         "graph_seed_entities": [],
@@ -1682,6 +1684,7 @@ def list_graph(
     if not settings.neo4j_enabled:
         return []
 
+    candidate_limit = min(max(int(limit) * 5, int(limit)), 200)
     rows = _run_cypher(
         """
         MATCH (e:Entity)<-[:MENTIONS]-(c:Chunk)
@@ -1706,54 +1709,101 @@ def list_graph(
         }) AS relations
         RETURN {
           chunk_id: c.chunk_id,
-          file_id: c.file_id,
-          filename: c.filename,
-          chunk_index: c.chunk_index,
-          content: c.content,
           entities: entities,
           relations: relations,
           graph_features: {entity_count: entity_count},
           graph_rank_score: toFloat(entity_count)
         } AS row
-        ORDER BY row.graph_rank_score DESC, c.filename ASC, c.chunk_index ASC
+        ORDER BY row.graph_rank_score DESC, c.chunk_id ASC
         LIMIT $limit
         """,
         {
             "user_id": user_id,
             "project_space_id": project_space_id,
-            "limit": limit,
+            "limit": candidate_limit,
         },
     )
 
+    candidate_ids = [str(row.get("chunk_id") or "") for row in rows]
+    relation_evidence_ids = [
+        str(chunk_id)
+        for row in rows
+        for relation in row.get("relations") or []
+        for chunk_id in relation.get("evidence_chunk_ids") or []
+        if str(chunk_id).strip()
+    ]
+    active_chunks = get_active_chunks_by_ids(
+        [*candidate_ids, *relation_evidence_ids],
+        user_id,
+        project_space_id,
+    )
+    active_by_id = {str(chunk["id"]): chunk for chunk in active_chunks}
+    authorized_rows = [
+        row
+        for row in rows
+        if str(row.get("chunk_id") or "") in active_by_id
+    ]
     max_score = max([
         float(row.get("graph_rank_score") or row.get("graph_score") or 0)
-        for row in rows
+        for row in authorized_rows
     ] or [0])
     documents = []
-    for row in rows:
+    for row in authorized_rows:
+        chunk = active_by_id[str(row.get("chunk_id"))]
         graph_rank_score = float(row.get("graph_rank_score") or row.get("graph_score") or 0)
         retrieval_score = graph_rank_score / max_score if max_score > 0 else 0.0
+        relations = []
+        for relation in row.get("relations") or []:
+            evidence_chunk_ids = [
+                str(chunk_id)
+                for chunk_id in relation.get("evidence_chunk_ids") or []
+                if str(chunk_id).strip()
+            ]
+            if (
+                relation.get("type")
+                and relation.get("from")
+                and relation.get("to")
+                and evidence_chunk_ids
+                and all(chunk_id in active_by_id for chunk_id in evidence_chunk_ids)
+            ):
+                relations.append(relation)
+        metadata = dict(chunk.get("metadata") or {})
+        metadata.update({
+            "filename": chunk.get("filename"),
+            "file_id": str(chunk.get("file_id") or ""),
+            "chunk_index": chunk.get("chunk_index"),
+            "project_space_id": (
+                str(chunk["project_space_id"])
+                if chunk.get("project_space_id")
+                else None
+            ),
+            "document_kind": chunk.get("document_kind"),
+            "conversion_generation_id": (
+                str(chunk["conversion_generation_id"])
+                if chunk.get("conversion_generation_id")
+                else None
+            ),
+            "source_unit_ids": list(chunk.get("source_unit_ids") or []),
+            "source_locator": dict(chunk.get("source_locator") or {}),
+        })
         documents.append({
-            "id": str(row.get("chunk_id")),
-            "content": row.get("content") or "",
+            "id": str(chunk["id"]),
+            "content": chunk.get("content") or "",
             "metadata": {
-                "filename": row.get("filename"),
-                "file_id": row.get("file_id"),
-                "chunk_index": row.get("chunk_index"),
+                **metadata,
                 "retrieval_mode": "graph_overview",
                 "graph_entities": row.get("entities") or [],
                 "graph_features": row.get("graph_features") or {
                     "entity_count": len(row.get("entities") or []),
                 },
                 "graph_rank_score": graph_rank_score,
-                "graph_relations": [
-                    relation for relation in (row.get("relations") or [])
-                    if relation.get("type") and relation.get("from") and relation.get("to")
-                ],
+                "graph_relations": relations,
             },
             "similarity": retrieval_score,
             "retrieval_score": retrieval_score,
             "graph_rank_score": graph_rank_score,
         })
+        if len(documents) >= max(1, int(limit)):
+            break
 
     return documents

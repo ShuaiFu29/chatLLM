@@ -230,25 +230,38 @@ class GraphStoreTests(unittest.TestCase):
         }]
         evidence_rows = [
             {
-                "chunk_id": "chunk-1",
+                "id": "chunk-1",
                 "file_id": "file-1",
                 "filename": "queue.md",
                 "chunk_index": 1,
                 "content": "Redis connects to Queue.",
+                "metadata": {"filename": "queue.md"},
+                "document_kind": "markdown",
+                "conversion_generation_id": None,
+                "source_unit_ids": [],
+                "source_locator": {"type": "markdown", "line_start": 1, "line_end": 1},
             },
             {
-                "chunk_id": "chunk-2",
+                "id": "chunk-2",
                 "file_id": "file-1",
                 "filename": "queue.md",
                 "chunk_index": 2,
                 "content": "Queue forwards jobs to Worker.",
+                "metadata": {"filename": "queue.md"},
+                "document_kind": "markdown",
+                "conversion_generation_id": None,
+                "source_unit_ids": [],
+                "source_locator": {"type": "markdown", "line_start": 2, "line_end": 2},
             },
         ]
 
         with patch(
             "graph_store._run_cypher",
-            side_effect=[seed_rows, first_hop, second_hop, [], evidence_rows],
-        ) as run_cypher:
+            side_effect=[seed_rows, first_hop, second_hop, []],
+        ) as run_cypher, patch(
+            "graph_store.get_active_chunks_by_ids",
+            return_value=evidence_rows,
+        ) as hydrate_chunks:
             documents = search_graph(
                 query="Redis 和 Worker 的关系",
                 user_id="user-1",
@@ -272,11 +285,42 @@ class GraphStoreTests(unittest.TestCase):
         self.assertIn("graph_rank_score", documents[0])
         self.assertNotIn("graph_score", documents[0])
         self.assertGreater(documents[0]["retrieval_score"], 0)
-        self.assertEqual(run_cypher.call_count, 5)
+        self.assertEqual(run_cypher.call_count, 4)
         expansion_params = run_cypher.call_args_list[1].args[1]
         self.assertEqual(expansion_params["max_branch_factor"], 4)
-        evidence_params = run_cypher.call_args_list[-1].args[1]
-        self.assertEqual(evidence_params["chunk_ids"], ["chunk-1", "chunk-2"])
+        hydrate_chunks.assert_called_once_with(
+            ["chunk-1", "chunk-2"],
+            "user-1",
+            "space-1",
+        )
+        self.assertEqual(
+            documents[0]["metadata"]["source_locator"],
+            {"type": "markdown", "line_start": 1, "line_end": 1},
+        )
+
+        with patch(
+            "graph_store._run_cypher",
+            side_effect=[seed_rows, first_hop, second_hop, []],
+        ), patch(
+            "graph_store.get_active_chunks_by_ids",
+            return_value=evidence_rows[:1],
+        ):
+            filtered_documents = search_graph(
+                query="Redis 和 Worker 的关系",
+                user_id="user-1",
+                project_space_id="space-1",
+                limit=5,
+                max_hops=3,
+                max_branch_factor=4,
+                max_paths=8,
+            )
+
+        self.assertTrue(filtered_documents)
+        self.assertTrue(all(
+            path["features"]["path_length"] == 1
+            for document in filtered_documents
+            for path in document["metadata"]["graph_paths"]
+        ))
 
     def test_search_graph_uses_clean_entities_from_chinese_impact_question(self):
         with patch("graph_store._run_cypher", return_value=[]) as run_cypher:
@@ -293,16 +337,28 @@ class GraphStoreTests(unittest.TestCase):
         neo4j_rows = [
             {
                 "chunk_id": "chunk-1",
-                "file_id": "file-1",
-                "filename": "webview.md",
-                "chunk_index": 2,
-                "content": "JSBridge connects WebView and Native.",
                 "entities": ["JSBridge", "WebView", "Native"],
                 "graph_score": 3,
             },
         ]
+        active_chunks = [{
+            "id": "chunk-1",
+            "file_id": "file-1",
+            "filename": "canonical.md",
+            "chunk_index": 2,
+            "content": "Canonical PostgreSQL evidence.",
+            "metadata": {},
+            "project_space_id": "space-1",
+            "document_kind": "pdf",
+            "conversion_generation_id": "generation-1",
+            "source_unit_ids": ["u_0123456789abcdef0123456789abcdef"],
+            "source_locator": {"type": "pdf", "page_start": 4, "page_end": 4},
+        }]
 
-        with patch("graph_store._run_cypher", return_value=neo4j_rows) as run_cypher:
+        with patch("graph_store._run_cypher", return_value=neo4j_rows) as run_cypher, patch(
+            "graph_store.get_active_chunks_by_ids",
+            return_value=active_chunks,
+        ) as hydrate_chunks:
             documents = list_graph(
                 user_id="user-1",
                 project_space_id="space-1",
@@ -310,12 +366,32 @@ class GraphStoreTests(unittest.TestCase):
             )
 
         self.assertEqual(documents[0]["id"], "chunk-1")
+        self.assertEqual(documents[0]["content"], "Canonical PostgreSQL evidence.")
+        self.assertEqual(documents[0]["metadata"]["filename"], "canonical.md")
+        self.assertEqual(documents[0]["metadata"]["source_locator"]["page_start"], 4)
         self.assertEqual(documents[0]["metadata"]["retrieval_mode"], "graph_overview")
         self.assertEqual(documents[0]["metadata"]["graph_entities"], ["JSBridge", "WebView", "Native"])
         self.assertGreater(documents[0]["retrieval_score"], 0)
         params = run_cypher.call_args.args[1]
         self.assertEqual(params["user_id"], "user-1")
         self.assertEqual(params["project_space_id"], "space-1")
+        self.assertEqual(params["limit"], 25)
+        self.assertNotIn("content: c.content", run_cypher.call_args.args[0])
+        hydrate_chunks.assert_called_once_with(
+            ["chunk-1"],
+            "user-1",
+            "space-1",
+        )
+
+    def test_list_graph_drops_candidates_rejected_by_postgres_authority(self):
+        with patch("graph_store._run_cypher", return_value=[{
+            "chunk_id": "stale-chunk",
+            "entities": ["Old"],
+            "graph_rank_score": 1,
+        }]), patch("graph_store.get_active_chunks_by_ids", return_value=[]):
+            documents = list_graph("user-1", "space-1", limit=5)
+
+        self.assertEqual(documents, [])
 
     def test_index_graph_chunks_deduplicates_between_unwind_stages(self):
         file_data = {

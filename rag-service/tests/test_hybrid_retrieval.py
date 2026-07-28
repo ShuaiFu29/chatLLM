@@ -70,6 +70,18 @@ class HybridRetrievalTests(unittest.TestCase):
             "lexical_score": 4.2,
         }
 
+        authoritative_chunks = {
+            vector_chunk["id"]: vector_chunk,
+            bm25_chunk["id"]: bm25_chunk,
+        }
+
+        def hydrate(candidate_ids, _user_id, _project_space_id):
+            return [
+                authoritative_chunks[chunk_id]
+                for chunk_id in candidate_ids
+                if chunk_id in authoritative_chunks
+            ]
+
         with patch("retrieval.get_embedding", return_value=[0.1, 0.2]), patch(
             "retrieval.search_vectors",
             return_value=[{
@@ -80,9 +92,9 @@ class HybridRetrievalTests(unittest.TestCase):
                 "chunk_index": 0,
                 "similarity": 0.91,
             }],
-        ), patch("retrieval.get_chunks_by_ids", return_value=[vector_chunk]), patch(
+        ), patch("retrieval.get_active_chunks_by_ids", side_effect=hydrate), patch(
             "retrieval.search_keyword_chunks",
-            return_value=[bm25_chunk],
+            return_value=[{"chunk_id": "chunk-bm25", "lexical_score": 4.2}],
         ), patch(
             "retrieval.search_graph",
             return_value=[],
@@ -120,7 +132,7 @@ class HybridRetrievalTests(unittest.TestCase):
         with patch("retrieval.get_embedding", return_value=[0.1, 0.2]), patch(
             "retrieval.search_vectors",
             return_value=[],
-        ), patch("retrieval.get_chunks_by_ids", return_value=[]), patch(
+        ), patch("retrieval.get_active_chunks_by_ids", return_value=[]), patch(
             "retrieval.search_keyword_chunks",
             return_value=[],
         ), patch("retrieval.search_chunks_by_text", return_value=[]), patch(
@@ -276,7 +288,7 @@ class HybridRetrievalTests(unittest.TestCase):
         with patch("retrieval.get_embedding", return_value=[0.1, 0.2]), patch(
             "retrieval.search_vectors",
             return_value=vector_hits,
-        ), patch("retrieval.get_chunks_by_ids", return_value=chunks), patch(
+        ), patch("retrieval.get_active_chunks_by_ids", return_value=chunks), patch(
             "retrieval.search_keyword_chunks",
             return_value=[],
         ), patch("retrieval.search_chunks_by_text", return_value=[]), patch(

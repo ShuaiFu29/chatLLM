@@ -3,8 +3,37 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-
 _HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s+.+?\s*#*\s*$")
+
+
+def _generation_key(value: object) -> str:
+    return str(value or "").strip()
+
+
+def _aggregate_parent_provenance(rows: list[dict]) -> tuple[list[str], dict]:
+    source_unit_ids: list[str] = []
+    source_locators: list[dict] = []
+    for row in rows:
+        metadata = row.get("metadata") or {}
+        for unit_id in row.get("source_unit_ids") or metadata.get("source_unit_ids") or []:
+            normalized = str(unit_id).strip()
+            if normalized and normalized not in source_unit_ids:
+                source_unit_ids.append(normalized)
+        locator = row.get("source_locator") or metadata.get("source_locator") or {}
+        if isinstance(locator, dict) and locator and locator not in source_locators:
+            source_locators.append(dict(locator))
+
+    if not source_locators:
+        parent_locator = {}
+    elif len(source_locators) == 1:
+        parent_locator = source_locators[0]
+    else:
+        locator_types = {str(locator.get("type") or "") for locator in source_locators}
+        parent_locator = {
+            "type": locator_types.pop() if len(locator_types) == 1 else "mixed",
+            "locators": source_locators,
+        }
+    return source_unit_ids, parent_locator
 
 
 def _without_repeated_heading_prefix(content: str) -> str:
@@ -35,29 +64,36 @@ def build_parent_section_documents(
     max_parent_chars: int = 8000,
 ) -> list[dict]:
     """Expand ranked child hits into bounded, deduplicated Markdown parents."""
-    rows_by_parent: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    rows_by_parent: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
     for row in parent_rows:
         metadata = row.get("metadata") or {}
         file_id = str(row.get("file_id") or metadata.get("file_id") or "")
+        generation_id = _generation_key(
+            row.get("conversion_generation_id") or metadata.get("conversion_generation_id")
+        )
         parent_id = str(row.get("parent_section_id") or metadata.get("parent_section_id") or "")
         if file_id and parent_id:
-            rows_by_parent[(file_id, parent_id)].append(row)
+            rows_by_parent[(file_id, generation_id, parent_id)].append(row)
 
-    children_by_parent: dict[tuple[str, str], list[dict]] = defaultdict(list)
-    order: list[tuple[str, str]] = []
+    children_by_parent: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
+    order: list[tuple[str, str, str]] = []
     for child in selected_children:
         metadata = child.get("metadata") or {}
         key = (
             str(metadata.get("file_id") or child.get("file_id") or ""),
+            _generation_key(
+                child.get("conversion_generation_id")
+                or metadata.get("conversion_generation_id")
+            ),
             str(metadata.get("parent_section_id") or ""),
         )
-        if not all(key) or key not in rows_by_parent:
+        if not key[0] or not key[2] or key not in rows_by_parent:
             continue
         if key not in children_by_parent:
             order.append(key)
         children_by_parent[key].append(child)
 
-    expanded_by_key: dict[tuple[str, str], dict] = {}
+    expanded_by_key: dict[tuple[str, str, str], dict] = {}
     for key in order:
         children = children_by_parent[key]
         rows = sorted(rows_by_parent[key], key=lambda row: int(row.get("chunk_index") or 0))
@@ -65,6 +101,7 @@ def build_parent_section_documents(
         primary_metadata = dict(primary.get("metadata") or {})
         first_metadata = dict(rows[0].get("metadata") or {})
         metadata = {**first_metadata, **primary_metadata}
+        source_unit_ids, source_locator = _aggregate_parent_provenance(rows)
 
         heading = _heading_prefix(metadata)
         bodies: list[str] = []
@@ -87,7 +124,10 @@ def build_parent_section_documents(
                     channels.append(channel)
         metadata.update({
             "file_id": key[0],
-            "parent_section_id": key[1],
+            "conversion_generation_id": key[1] or None,
+            "parent_section_id": key[2],
+            "source_unit_ids": source_unit_ids,
+            "source_locator": source_locator,
             "parent_child": True,
             "retrieval_mode": "parent_section",
             "matched_child_ids": child_ids,
@@ -99,8 +139,13 @@ def build_parent_section_documents(
             "chunk_index": int(rows[0].get("chunk_index") or 0),
             "chunk_end_index": int(rows[-1].get("chunk_index") or 0),
         })
+        parent_document_id = (
+            f"parent:{key[0]}:{key[1]}:{key[2]}"
+            if key[1]
+            else f"parent:{key[0]}:{key[2]}"
+        )
         primary.update({
-            "id": f"parent:{key[0]}:{key[1]}",
+            "id": parent_document_id,
             "content": combined,
             "metadata": metadata,
             "retrieval_channels": channels,
@@ -109,11 +154,15 @@ def build_parent_section_documents(
         expanded_by_key[key] = primary
 
     output: list[dict] = []
-    emitted_parents: set[tuple[str, str]] = set()
+    emitted_parents: set[tuple[str, str, str]] = set()
     for child in selected_children:
         metadata = child.get("metadata") or {}
         key = (
             str(metadata.get("file_id") or child.get("file_id") or ""),
+            _generation_key(
+                child.get("conversion_generation_id")
+                or metadata.get("conversion_generation_id")
+            ),
             str(metadata.get("parent_section_id") or ""),
         )
         if key in expanded_by_key:

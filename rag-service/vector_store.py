@@ -1,7 +1,7 @@
 from typing import Any
 
-from pymilvus import DataType, MilvusClient
 from config import settings
+from pymilvus import DataType, MilvusClient
 
 client: MilvusClient | None = None
 _project_space_field_available: bool | None = None
@@ -156,12 +156,11 @@ def search_vectors(
     has_project_space_field = _has_project_space_field()
     escaped_user_id = _escape_filter_value(user_id)
     filters = [f'user_id == "{escaped_user_id}"']
-    output_fields = ["chunk_id", "file_id", "user_id", "filename", "chunk_index"]
+    output_fields = ["chunk_id"]
 
     if project_space_id and has_project_space_field:
         escaped_project_space_id = _escape_filter_value(project_space_id)
         filters.append(f'project_space_id == "{escaped_project_space_id}"')
-        output_fields.append("project_space_id")
 
     results = client.search(
         collection_name=settings.milvus_collection,
@@ -179,13 +178,10 @@ def search_vectors(
         score = float(hit.get("distance", 0))
         if score >= threshold:
             entity = hit.get("entity", {})
-            filtered.append({
-                "chunk_id": entity.get("chunk_id"),
-                "file_id": entity.get("file_id"),
-                "user_id": entity.get("user_id"),
-                "project_space_id": entity.get("project_space_id"),
-                "filename": entity.get("filename"),
-                "chunk_index": entity.get("chunk_index"),
-                "similarity": score,
-            })
+            chunk_id = entity.get("chunk_id")
+            if chunk_id:
+                filtered.append({
+                    "chunk_id": str(chunk_id),
+                    "similarity": score,
+                })
     return filtered
