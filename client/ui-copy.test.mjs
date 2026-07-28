@@ -749,7 +749,7 @@ test('chat page persists unsent drafts per user and conversation', () => {
   assert.match(chatPageSource, /chat\.messageLoadedToDraft/);
   assert.match(chatInputSource, /onClearDraft/);
   assert.match(chatInputSource, /chat\.clearDraft/);
-  assert.match(chatInputSource, /accept="\.md,\.markdown"/);
+  assert.match(chatInputSource, /accept=\{DOCUMENT_UPLOAD_ACCEPT\}/);
   assert.match(chatMessageSource, /onEditAsDraft/);
   assert.match(messageListSource, /onEditAsDraft/);
 
@@ -821,7 +821,7 @@ test('shared error, loading, knowledge, search, and profile copy is localized', 
 
   assert.match(knowledgePageSource, /knowledge\.dropToUpload/);
   assert.match(knowledgePageSource, /knowledge\.unsupportedFileType/);
-  assert.match(knowledgePageSource, /accept="\.md,\.markdown"/);
+  assert.match(knowledgePageSource, /accept=\{DOCUMENT_UPLOAD_ACCEPT\}/);
   assert.match(knowledgePageSource, /knowledge\.retryQueued/);
   assert.match(knowledgePageSource, /knowledge\.retryFailed/);
   assert.equal(knowledgePageSource.includes('Drop files to upload'), false);
@@ -873,10 +873,9 @@ test('knowledge document table keeps action controls visible for long filenames'
   assert.equal(knowledgePageSource.includes('whitespace-nowrap block">{file.filename}</span>'), false);
 });
 
-test('knowledge document names omit markdown extensions in visible lists', () => {
-  assert.match(knowledgePageSource, /formatFilename\(file\.filename\)/);
-  assert.match(knowledgePageSource, /replace\(\/\\\.\(\?:md\|markdown\)\$\/i/);
-  assert.equal(knowledgePageSource.includes('>{file.filename}</span>'), false);
+test('knowledge document names retain their real file extensions in visible lists', () => {
+  assert.match(knowledgePageSource, /file\.filename\.trim\(\)/);
+  assert.doesNotMatch(knowledgePageSource, /replace\(\/\\\.\(\?:md\|markdown\)\$\/i/);
 });
 
 test('knowledge document preview is available only after ingestion completes', () => {
@@ -902,7 +901,7 @@ test('knowledge upload worker hashes files with SHA-256 to match server merge in
   assert.equal(hashWorkerSource.includes('spark-md5'), false);
 });
 
-test('knowledge upload supports selecting or dropping multiple markdown files sequentially', () => {
+test('knowledge upload supports selecting or dropping multiple supported files sequentially', () => {
   assert.match(knowledgePageSource, /multiple/);
   assert.match(knowledgePageSource, /Array\.from\(e\.target\.files/);
   assert.match(knowledgePageSource, /Array\.from\(e\.dataTransfer\.files/);
@@ -944,7 +943,7 @@ test('usage tracking details open in localized modals from document and conversa
   }
 });
 
-test('uploaded markdown documents can be opened as original documents from knowledge and chat sources', () => {
+test('uploaded documents can preview converted Markdown and download originals from knowledge and chat sources', () => {
   const documentViewerSource = readFileSync(path.join(clientDir, 'src/components/DocumentViewerModal.tsx'), 'utf8');
 
   assert.match(knowledgePageSource, /DocumentViewerModal/);
@@ -957,6 +956,7 @@ test('uploaded markdown documents can be opened as original documents from knowl
   assert.match(chatMessageSource, /source\.file_id/);
 
   assert.match(documentViewerSource, /api\.get<string>\(`\/upload\/files\/\$\{document\.id\}\/content`/);
+  assert.match(documentViewerSource, /getOriginalDocumentDownloadUrl/);
   assert.match(documentViewerSource, /MarkdownRenderer/);
   assert.match(documentViewerSource, /knowledge\.rawMarkdown/);
   assert.match(documentViewerSource, /knowledge\.renderedMarkdown/);
