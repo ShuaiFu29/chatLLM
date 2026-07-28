@@ -14,21 +14,40 @@ from config import settings
 from capabilities import build_capability_report
 from agentic_retrieval import agentic_retrieve
 from db import (
+    ConversionGenerationStateError,
     assert_eval_lease_active,
     bump_project_knowledge_version,
     check_database_ready,
     get_file,
+    get_cleanup_conversion_generation_chunk_ids,
     get_markdown_index_status,
 )
 from eval_runner import EvalExecutionStopped, EvalRunDeadlineExceeded, run_eval_cases
-from graph_store import check_graph_store_ready, delete_file_graph, ensure_graph_schema, list_graph, search_graph
+from graph_store import (
+    check_graph_store_ready,
+    delete_chunk_graph,
+    delete_file_graph,
+    ensure_graph_schema,
+    list_graph,
+    search_graph,
+)
 from http_safety import RequestBodyLimitMiddleware, StrictRequestModel, public_internal_error_handler
 from ingestion import process_file
-from keyword_store import check_keyword_store_ready, delete_file_keywords, ensure_keyword_index
+from keyword_store import (
+    check_keyword_store_ready,
+    delete_chunk_keywords,
+    delete_file_keywords,
+    ensure_keyword_index,
+)
 from retrieval_cache import check_cache_redis_ready, get_default_retrieval_cache
 from retrieval import retrieve_documents
 from safe_errors import safe_error_fields
-from vector_store import check_vector_store_ready, delete_file_vectors, ensure_collection
+from vector_store import (
+    check_vector_store_ready,
+    delete_chunk_vectors,
+    delete_file_vectors,
+    ensure_collection,
+)
 
 
 def startup():
@@ -230,6 +249,10 @@ class EvalRunRequest(StrictRequestModel):
 class CleanupFileRequest(FileIdRequest):
     pass
 
+
+class CleanupConversionGenerationRequest(FileIdRequest):
+    generation_id: UUID
+
 @app.get("/")
 async def root():
     return {"status": "ok", "service": "rag-service"}
@@ -430,6 +453,44 @@ def cleanup_file_endpoint(request: CleanupFileRequest):
             "file_deleted",
         )
     return {"status": "deleted", "file_id": request.file_id}
+
+
+@app.post(
+    "/cleanup-conversion-generation",
+    dependencies=[Depends(require_internal_auth)],
+)
+def cleanup_conversion_generation_endpoint(
+    request: CleanupConversionGenerationRequest,
+):
+    generation_id = str(request.generation_id)
+    try:
+        chunk_ids = get_cleanup_conversion_generation_chunk_ids(
+            request.file_id,
+            generation_id,
+        )
+    except ConversionGenerationStateError as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "conversion_generation_not_cleanup_safe"},
+        ) from error
+
+    if chunk_ids is None:
+        return {
+            "status": "deleted",
+            "file_id": request.file_id,
+            "generation_id": generation_id,
+            "chunk_count": 0,
+        }
+
+    delete_chunk_vectors(chunk_ids)
+    delete_chunk_keywords(chunk_ids)
+    delete_chunk_graph(request.file_id, chunk_ids)
+    return {
+        "status": "deleted",
+        "file_id": request.file_id,
+        "generation_id": generation_id,
+        "chunk_count": len(chunk_ids),
+    }
 
 if __name__ == "__main__":
     import uvicorn

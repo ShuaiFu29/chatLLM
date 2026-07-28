@@ -696,6 +696,60 @@ def _require_nonnegative_int(value: int, field: str) -> int:
     return value
 
 
+def _enqueue_conversion_generation_cleanup(
+    cur,
+    generation: dict,
+    *,
+    owner_user_id: str,
+    reason: str,
+) -> None:
+    """Durably enqueue cleanup without ever treating the shared source object as derived data."""
+
+    generation_id = str(generation["id"])
+    file_id = str(generation["file_id"])
+    storage_object_keys = list(
+        dict.fromkeys(
+            str(generation.get(field) or "").strip()
+            for field in (
+                "markdown_object_key",
+                "source_map_object_key",
+                "manifest_object_key",
+            )
+            if str(generation.get(field) or "").strip()
+        )
+    )
+    payload = {
+        "file_id": file_id,
+        "reason": str(reason),
+        "storage_object_keys": storage_object_keys,
+    }
+    cur.execute(
+        """
+        insert into artifact_cleanup_jobs (
+          resource_key,
+          resource_type,
+          resource_id,
+          owner_user_id,
+          payload
+        )
+        values (%s, 'conversion_generation', %s, %s, %s::jsonb)
+        on conflict (resource_key) do update set
+          owner_user_id = coalesce(
+            artifact_cleanup_jobs.owner_user_id,
+            excluded.owner_user_id
+          ),
+          payload = artifact_cleanup_jobs.payload || excluded.payload,
+          updated_at = now()
+        """,
+        (
+            f"conversion_generation:{generation_id}",
+            generation_id,
+            owner_user_id,
+            json.dumps(payload),
+        ),
+    )
+
+
 def create_or_reuse_conversion_generation(
     file_id: str,
     attempt_id,
@@ -1072,18 +1126,25 @@ def activate_conversion_generation_and_complete_ingestion_job(
                 )
 
             previous_generation_id = state.get("active_conversion_generation_id")
+            superseded_generation = None
             if previous_generation_id and str(previous_generation_id) != str(generation_id):
                 cur.execute(
-                    """
+                    f"""
                     update file_conversion_generations
                     set status = 'superseded',
                         updated_at = now()
                     where id = %s
                       and file_id = %s
                       and status in ('completed', 'completed_with_warnings')
+                    returning {_CONVERSION_GENERATION_COLUMNS}
                     """,
                     (previous_generation_id, file_id),
                 )
+                superseded_generation = cur.fetchone()
+                if not superseded_generation:
+                    raise ConversionGenerationStateError(
+                        "previous active conversion generation is not supersedable"
+                    )
 
             cur.execute(
                 """
@@ -1153,6 +1214,13 @@ def activate_conversion_generation_and_complete_ingestion_job(
             if not cur.fetchone():
                 raise IngestionLeaseLostError(
                     f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
+                )
+            if superseded_generation:
+                _enqueue_conversion_generation_cleanup(
+                    cur,
+                    superseded_generation,
+                    owner_user_id=str(state["user_id"]),
+                    reason="superseded_after_activation",
                 )
         conn.commit()
         return {
@@ -1413,6 +1481,84 @@ def delete_file_chunks(file_id: str):
         conn.commit()
 
 
+def get_conversion_generation_chunk_ids(file_id: str, generation_id: str) -> list[str]:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select id
+                from file_chunks
+                where file_id = %s
+                  and conversion_generation_id = %s
+                order by chunk_index
+                """,
+                (file_id, generation_id),
+            )
+            return [str(row["id"]) for row in cur.fetchall()]
+
+
+def get_cleanup_conversion_generation_chunk_ids(
+    file_id: str,
+    generation_id: str,
+) -> list[str] | None:
+    """Return retryable cleanup targets while refusing to touch an active generation."""
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select
+                  generation.status,
+                  target_file.active_conversion_generation_id
+                from file_conversion_generations generation
+                join files target_file on target_file.id = generation.file_id
+                where generation.id = %s
+                  and generation.file_id = %s
+                """,
+                (generation_id, file_id),
+            )
+            generation = cur.fetchone()
+            if not generation:
+                return None
+            if str(generation.get("active_conversion_generation_id") or "") == str(
+                generation_id
+            ):
+                raise ConversionGenerationStateError(
+                    "active conversion generation cannot be cleaned"
+                )
+            if generation.get("status") not in {"failed", "superseded"}:
+                raise ConversionGenerationStateError(
+                    "conversion generation is not in a cleanup-safe state"
+                )
+            cur.execute(
+                """
+                select id
+                from file_chunks
+                where file_id = %s
+                  and conversion_generation_id = %s
+                order by chunk_index
+                """,
+                (file_id, generation_id),
+            )
+            return [str(row["id"]) for row in cur.fetchall()]
+
+
+def delete_conversion_generation_chunks(file_id: str, generation_id: str) -> int:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                delete from file_chunks
+                where file_id = %s
+                  and conversion_generation_id = %s
+                """,
+                (file_id, generation_id),
+            )
+            deleted_count = cur.rowcount
+        conn.commit()
+        return max(0, int(deleted_count))
+
+
 def _chunk_heading_path(content: str) -> list[str]:
     headings: list[str] = []
     for line in str(content or "").splitlines():
@@ -1547,7 +1693,18 @@ def insert_file_chunk_batch(
 def replace_file_chunks(file_id: str, user_id: str, chunks: list, file_data: dict) -> list[dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
-            cur.execute("delete from file_chunks where file_id = %s", (file_id,))
+            conversion_generation_id = file_data.get("conversion_generation_id")
+            if conversion_generation_id:
+                cur.execute(
+                    """
+                    delete from file_chunks
+                    where file_id = %s
+                      and conversion_generation_id = %s
+                    """,
+                    (file_id, conversion_generation_id),
+                )
+            else:
+                cur.execute("delete from file_chunks where file_id = %s", (file_id,))
 
             inserted: list[dict] = []
             for index, chunk in enumerate(chunks):

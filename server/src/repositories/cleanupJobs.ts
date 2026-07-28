@@ -2,7 +2,12 @@ import { createHash, randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 
-export type CleanupResourceType = 'file' | 'project_space' | 'account' | 'avatar';
+export type CleanupResourceType =
+  | 'file'
+  | 'project_space'
+  | 'account'
+  | 'avatar'
+  | 'conversion_generation';
 export type CleanupJobStatus = 'queued' | 'processing' | 'waiting' | 'failed' | 'completed';
 
 export interface CleanupJobRow {
@@ -105,6 +110,101 @@ const insertCleanupJobWithClient = async (
     ]
   );
   return rows[0];
+};
+
+interface ConversionGenerationCleanupRow {
+  id: string;
+  file_id: string;
+  status: string;
+  markdown_object_key?: string | null;
+  source_map_object_key?: string | null;
+  manifest_object_key?: string | null;
+}
+
+export const enqueueConversionGenerationCleanupWithClient = async (
+  client: PoolClient,
+  input: {
+    fileId: string;
+    generationId: string;
+    ownerUserId: string;
+    reason: string;
+  },
+) => {
+  const { rows } = await client.query<ConversionGenerationCleanupRow>(
+    `select
+       generation.id,
+       generation.file_id,
+       generation.status,
+       generation.markdown_object_key,
+       generation.source_map_object_key,
+       generation.manifest_object_key
+     from file_conversion_generations generation
+     join files target_file on target_file.id = generation.file_id
+     where generation.id = $1::uuid
+       and generation.file_id = $2::uuid
+       and target_file.active_conversion_generation_id is distinct from generation.id
+     for update of generation, target_file`,
+    [input.generationId, input.fileId],
+  );
+  let generation = rows[0];
+  if (!generation) return null;
+
+  if (generation.status === 'converting') {
+    const retired = await client.query<ConversionGenerationCleanupRow>(
+      `update file_conversion_generations
+       set status = 'failed',
+           error_code = 'INGESTION_ATTEMPT_TERMINATED',
+           completed_at = coalesce(completed_at, now()),
+           updated_at = now()
+       where id = $1::uuid
+         and file_id = $2::uuid
+         and status = 'converting'
+       returning
+         id,
+         file_id,
+         status,
+         markdown_object_key,
+         source_map_object_key,
+         manifest_object_key`,
+      [input.generationId, input.fileId],
+    );
+    generation = retired.rows[0];
+  } else if (['completed', 'completed_with_warnings'].includes(generation.status)) {
+    const retired = await client.query<ConversionGenerationCleanupRow>(
+      `update file_conversion_generations
+       set status = 'superseded',
+           updated_at = now()
+       where id = $1::uuid
+         and file_id = $2::uuid
+         and status in ('completed', 'completed_with_warnings')
+       returning
+         id,
+         file_id,
+         status,
+         markdown_object_key,
+         source_map_object_key,
+         manifest_object_key`,
+      [input.generationId, input.fileId],
+    );
+    generation = retired.rows[0];
+  }
+
+  if (!generation || !['failed', 'superseded'].includes(generation.status)) return null;
+  const storageObjectKeys = uniqueStorageObjectKeys([
+    generation.markdown_object_key,
+    generation.source_map_object_key,
+    generation.manifest_object_key,
+  ]);
+  return insertCleanupJobWithClient(client, {
+    resourceType: 'conversion_generation',
+    resourceId: generation.id,
+    ownerUserId: input.ownerUserId,
+    payload: {
+      file_id: generation.file_id,
+      reason: input.reason,
+      storage_object_keys: storageObjectKeys,
+    },
+  });
 };
 
 interface FileCleanupSource {
@@ -806,6 +906,69 @@ export const finalizeAvatarCleanup = async (
     const job = await lockCurrentCleanupJob(client, claim);
     if (job.resource_type !== 'avatar' || job.resource_id !== claim.resource_id) {
       throw new CleanupLeaseLostError();
+    }
+    return completeLockedCleanupJob(client, job.id);
+  });
+};
+
+export const finalizeConversionGenerationCleanup = async (
+  claim: Pick<
+    CleanupJobClaim,
+    'id' | 'lease_token' | 'resource_id' | 'payload'
+  >,
+  options: FinalizeCleanupOptions = {},
+) => {
+  const runInTransaction = options.runInTransaction || withTransaction;
+  return runInTransaction(async (client) => {
+    const payloadFileId = typeof claim.payload?.file_id === 'string'
+      ? claim.payload.file_id
+      : '';
+    if (!payloadFileId) throw new Error('Conversion generation cleanup file id is missing');
+
+    await client.query(
+      'select id from files where id = $1::uuid for update',
+      [payloadFileId],
+    );
+    const generationResult = await client.query<{
+      id: string;
+      file_id: string;
+      status: string;
+      active_conversion_generation_id?: string | null;
+    }>(
+      `select
+         generation.id,
+         generation.file_id,
+         generation.status,
+         target_file.active_conversion_generation_id
+       from file_conversion_generations generation
+       join files target_file on target_file.id = generation.file_id
+       where generation.id = $1::uuid
+         and generation.file_id = $2::uuid
+       for update of generation`,
+      [claim.resource_id, payloadFileId],
+    );
+    const generation = generationResult.rows[0];
+    const job = await lockCurrentCleanupJob(client, claim);
+    if (
+      job.resource_type !== 'conversion_generation'
+      || job.resource_id !== claim.resource_id
+    ) {
+      throw new CleanupLeaseLostError();
+    }
+
+    if (generation) {
+      if (generation.active_conversion_generation_id === generation.id) {
+        throw new Error('Active conversion generation cannot be finalized');
+      }
+      if (!['failed', 'superseded'].includes(generation.status)) {
+        throw new Error('Conversion generation is not cleanup-safe');
+      }
+      await client.query(
+        `delete from file_conversion_generations
+         where id = $1::uuid
+           and file_id = $2::uuid`,
+        [claim.resource_id, payloadFileId],
+      );
     }
     return completeLockedCleanupJob(client, job.id);
   });

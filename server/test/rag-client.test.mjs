@@ -359,6 +359,29 @@ test('cleanup requests use their own cleanup circuit', async () => {
   assert.equal(cleanupCalls, 1);
 });
 
+test('generation cleanup sends both authority identifiers to the internal endpoint', async () => {
+  const transport = createTransport(() => ok({ status: 'deleted' }));
+  const client = createClient({ transport });
+
+  await client.cleanupRagConversionGeneration({
+    fileId: '11111111-1111-4111-8111-111111111111',
+    generationId: '22222222-2222-4222-8222-222222222222',
+  });
+
+  assert.deepEqual(transport.calls, [{
+    method: 'post',
+    url: 'http://rag.test/cleanup-conversion-generation',
+    data: {
+      file_id: '11111111-1111-4111-8111-111111111111',
+      generation_id: '22222222-2222-4222-8222-222222222222',
+    },
+    config: {
+      timeout: 200,
+      headers: { 'X-ChatLLM-RAG-Token': 'internal-rag-token' },
+    },
+  }]);
+});
+
 test('readiness uses the authenticated RAG ready endpoint and health timeout', async () => {
   const transport = createTransport(() => ok({ status: 'ready' }));
   const client = createClient({ transport });

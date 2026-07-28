@@ -16,6 +16,7 @@ if str(ROOT) not in sys.path:
 
 from converted_document import DocumentConversionError
 from converters import convert_document, get_converter
+from converters.base import ConversionLimits
 from converters.docx import DocxConverter
 from converters.pdf import PdfConverter
 from source_map import strip_source_unit_markers
@@ -147,6 +148,23 @@ class PdfConverterTests(unittest.TestCase):
                     convert_document(source, output)
                 self.assertEqual(context.exception.code, expected_code)
                 self.assertFalse((output / "document.md").exists())
+
+    def test_pdf_enforces_page_and_extracted_text_budgets(self):
+        too_many_pages = self.root / "too-many-pages.pdf"
+        write_pdf(too_many_pages, ["one", "two"])
+        with self.assertRaises(DocumentConversionError) as page_context:
+            PdfConverter(
+                ConversionLimits(max_pdf_pages=1),
+            ).convert(too_many_pages, self.root / "page-limit")
+        self.assertEqual(page_context.exception.code, "PDF_TOO_MANY_PAGES")
+
+        too_much_text = self.root / "too-much-text.pdf"
+        write_pdf(too_much_text, ["bounded extraction text"])
+        with self.assertRaises(DocumentConversionError) as text_context:
+            PdfConverter(
+                ConversionLimits(max_pdf_extracted_chars=5),
+            ).convert(too_much_text, self.root / "text-limit")
+        self.assertEqual(text_context.exception.code, "PDF_TEXT_TOO_LARGE")
 
 
 class DocxConverterTests(unittest.TestCase):

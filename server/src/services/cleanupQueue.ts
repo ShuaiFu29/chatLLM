@@ -1,6 +1,9 @@
 import { randomUUID } from 'crypto';
 import { Queue, Worker } from 'bullmq';
-import { cleanupRagFileVectors } from '../lib/ragClient';
+import {
+  cleanupRagConversionGeneration,
+  cleanupRagFileVectors,
+} from '../lib/ragClient';
 import { BULLMQ_PREFIX, getBullMqConnectionOptions } from '../lib/redis';
 import {
   abortMultipartObjectUpload,
@@ -15,6 +18,7 @@ import {
   failExhaustedCleanupJobs,
   finalizeAccountCleanup,
   finalizeAvatarCleanup,
+  finalizeConversionGenerationCleanup,
   finalizeFileCleanup,
   finalizeProjectSpaceCleanup,
   getCleanupChildSummary,
@@ -55,6 +59,10 @@ interface CleanupChildSummary {
 
 interface ExecuteArtifactCleanupJobOptions {
   cleanupRagFile?: (fileId: string) => Promise<unknown>;
+  cleanupRagGeneration?: (input: {
+    fileId: string;
+    generationId: string;
+  }) => Promise<unknown>;
   abortMultipartUpload?: (payload: Record<string, unknown>) => Promise<unknown>;
   deleteStorageObject?: (key?: string | null) => Promise<unknown>;
   updateStep?: (claim: CleanupJobClaim, step: string) => Promise<unknown>;
@@ -64,6 +72,7 @@ interface ExecuteArtifactCleanupJobOptions {
   finalizeProjectSpace?: (claim: CleanupJobClaim) => Promise<unknown>;
   finalizeAccount?: (claim: CleanupJobClaim) => Promise<unknown>;
   finalizeAvatar?: (claim: CleanupJobClaim) => Promise<unknown>;
+  finalizeConversionGeneration?: (claim: CleanupJobClaim) => Promise<unknown>;
   markFailed?: (claim: CleanupJobClaim, safeError: string) => Promise<unknown>;
   warn?: (message: string, error: unknown) => void;
 }
@@ -107,6 +116,8 @@ export const executeArtifactCleanupJob = async (
   options: ExecuteArtifactCleanupJobOptions = {}
 ): Promise<{ state: 'completed' | 'waiting' | 'failed' | 'superseded' }> => {
   const cleanupRagFile = options.cleanupRagFile || cleanupRagFileVectors;
+  const cleanupRagGeneration = options.cleanupRagGeneration
+    || cleanupRagConversionGeneration;
   const abortMultipartUpload = options.abortMultipartUpload || abortMultipartFromPayload;
   const deleteStorageObject = options.deleteStorageObject || deleteObject;
   const updateStep = options.updateStep || updateCleanupJobStep;
@@ -116,6 +127,8 @@ export const executeArtifactCleanupJob = async (
   const finalizeProjectSpace = options.finalizeProjectSpace || finalizeProjectSpaceCleanup;
   const finalizeAccount = options.finalizeAccount || finalizeAccountCleanup;
   const finalizeAvatar = options.finalizeAvatar || finalizeAvatarCleanup;
+  const finalizeConversionGeneration = options.finalizeConversionGeneration
+    || finalizeConversionGenerationCleanup;
   const markFailed = options.markFailed || ((claim, message) => (
     markCleanupJobFailed(claim, message, CLEANUP_QUEUE_RETRY_BASE_DELAY_MS)
   ));
@@ -193,6 +206,36 @@ export const executeArtifactCleanupJob = async (
       }
       currentStep = 'avatar finalization';
       await finalizeAvatar(job);
+      return { state: 'completed' };
+    }
+
+    if (job.resource_type === 'conversion_generation') {
+      const fileId = typeof job.payload?.file_id === 'string'
+        ? job.payload.file_id
+        : '';
+      if (!fileId) throw new Error('Conversion generation cleanup file id is missing');
+
+      if (!completedSteps.rag_deleted) {
+        currentStep = 'conversion generation RAG cleanup';
+        await cleanupRagGeneration({
+          fileId,
+          generationId: job.resource_id,
+        });
+        await updateStep(job, 'rag_deleted');
+        completedSteps.rag_deleted = true;
+      }
+
+      if (!completedSteps.storage_deleted) {
+        currentStep = 'conversion generation storage cleanup';
+        for (const key of storageKeysFromPayload(job.payload || {})) {
+          await deleteStorageObject(key);
+        }
+        await updateStep(job, 'storage_deleted');
+        completedSteps.storage_deleted = true;
+      }
+
+      currentStep = 'conversion generation finalization';
+      await finalizeConversionGeneration(job);
       return { state: 'completed' };
     }
 

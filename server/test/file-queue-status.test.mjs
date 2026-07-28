@@ -322,6 +322,83 @@ test('lease renewal cannot revive an expired or replaced ingestion attempt', asy
   ]);
 });
 
+test('terminal ingestion reconciliation durably retires its non-active generation', async () => {
+  const files = require(path.join(serverRoot, 'dist', 'repositories', 'files.js'));
+  const fileId = '11111111-1111-4111-8111-111111111111';
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const generationId = '33333333-3333-4333-8333-333333333333';
+  const attemptId = '44444444-4444-4444-8444-444444444444';
+  const leaseToken = '55555555-5555-4555-8555-555555555555';
+  let cleanupPayload;
+  const queries = [];
+  const generation = {
+    id: generationId,
+    file_id: fileId,
+    status: 'completed',
+    markdown_object_key: 'derived/g/document.md',
+    source_map_object_key: 'derived/g/source-map.jsonl.zst',
+    manifest_object_key: 'derived/g/manifest.json',
+  };
+  const runInTransaction = async (callback) => callback({
+    query: async (sql, params = []) => {
+      queries.push(sql);
+      if (/select[\s\S]*from files[\s\S]*for update/i.test(sql)) {
+        return {
+          rows: [{
+            id: fileId,
+            user_id: userId,
+            status: 'processing',
+            attempts: 1,
+            max_attempts: 3,
+          }],
+        };
+      }
+      if (/from file_ingestion_jobs/i.test(sql)) {
+        return {
+          rows: [{
+            file_id: fileId,
+            status: 'failed',
+            attempt_id: attemptId,
+            lease_token: leaseToken,
+            lease_active: false,
+            error_message: 'indexing failed',
+            conversion_generation_id: generationId,
+          }],
+        };
+      }
+      if (/select[\s\S]*from file_conversion_generations generation/i.test(sql)) {
+        return { rows: [generation] };
+      }
+      if (/update file_conversion_generations/i.test(sql)) {
+        return { rows: [{ ...generation, status: 'superseded' }] };
+      }
+      if (/insert into artifact_cleanup_jobs/i.test(sql)) {
+        cleanupPayload = JSON.parse(params[5]);
+        return { rows: [{ id: 'generation-cleanup' }] };
+      }
+      if (/update files/i.test(sql)) return { rows: [{ id: fileId }] };
+      throw new Error(`Unexpected SQL: ${sql}`);
+    },
+  });
+
+  const result = await files.reconcileFileIngestionAttempt({
+    file: { id: fileId },
+    attemptId,
+    leaseToken,
+  }, { runInTransaction });
+
+  assert.deepEqual(result, { state: 'failed' });
+  assert.equal(cleanupPayload.file_id, fileId);
+  assert.deepEqual(cleanupPayload.storage_object_keys, [
+    generation.markdown_object_key,
+    generation.source_map_object_key,
+    generation.manifest_object_key,
+  ]);
+  const cleanupInsert = queries.findIndex((sql) => /insert into artifact_cleanup_jobs/i.test(sql));
+  const fileFailure = queries.findIndex((sql) => /update files[\s\S]*set status = 'failed'/i.test(sql));
+  assert.ok(cleanupInsert >= 0 && cleanupInsert < fileFailure);
+});
+
 test('reconciliation never downgrades an already completed file', async () => {
   const files = require(path.join(serverRoot, 'dist', 'repositories', 'files.js'));
   const updates = [];

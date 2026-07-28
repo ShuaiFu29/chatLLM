@@ -38,7 +38,12 @@ class PdfConverter(DocumentConverter):
                     "PDF_ENCRYPTED",
                     "encrypted PDF documents are not supported",
                 )
-            pages = list(reader.pages)
+            page_count = len(reader.pages)
+            if page_count > self.limits.max_pdf_pages:
+                raise DocumentConversionError(
+                    "PDF_TOO_MANY_PAGES",
+                    "PDF page count exceeds the configured conversion limit",
+                )
         except DocumentConversionError:
             raise
         except pdf_errors as error:
@@ -55,11 +60,18 @@ class PdfConverter(DocumentConverter):
         warnings: set[str] = set()
         blocks: list[LocatedTextBlock] = []
         empty_page_count = 0
+        extracted_character_count = 0
         try:
-            for page_number, page in enumerate(pages, start=1):
+            for page_number, page in enumerate(reader.pages, start=1):
                 if _page_may_have_complex_layout(page):
                     warnings.add(_COMPLEX_LAYOUT_WARNING)
                 extracted = page.extract_text() or ""
+                extracted_character_count += len(extracted)
+                if extracted_character_count > self.limits.max_pdf_extracted_chars:
+                    raise DocumentConversionError(
+                        "PDF_TEXT_TOO_LARGE",
+                        "PDF extracted text exceeds the configured conversion limit",
+                    )
                 text, normalized_controls = _normalize_extracted_text(extracted)
                 if normalized_controls:
                     warnings.add(_CONTROL_CHARACTERS_WARNING)

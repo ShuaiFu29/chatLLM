@@ -180,6 +180,29 @@ def delete_file_keywords(file_id: str):
             raise
 
 
+def delete_chunk_keywords(chunk_ids: list[str]):
+    if not settings.elasticsearch_enabled:
+        return
+
+    normalized_ids = list(
+        dict.fromkeys(
+            str(chunk_id).strip()
+            for chunk_id in chunk_ids
+            if str(chunk_id).strip()
+        )
+    )
+    for batch in _batched(normalized_ids, settings.elasticsearch_bulk_batch_size):
+        try:
+            _request(
+                "POST",
+                f"{settings.elasticsearch_index}/_delete_by_query?refresh=true",
+                {"query": {"terms": {"chunk_id": batch}}},
+            )
+        except urllib.error.HTTPError as error:
+            if error.code != 404:
+                raise
+
+
 def search_keyword_chunks(
     query: str,
     user_id: str,

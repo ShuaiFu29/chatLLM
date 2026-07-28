@@ -20,7 +20,7 @@ const schemaState = (overrides = {}) => ({
   ...overrides,
 });
 
-test('document schema readiness requires migrations 0032/0033 and every provenance column', async () => {
+test('document schema readiness requires migrations 0032/0033/0034 and every provenance column', async () => {
   let statement = '';
   const result = await checkDocumentSchemaReady(async (sql) => {
     statement = sql;
@@ -30,6 +30,7 @@ test('document schema readiness requires migrations 0032/0033 and every provenan
   assert.equal(result, true);
   assert.match(statement, /0032_multi_format_documents\.sql/);
   assert.match(statement, /0033_conversion_generation_integrity\.sql/);
+  assert.match(statement, /0034_parallel_conversion_generations\.sql/);
   assert.match(statement, /to_regclass\(current_schema\(\) \|\| '\.file_conversion_generations'\)/);
   for (const column of [
     'active_conversion_generation_id',

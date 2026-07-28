@@ -120,6 +120,14 @@ test('late upload publication cannot revive a deleting file and requeues object 
   assert.match(files, /lease_token = null/i);
 });
 
+test('parallel generation migration permits durable generation cleanup jobs', () => {
+  const migration = readSource('migrations/0034_parallel_conversion_generations.sql');
+
+  assert.match(migration, /file_chunks_legacy_file_chunk_index_uidx/i);
+  assert.match(migration, /file_chunks_generation_chunk_index_uidx/i);
+  assert.match(migration, /resource_type in[\s\S]*'conversion_generation'/i);
+});
+
 test('file cleanup snapshots raw, multipart, and every conversion generation object key', async () => {
   const repositoryPath = path.join(serverRoot, 'dist', 'repositories', 'cleanupJobs.js');
   const { enqueueFileCleanup } = require(repositoryPath);
@@ -203,6 +211,142 @@ test('file cleanup snapshots raw, multipart, and every conversion generation obj
   assert.ok(ingestionCancelIndex < generationIndex);
   assert.match(calls[generationIndex].sql, /where file_id = \$1\s+for update/i);
   assert.doesNotMatch(calls[generationIndex].sql, /where[\s\S]*status\s*(?:=|in\s*\()/i);
+});
+
+test('terminal candidate generations are retired and queued without the shared original key', async () => {
+  const repositoryPath = path.join(serverRoot, 'dist', 'repositories', 'cleanupJobs.js');
+  const { enqueueConversionGenerationCleanupWithClient } = require(repositoryPath);
+  const fileId = '11111111-1111-4111-8111-111111111111';
+  const generationId = '33333333-3333-4333-8333-333333333333';
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const generation = {
+    id: generationId,
+    file_id: fileId,
+    status: 'completed',
+    markdown_object_key: 'derived/g/document.md',
+    source_map_object_key: 'derived/g/source-map.jsonl.zst',
+    manifest_object_key: 'derived/g/manifest.json',
+  };
+  let payload;
+  const calls = [];
+  const client = {
+    query: async (sql, params = []) => {
+      calls.push({ sql, params });
+      if (/select[\s\S]*from file_conversion_generations generation/i.test(sql)) {
+        return { rows: [generation] };
+      }
+      if (/update file_conversion_generations/i.test(sql)) {
+        return { rows: [{ ...generation, status: 'superseded' }] };
+      }
+      if (/insert into artifact_cleanup_jobs/i.test(sql)) {
+        payload = JSON.parse(params[5]);
+        return { rows: [{ id: 'cleanup-generation', payload }] };
+      }
+      throw new Error(`Unexpected generation cleanup query: ${sql}`);
+    },
+  };
+
+  const result = await enqueueConversionGenerationCleanupWithClient(client, {
+    fileId,
+    generationId,
+    ownerUserId: userId,
+    reason: 'ingestion_attempt_terminated',
+  });
+
+  assert.equal(result.id, 'cleanup-generation');
+  assert.deepEqual(payload.storage_object_keys, [
+    generation.markdown_object_key,
+    generation.source_map_object_key,
+    generation.manifest_object_key,
+  ]);
+  assert.equal(payload.file_id, fileId);
+  assert.equal(JSON.stringify(payload).includes('raw/original'), false);
+  assert.match(calls[0].sql, /active_conversion_generation_id is distinct from generation\.id/i);
+  assert.match(calls[1].sql, /set status = 'superseded'/i);
+});
+
+test('generation cleanup checkpoints external indexes before derived storage and finalization', async () => {
+  const servicePath = path.join(serverRoot, 'dist', 'services', 'cleanupQueue.js');
+  const { executeArtifactCleanupJob } = require(servicePath);
+  const calls = [];
+  const job = {
+    id: 'generation-job',
+    resource_type: 'conversion_generation',
+    resource_id: '33333333-3333-4333-8333-333333333333',
+    lease_token: '44444444-4444-4444-8444-444444444444',
+    step_state: {},
+    payload: {
+      file_id: '11111111-1111-4111-8111-111111111111',
+      storage_object_keys: ['derived-md', 'derived-map', 'derived-manifest'],
+    },
+  };
+
+  const result = await executeArtifactCleanupJob(job, {
+    cleanupRagGeneration: async (input) => calls.push(`rag:${input.generationId}`),
+    deleteStorageObject: async (key) => calls.push(`storage:${key}`),
+    updateStep: async (_claim, step) => calls.push(`step:${step}`),
+    finalizeConversionGeneration: async () => calls.push('finalize-generation'),
+    markFailed: async () => calls.push('failed'),
+    warn: () => undefined,
+  });
+
+  assert.deepEqual(result, { state: 'completed' });
+  assert.deepEqual(calls, [
+    `rag:${job.resource_id}`,
+    'step:rag_deleted',
+    'storage:derived-md',
+    'storage:derived-map',
+    'storage:derived-manifest',
+    'step:storage_deleted',
+    'finalize-generation',
+  ]);
+});
+
+test('generation finalization refuses an active generation and preserves its row', async () => {
+  const repositoryPath = path.join(serverRoot, 'dist', 'repositories', 'cleanupJobs.js');
+  const { finalizeConversionGenerationCleanup } = require(repositoryPath);
+  const generationId = '33333333-3333-4333-8333-333333333333';
+  const fileId = '11111111-1111-4111-8111-111111111111';
+  const calls = [];
+  const client = {
+    query: async (sql) => {
+      calls.push(sql);
+      if (/select id from files/i.test(sql)) return { rows: [{ id: fileId }] };
+      if (/from file_conversion_generations generation/i.test(sql)) {
+        return {
+          rows: [{
+            id: generationId,
+            file_id: fileId,
+            status: 'superseded',
+            active_conversion_generation_id: generationId,
+          }],
+        };
+      }
+      if (/from artifact_cleanup_jobs/i.test(sql)) {
+        return {
+          rows: [{
+            id: 'cleanup-job',
+            resource_type: 'conversion_generation',
+            resource_id: generationId,
+          }],
+        };
+      }
+      throw new Error(`Unexpected finalization query: ${sql}`);
+    },
+  };
+
+  await assert.rejects(
+    finalizeConversionGenerationCleanup({
+      id: 'cleanup-job',
+      lease_token: '44444444-4444-4444-8444-444444444444',
+      resource_id: generationId,
+      payload: { file_id: fileId },
+    }, {
+      runInTransaction: async (callback) => callback(client),
+    }),
+    /Active conversion generation cannot be finalized/,
+  );
+  assert.equal(calls.some((sql) => /delete from file_conversion_generations/i.test(sql)), false);
 });
 
 test('file cleanup worker deletes deduplicated snapshot and legacy keys before checkpointing', async () => {

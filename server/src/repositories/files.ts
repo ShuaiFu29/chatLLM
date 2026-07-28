@@ -6,6 +6,7 @@ import {
   DOCUMENT_TYPE_CAPABILITIES,
   type DocumentKind,
 } from '../lib/uploadInput';
+import { enqueueConversionGenerationCleanupWithClient } from './cleanupJobs';
 
 export interface FileRow {
   id: string;
@@ -994,6 +995,7 @@ interface FileIngestionJobRow {
   lease_expires_at?: string | Date;
   lease_active: boolean;
   error_message?: string | null;
+  conversion_generation_id?: string | null;
 }
 
 interface ReconcileFileIngestionAttemptOptions {
@@ -1037,7 +1039,8 @@ export const reconcileFileIngestionAttempt = async (
          lease_token,
          lease_expires_at,
          lease_expires_at > now() as lease_active,
-         error_message
+         error_message,
+         conversion_generation_id
        from file_ingestion_jobs
        where file_id = $1
        for update`,
@@ -1069,6 +1072,14 @@ export const reconcileFileIngestionAttempt = async (
     }
 
     const errorMessage = getIngestionFailureMessage(job);
+    if (job.conversion_generation_id) {
+      await enqueueConversionGenerationCleanupWithClient(client, {
+        fileId: file.id,
+        generationId: job.conversion_generation_id,
+        ownerUserId: file.user_id,
+        reason: 'ingestion_attempt_terminated',
+      });
+    }
     await client.query(
       `update files
        set status = 'failed',

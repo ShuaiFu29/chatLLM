@@ -20,9 +20,11 @@ from db import (
     complete_conversion_generation,
     complete_ingestion_job,
     create_or_reuse_conversion_generation,
+    delete_conversion_generation_chunks,
     delete_file_chunks,
     fail_conversion_generation,
     fail_ingestion_job,
+    get_conversion_generation_chunk_ids,
     get_file,
     insert_file_chunk_batch,
     replace_file_chunks,
@@ -30,8 +32,13 @@ from db import (
     update_ingestion_job_checkpoint,
 )
 from embeddings import EmbeddingIntegrityError, get_embeddings
-from graph_store import delete_file_graph, graph_file_transaction, index_graph_chunks
-from keyword_store import delete_file_keywords, index_chunks
+from graph_store import (
+    delete_chunk_graph,
+    delete_file_graph,
+    graph_file_transaction,
+    index_graph_chunks,
+)
+from keyword_store import delete_chunk_keywords, delete_file_keywords, index_chunks
 from langchain_text_splitters import (
     MarkdownHeaderTextSplitter,
     RecursiveCharacterTextSplitter,
@@ -46,7 +53,7 @@ from storage import (
     stream_object_bytes,
     upload_derived_artifacts,
 )
-from vector_store import delete_file_vectors, insert_vectors
+from vector_store import delete_chunk_vectors, delete_file_vectors, insert_vectors
 
 logger = logging.getLogger(__name__)
 
@@ -458,6 +465,60 @@ def reset_file_indexes(file_id: str):
     delete_file_graph(file_id)
 
 
+def cleanup_conversion_generation_indexes(
+    file_id: str,
+    generation_id: str,
+    *,
+    suppress_errors: bool,
+) -> int:
+    try:
+        chunk_ids = get_conversion_generation_chunk_ids(file_id, generation_id)
+    except Exception as error:
+        if not suppress_errors:
+            raise
+        logger.warning(
+            "Failed to delete conversion generation chunks: %s",
+            safe_error_fields(error),
+        )
+        return 0
+
+    if not chunk_ids:
+        return 0
+
+    cleanup_errors: list[Exception] = []
+    for cleanup in (
+        lambda: delete_chunk_vectors(chunk_ids),
+        lambda: delete_chunk_keywords(chunk_ids),
+        lambda: delete_chunk_graph(file_id, chunk_ids),
+    ):
+        try:
+            cleanup()
+        except Exception as error:  # noqa: BLE001 - cleanup spans independent backends
+            cleanup_errors.append(error)
+            logger.warning(
+                "Failed to delete conversion generation index entries: %s",
+                safe_error_fields(error),
+            )
+
+    if cleanup_errors:
+        if not suppress_errors:
+            raise RuntimeError(
+                "Failed to cleanup stale conversion generation indexes"
+            ) from cleanup_errors[0]
+        return 0
+
+    try:
+        return delete_conversion_generation_chunks(file_id, generation_id)
+    except Exception as error:
+        if not suppress_errors:
+            raise
+        logger.warning(
+            "Failed to delete cleaned conversion generation chunks: %s",
+            safe_error_fields(error),
+        )
+        return 0
+
+
 def process_streaming_file(
     file_id: str,
     attempt_id,
@@ -683,7 +744,6 @@ def process_converted_file(
     generation_bound = False
     generation_completed = False
     generation_completion_attempted = False
-    indexes_reset = False
 
     with tempfile.TemporaryDirectory(prefix="chatllm-conversion-") as temporary_directory:
         workspace = Path(temporary_directory)
@@ -854,7 +914,7 @@ def process_converted_file(
                 file_id,
                 attempt_id,
                 lease_token,
-                stage="resetting_indexes",
+                stage="preparing_generation_indexes",
                 progress=30,
                 total_chunks=total_chunks,
                 checkpoint={
@@ -863,8 +923,11 @@ def process_converted_file(
                     "total_chunks": total_chunks,
                 },
             )
-            indexes_reset = True
-            reset_file_indexes(file_id)
+            cleanup_conversion_generation_indexes(
+                file_id,
+                generation_id,
+                suppress_errors=False,
+            )
             assert_ingestion_lease(file_id, attempt_id, lease_token)
             chunk_rows = replace_file_chunks(
                 file_id,
@@ -940,17 +1003,11 @@ def process_converted_file(
                 "chunks": processed_count,
                 "conversion_generation_id": activation["conversion_generation_id"],
             }
-        except Exception:
-            if indexes_reset:
-                try:
-                    reset_file_indexes(file_id)
-                    assert_ingestion_lease(file_id, attempt_id, lease_token)
-                    delete_file_chunks(file_id)
-                except Exception as cleanup_error:  # noqa: BLE001 - cleanup spans independent backends
-                    logger.debug(
-                        "Failed to cleanup partial converted ingestion: %s",
-                        safe_error_fields(cleanup_error),
-                    )
+        except Exception as error:
+            logger.debug(
+                "Converted generation remains available for durable cleanup: %s",
+                safe_error_fields(error),
+            )
             raise
 
 

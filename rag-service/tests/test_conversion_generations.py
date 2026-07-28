@@ -1,3 +1,4 @@
+import json
 import sys
 import unittest
 from contextlib import contextmanager
@@ -33,6 +34,11 @@ class _ScriptedCursor:
 
     def fetchone(self):
         return self.rows.pop(0) if self.rows else None
+
+    def fetchall(self):
+        rows = list(self.rows)
+        self.rows.clear()
+        return rows
 
 
 class _FakeConnection:
@@ -431,6 +437,12 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
                 "active_conversion_generation_id": old_generation_id,
                 "persisted_chunk_count": 2,
             },
+            {
+                **_generation(),
+                "id": old_generation_id,
+                "file_id": "file-1",
+                "status": "superseded",
+            },
             {"id": "file-1"},
             {"id": "space-1", "user_id": "user-1", "knowledge_version": 8},
             {"has_legacy_chunks": False},
@@ -461,7 +473,7 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
         self.assertEqual(result["previous_conversion_generation_id"], old_generation_id)
         self.assertEqual(result["publication"]["knowledge_version"], 8)
         self.assertEqual(connection.commits, 1)
-        self.assertEqual(len(cursor.calls), 8)
+        self.assertEqual(len(cursor.calls), 9)
         self.assertIn("status = 'superseded'", cursor.calls[1][0])
         self.assertIn("active_conversion_generation_id = %s", cursor.calls[2][0])
         self.assertEqual(cursor.calls[2][1], (generation_id, "application/pdf", 2, "file-1"))
@@ -470,6 +482,18 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
         self.assertIn("delete from rag_retrieval_cache", cursor.calls[6][0])
         self.assertIn("status = 'completed'", cursor.calls[7][0])
         self.assertIn("conversion_generation_id = %s", cursor.calls[7][0])
+        self.assertIn("'conversion_generation'", cursor.calls[8][0])
+        cleanup_payload = json.loads(cursor.calls[8][1][3])
+        self.assertEqual(cleanup_payload["file_id"], "file-1")
+        self.assertEqual(
+            cleanup_payload["storage_object_keys"],
+            [
+                "users/u/files/file-1/derived/g/document.md",
+                "users/u/files/file-1/derived/g/source-map.jsonl.zst",
+                "users/u/files/file-1/derived/g/manifest.json",
+            ],
+        )
+        self.assertNotIn("source_object_key", cleanup_payload)
 
     def test_activation_rejects_missing_or_partial_generation_chunks(self):
         cursor = _ScriptedCursor([{
@@ -497,6 +521,58 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
 
         self.assertEqual(connection.commits, 0)
         self.assertEqual(len(cursor.calls), 1)
+
+    def test_cleanup_targets_preserve_ids_and_reject_the_active_generation(self):
+        generation_id = _generation()["id"]
+        active_cursor = _ScriptedCursor([{
+            "status": "superseded",
+            "active_conversion_generation_id": generation_id,
+        }])
+        with patch.object(db, "get_conn", _fake_connection(active_cursor)):
+            with self.assertRaises(db.ConversionGenerationStateError):
+                db.get_cleanup_conversion_generation_chunk_ids(
+                    "file-1",
+                    generation_id,
+                )
+        self.assertEqual(len(active_cursor.calls), 1)
+
+        cleanup_cursor = _ScriptedCursor([
+            {"status": "failed", "active_conversion_generation_id": None},
+            {"id": "chunk-1"},
+            {"id": "chunk-2"},
+        ])
+        with patch.object(db, "get_conn", _fake_connection(cleanup_cursor)):
+            chunk_ids = db.get_cleanup_conversion_generation_chunk_ids(
+                "file-1",
+                generation_id,
+            )
+        self.assertEqual(chunk_ids, ["chunk-1", "chunk-2"])
+        self.assertIn("conversion_generation_id = %s", cleanup_cursor.calls[1][0])
+
+    def test_cleanup_endpoint_deletes_external_indexes_without_deleting_postgres(self):
+        import main
+
+        request = main.CleanupConversionGenerationRequest(
+            file_id="11111111-1111-4111-8111-111111111111",
+            generation_id="33333333-3333-4333-8333-333333333333",
+        )
+        with patch.object(
+            main,
+            "get_cleanup_conversion_generation_chunk_ids",
+            return_value=["chunk-1", "chunk-2"],
+        ), patch.object(main, "delete_chunk_vectors") as delete_vectors, patch.object(
+            main,
+            "delete_chunk_keywords",
+        ) as delete_keywords, patch.object(main, "delete_chunk_graph") as delete_graph:
+            result = main.cleanup_conversion_generation_endpoint(request)
+
+        self.assertEqual(result["chunk_count"], 2)
+        delete_vectors.assert_called_once_with(["chunk-1", "chunk-2"])
+        delete_keywords.assert_called_once_with(["chunk-1", "chunk-2"])
+        delete_graph.assert_called_once_with(
+            "11111111-1111-4111-8111-111111111111",
+            ["chunk-1", "chunk-2"],
+        )
 
 
 if __name__ == "__main__":

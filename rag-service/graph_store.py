@@ -1251,6 +1251,46 @@ def delete_file_graph(file_id: str):
     )
 
 
+def delete_chunk_graph(file_id: str, chunk_ids: list[str]):
+    if not settings.neo4j_enabled:
+        return
+
+    normalized_ids = list(
+        dict.fromkeys(
+            str(chunk_id).strip()
+            for chunk_id in chunk_ids
+            if str(chunk_id).strip()
+        )
+    )
+    if not normalized_ids:
+        return
+
+    _run_cypher(
+        """
+        MATCH (d:Document {file_id: $file_id})
+        OPTIONAL MATCH ()-[r:RELATED_TO {file_id: $file_id}]-()
+        WHERE r.chunk_id IN $chunk_ids
+           OR any(chunk_id IN coalesce(r.evidence_chunk_ids, []) WHERE chunk_id IN $chunk_ids)
+        WITH d, collect(r) AS stale_relationships
+        FOREACH (relationship IN stale_relationships | DELETE relationship)
+        WITH d
+        MATCH (d)-[:HAS_CHUNK]->(c:Chunk)
+        WHERE c.chunk_id IN $chunk_ids
+        WITH c,
+             d.user_id AS owner_user_id,
+             coalesce(d.scope_key, d.project_space_id, '__global__') AS owner_scope_key
+        DETACH DELETE c
+        WITH DISTINCT owner_user_id, owner_scope_key
+        MATCH (e:Entity)
+        WHERE NOT (e)--()
+          AND e.user_id = owner_user_id
+          AND coalesce(e.scope_key, e.project_space_id, '__global__') = owner_scope_key
+        DELETE e
+        """,
+        {"file_id": file_id, "chunk_ids": normalized_ids},
+    )
+
+
 def index_graph_chunks(
     file_data: dict,
     chunk_rows: list[dict],

@@ -63,7 +63,8 @@ const documentSchemaReadinessSql = `
   with required_migrations(filename) as (
     values
       ('0032_multi_format_documents.sql'),
-      ('0033_conversion_generation_integrity.sql')
+      ('0033_conversion_generation_integrity.sql'),
+      ('0034_parallel_conversion_generations.sql')
   ), required_columns(table_name, column_name) as (
     values
       ('files', 'document_kind'),

@@ -30,9 +30,16 @@ _RESERVED_MARKER_RE = re.compile(r"^[ \t]*<!-- source-unit:u_[0-9a-f]{32} -->[ \
 class ConversionLimits:
     max_source_bytes: int = 32 * 1024 * 1024
     max_unit_chars: int = 1024 * 1024
+    max_pdf_pages: int = 2_000
+    max_pdf_extracted_chars: int = 16 * 1024 * 1024
 
     def __post_init__(self) -> None:
-        if self.max_source_bytes <= 0 or self.max_unit_chars <= 0:
+        if (
+            self.max_source_bytes <= 0
+            or self.max_unit_chars <= 0
+            or self.max_pdf_pages <= 0
+            or self.max_pdf_extracted_chars <= 0
+        ):
             raise ValueError("conversion limits must be positive")
 
 

@@ -165,6 +165,11 @@ export interface IngestRagFileInput {
   leaseToken: string;
 }
 
+export interface CleanupRagConversionGenerationInput {
+  fileId: string;
+  generationId: string;
+}
+
 interface RagTransportResponse<T> {
   data: T;
   status: number;
@@ -409,6 +414,20 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     );
   };
 
+  const cleanupRagConversionGeneration = async (
+    input: CleanupRagConversionGenerationInput,
+  ) => {
+    await postRagService<unknown>(
+      'cleanup',
+      '/cleanup-conversion-generation',
+      {
+        file_id: input.fileId,
+        generation_id: input.generationId,
+      },
+      cleanupTimeoutMs,
+    );
+  };
+
   const checkRagServiceReady = async () => {
     await requestRagService<unknown>('health', () => transport.get<unknown>(
       `${serviceUrl}/health/ready`,
@@ -424,6 +443,7 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     runRagEvaluation,
     ingestRagFile,
     cleanupRagFileVectors,
+    cleanupRagConversionGeneration,
     checkRagServiceReady,
   };
 };
@@ -437,4 +457,5 @@ export const listRagGraphDocuments = ragClient.listRagGraphDocuments;
 export const runRagEvaluation = ragClient.runRagEvaluation;
 export const ingestRagFile = ragClient.ingestRagFile;
 export const cleanupRagFileVectors = ragClient.cleanupRagFileVectors;
+export const cleanupRagConversionGeneration = ragClient.cleanupRagConversionGeneration;
 export const checkRagServiceReady = ragClient.checkRagServiceReady;

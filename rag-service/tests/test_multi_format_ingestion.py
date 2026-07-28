@@ -105,8 +105,13 @@ class MultiFormatIngestionTests(unittest.TestCase):
         ), patch(
             "ingestion.complete_conversion_generation"
         ) as complete_generation, patch(
+            "ingestion.cleanup_conversion_generation_indexes",
+            return_value=0,
+        ) as cleanup_generation_indexes, patch(
             "ingestion.reset_file_indexes"
-        ), patch(
+        ) as reset_file_indexes, patch(
+            "ingestion.delete_file_chunks"
+        ) as delete_file_chunks, patch(
             "ingestion.replace_file_chunks", side_effect=replace_chunks
         ), patch(
             "ingestion.graph_file_transaction", return_value=_GraphTransaction()
@@ -134,6 +139,13 @@ class MultiFormatIngestionTests(unittest.TestCase):
         create_generation.assert_called_once()
         complete_generation.assert_called_once()
         activate_generation.assert_called_once()
+        cleanup_generation_indexes.assert_called_once_with(
+            "file-1",
+            ATTEMPT_ID,
+            suppress_errors=False,
+        )
+        reset_file_indexes.assert_not_called()
+        delete_file_chunks.assert_not_called()
         legacy_bump.assert_not_called()
         fail_job.assert_not_called()
 
@@ -226,7 +238,7 @@ class MultiFormatIngestionTests(unittest.TestCase):
         cleanup_artifacts.assert_not_called()
         fail_job.assert_not_called()
 
-    def test_partial_index_reset_enters_compensation_cleanup(self):
+    def test_partial_generation_failure_preserves_chunk_ids_for_durable_cleanup(self):
         payload = "# 标题\n\n正文".encode()
         integrity, download = _download_bytes(payload)
         file_data = {
@@ -241,13 +253,14 @@ class MultiFormatIngestionTests(unittest.TestCase):
             "object_key": "users/user-1/files/file-1/raw/original.md",
             "project_space_id": None,
         }
-        reset_calls = 0
-
-        def reset_indexes(_file_id):
-            nonlocal reset_calls
-            reset_calls += 1
-            if reset_calls == 1:
-                raise RuntimeError("keyword reset failed after vector deletion")
+        chunk_rows = [{
+            "id": "chunk-new",
+            "file_id": "file-1",
+            "user_id": "user-1",
+            "chunk_index": 0,
+            "content": "# 标题\n\n正文",
+            "metadata": {"filename": "知识.md"},
+        }]
 
         with patch("ingestion.get_file", return_value=file_data), patch(
             "ingestion.assert_ingestion_lease"
@@ -262,17 +275,67 @@ class MultiFormatIngestionTests(unittest.TestCase):
         ), patch(
             "ingestion.complete_conversion_generation"
         ), patch(
-            "ingestion.reset_file_indexes", side_effect=reset_indexes
+            "ingestion.get_conversion_generation_chunk_ids",
+            return_value=[],
+        ), patch(
+            "ingestion.delete_conversion_generation_chunks",
+            return_value=1,
+        ) as delete_generation_chunks, patch(
+            "ingestion.delete_chunk_vectors"
+        ) as delete_vectors, patch(
+            "ingestion.delete_chunk_keywords"
+        ) as delete_keywords, patch(
+            "ingestion.delete_chunk_graph"
+        ) as delete_graph, patch(
+            "ingestion.reset_file_indexes"
+        ) as reset_indexes, patch(
+            "ingestion.replace_file_chunks",
+            return_value=chunk_rows,
         ), patch(
             "ingestion.delete_file_chunks"
         ) as delete_chunks, patch(
+            "ingestion.graph_file_transaction",
+            return_value=_GraphTransaction(),
+        ), patch(
+            "ingestion.index_chunk_batch",
+            side_effect=RuntimeError("vector insert failed"),
+        ), patch(
             "ingestion.fail_ingestion_job"
-        ) as fail_job, self.assertRaisesRegex(RuntimeError, "keyword reset failed"):
+        ) as fail_job, self.assertRaisesRegex(RuntimeError, "vector insert failed"):
             ingestion.process_file("file-1", ATTEMPT_ID, LEASE_TOKEN)
 
-        self.assertEqual(reset_calls, 2)
-        delete_chunks.assert_called_once_with("file-1")
+        reset_indexes.assert_not_called()
+        delete_chunks.assert_not_called()
+        delete_vectors.assert_not_called()
+        delete_keywords.assert_not_called()
+        delete_graph.assert_not_called()
+        delete_generation_chunks.assert_not_called()
         fail_job.assert_called_once()
+
+    def test_generation_cleanup_keeps_postgres_tombstone_when_external_cleanup_fails(self):
+        with patch(
+            "ingestion.get_conversion_generation_chunk_ids",
+            return_value=["chunk-old"],
+        ), patch(
+            "ingestion.delete_chunk_vectors",
+            side_effect=RuntimeError("milvus unavailable"),
+        ), patch(
+            "ingestion.delete_chunk_keywords"
+        ) as delete_keywords, patch(
+            "ingestion.delete_chunk_graph"
+        ) as delete_graph, patch(
+            "ingestion.delete_conversion_generation_chunks"
+        ) as delete_generation_chunks:
+            result = ingestion.cleanup_conversion_generation_indexes(
+                "file-1",
+                "generation-old",
+                suppress_errors=True,
+            )
+
+        self.assertEqual(result, 0)
+        delete_keywords.assert_called_once_with(["chunk-old"])
+        delete_graph.assert_called_once_with("file-1", ["chunk-old"])
+        delete_generation_chunks.assert_not_called()
 
     def test_chunk_persistence_writes_generation_and_source_columns(self):
         chunk = ConvertedChunk(
@@ -304,6 +367,9 @@ class MultiFormatIngestionTests(unittest.TestCase):
             )
 
         self.assertEqual(rows, [{"id": "chunk-1"}])
+        delete_sql, delete_parameters = cursor.execute.call_args_list[0].args
+        self.assertIn("conversion_generation_id = %s", delete_sql)
+        self.assertEqual(delete_parameters, ("file-1", ATTEMPT_ID))
         insert_sql, parameters = cursor.execute.call_args_list[1].args
         self.assertIn("conversion_generation_id", insert_sql)
         self.assertIn("source_unit_ids", insert_sql)

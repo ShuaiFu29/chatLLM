@@ -1,13 +1,14 @@
-from typing import Any
+from typing import Any, TypeVar
 
 from config import settings
 from pymilvus import DataType, MilvusClient
 
 client: MilvusClient | None = None
 _project_space_field_available: bool | None = None
+_BatchItem = TypeVar("_BatchItem")
 
 
-def _batched(rows: list[dict[str, Any]], batch_size: int):
+def _batched(rows: list[_BatchItem], batch_size: int):
     for index in range(0, len(rows), batch_size):
         yield rows[index: index + batch_size]
 
@@ -124,6 +125,29 @@ def delete_file_vectors(file_id: str):
         collection_name=settings.milvus_collection,
         filter=f'file_id == "{escaped_file_id}"',
     )
+
+
+def delete_chunk_vectors(chunk_ids: list[str]):
+    normalized_ids = list(
+        dict.fromkeys(
+            str(chunk_id).strip()
+            for chunk_id in chunk_ids
+            if str(chunk_id).strip()
+        )
+    )
+    if not normalized_ids:
+        return
+
+    client = get_client()
+    ensure_collection()
+    for batch in _batched(normalized_ids, settings.milvus_insert_batch_size):
+        escaped_ids = ", ".join(
+            f'"{_escape_filter_value(chunk_id)}"' for chunk_id in batch
+        )
+        client.delete(
+            collection_name=settings.milvus_collection,
+            filter=f"chunk_id in [{escaped_ids}]",
+        )
 
 
 def insert_vectors(rows: list[dict[str, Any]]):
