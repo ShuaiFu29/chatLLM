@@ -8,7 +8,7 @@ export interface DbUser extends User {
 }
 
 interface DbUserRow extends Omit<DbUser, 'github_id'> {
-  github_id: number | string | null;
+  github_id?: number | string | null;
 }
 
 export interface LocalUserCredentials {
@@ -39,10 +39,13 @@ const userColumns = `
   created_at
 `;
 
-const toDbUser = (row: DbUserRow): DbUser => ({
-  ...row,
-  github_id: row.github_id === null ? null : Number(row.github_id),
-});
+const toDbUser = (row: DbUserRow): DbUser => {
+  if (row.github_id === undefined) return row as DbUser;
+  return {
+    ...row,
+    github_id: row.github_id === null ? null : Number(row.github_id),
+  };
+};
 
 export const findUserByGithubId = async (githubId: number) => {
   const { rows } = await query<DbUserRow>(
