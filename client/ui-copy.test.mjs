@@ -155,6 +155,29 @@ test('localized UI does not hide missing keys behind hardcoded fallback text', (
   );
 });
 
+test('account access offers local login, registration, seven-day sessions, and optional GitHub login', () => {
+  assert.match(loginSource, /loginWithPassword/);
+  assert.match(loginSource, /register\(\{/);
+  assert.match(loginSource, /type="email"/);
+  assert.match(loginSource, /auth\.displayName/);
+  assert.match(loginSource, /auth\.confirmPassword/);
+  assert.match(loginSource, /type="checkbox"/);
+  assert.match(loginSource, /auth\.rememberSevenDays/);
+  assert.match(loginSource, /loginWithGithub\(rememberMe\)/);
+  assert.match(loginSource, /auth\.showPassword/);
+  assert.match(loginSource, /auth\.hidePassword/);
+
+  for (const localeFile of localeFiles) {
+    const locale = readLocale(localeFile);
+
+    assert.ok(locale.auth?.loginTab, `${localeFile.locale}.json needs auth.loginTab`);
+    assert.ok(locale.auth?.registerTab, `${localeFile.locale}.json needs auth.registerTab`);
+    assert.ok(locale.auth?.rememberSevenDays, `${localeFile.locale}.json needs auth.rememberSevenDays`);
+    assert.ok(locale.auth?.continueWithGithub, `${localeFile.locale}.json needs auth.continueWithGithub`);
+    assert.ok(locale.auth?.errors?.invalidCredentials, `${localeFile.locale}.json needs a safe credential error`);
+  }
+});
+
 test('workspace and knowledge base copy are separate in every locale', () => {
   const genericKnowledgeLabels = {
     en: 'Knowledge Base',

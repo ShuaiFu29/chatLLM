@@ -18,13 +18,13 @@ interface RetryableAxiosRequestConfig extends InternalAxiosRequestConfig {
 
 let refreshPromise: Promise<void> | null = null;
 
-const isRefreshRequest = (input: RequestInfo | URL | string) => {
+const isAuthBootstrapRequest = (input: RequestInfo | URL | string) => {
   const url = typeof input === 'string'
     ? input
     : input instanceof URL
       ? input.href
       : input.url;
-  return /\/auth\/refresh(?:[/?#]|$)/.test(url);
+  return /\/auth\/(?:refresh|login|register)(?:[/?#]|$)/.test(url);
 };
 
 const refreshAccessToken = () => {
@@ -74,7 +74,7 @@ export const authenticatedFetch = async (
     ? input.clone()
     : input;
   const response = await fetch(input, init);
-  if (response.status !== 401 || isRefreshRequest(input)) return response;
+  if (response.status !== 401 || isAuthBootstrapRequest(input)) return response;
 
   const signal = init?.signal
     ?? (typeof Request !== 'undefined' && input instanceof Request ? input.signal : undefined);
@@ -89,7 +89,7 @@ api.interceptors.response.use(
 
     if (
       !originalRequest
-      || isRefreshRequest(originalRequest.url || '')
+      || isAuthBootstrapRequest(originalRequest.url || '')
       || error.response?.status !== 401
       || originalRequest._retry
     ) {

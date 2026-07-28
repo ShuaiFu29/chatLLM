@@ -34,6 +34,30 @@ afterEach(() => {
 });
 
 describe('shared authentication refresh', () => {
+  test.each(['/auth/login', '/auth/register'])('%s does not refresh after a credential rejection', async (url) => {
+    const refresh = vi.spyOn(api, 'post');
+    const adapter = vi.fn((config: InternalAxiosRequestConfig) => rejectUnauthorized(config));
+
+    await expect(api.post(url, {}, { adapter })).rejects.toMatchObject({
+      response: { status: 401 },
+    });
+
+    expect(adapter).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  test('fetch does not refresh or retry a login rejection', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const refresh = vi.spyOn(api, 'post').mockResolvedValue({} as AxiosResponse);
+
+    const response = await authenticatedFetch('/api/auth/login?source=form', { method: 'POST' });
+
+    expect(response.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
   test('fetch preserves its options and refreshes and retries a 401 only once', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(null, { status: 401, statusText: 'Unauthorized' }))

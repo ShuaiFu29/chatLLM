@@ -17,11 +17,23 @@ export interface User {
   settings?: UserSettings;
 }
 
+interface PasswordLoginInput {
+  email: string;
+  password: string;
+  rememberMe: boolean;
+}
+
+interface RegisterInput extends PasswordLoginInput {
+  displayName: string;
+}
+
 interface AuthState {
   user: User | null;
   loading: boolean;
   checkAuth: (force?: boolean) => Promise<void>;
-  login: () => void;
+  loginWithPassword: (input: PasswordLoginInput) => Promise<void>;
+  register: (input: RegisterInput) => Promise<void>;
+  loginWithGithub: (rememberMe: boolean) => void;
   logout: () => Promise<void>;
   updateProfile: (data: Partial<User>) => Promise<void>;
   deleteAccount: () => Promise<void>;
@@ -59,9 +71,21 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
-  login: () => {
-    // Use relative path to leverage Vite proxy
-    window.location.href = '/api/auth/github/login';
+  loginWithPassword: async (input) => {
+    const res = await api.post<{ user: User }>('/auth/login', input);
+    set({ user: res.data.user });
+    authSessionHintStorage.write(true);
+  },
+
+  register: async (input) => {
+    const res = await api.post<{ user: User }>('/auth/register', input);
+    set({ user: res.data.user });
+    authSessionHintStorage.write(true);
+  },
+
+  loginWithGithub: (rememberMe) => {
+    const query = new URLSearchParams({ remember: String(rememberMe) });
+    window.location.assign(`/api/auth/github/login?${query.toString()}`);
   },
 
   logout: async () => {
