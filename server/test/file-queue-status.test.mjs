@@ -139,12 +139,14 @@ test('HTTP timeout leaves a still-leased ingestion attempt processing', async ()
   };
   const payloads = [];
   let stoppedHeartbeat = false;
+  let markedUnavailable = false;
   const result = await queue.executeFileIngestionAttempt(claim, {
     ingestFile: async (input) => {
       payloads.push(input);
       throw Object.assign(new Error('timeout'), { code: 'ECONNABORTED' });
     },
     startHeartbeat: () => () => { stoppedHeartbeat = true; },
+    markAttemptUnavailable: async () => { markedUnavailable = true; return true; },
     reconcileAttempt: async () => ({ state: 'active' }),
     warn: () => undefined,
   });
@@ -156,6 +158,60 @@ test('HTTP timeout leaves a still-leased ingestion attempt processing', async ()
   }]);
   assert.deepEqual(result, { state: 'active' });
   assert.equal(stoppedHeartbeat, true);
+  assert.equal(markedUnavailable, false);
+});
+
+test('an open RAG circuit releases the durable attempt for a bounded retry', async () => {
+  const queue = require(path.join(serverRoot, 'dist', 'services', 'fileQueue.js'));
+  const claim = {
+    file: { id: 'file-circuit-open' },
+    attemptId: '55555555-5555-4555-8555-555555555555',
+    leaseToken: '66666666-6666-4666-8666-666666666666',
+    leaseExpiresAt: '2099-01-01T00:00:00.000Z',
+  };
+  const markedClaims = [];
+
+  const result = await queue.executeFileIngestionAttempt(claim, {
+    ingestFile: async () => {
+      throw Object.assign(new Error('circuit open'), { code: 'RAG_CIRCUIT_OPEN' });
+    },
+    startHeartbeat: () => () => undefined,
+    markAttemptUnavailable: async (activeClaim) => {
+      markedClaims.push(activeClaim);
+      return true;
+    },
+    reconcileAttempt: async () => ({ state: 'failed' }),
+    warn: () => undefined,
+  });
+
+  assert.deepEqual(markedClaims, [claim]);
+  assert.deepEqual(result, { state: 'failed' });
+});
+
+test('open-circuit release is scoped to the current ingestion lease', async () => {
+  const files = require(path.join(serverRoot, 'dist', 'repositories', 'files.js'));
+  const claim = {
+    file: { id: 'file-circuit-open' },
+    attemptId: '77777777-7777-4777-8777-777777777777',
+    leaseToken: '88888888-8888-4888-8888-888888888888',
+  };
+  let statement = '';
+  let parameters = [];
+
+  const marked = await files.markFileIngestionAttemptUnavailable(claim, {
+    runQuery: async (sql, values) => {
+      statement = sql;
+      parameters = values;
+      return { rows: [{ file_id: claim.file.id }] };
+    },
+  });
+
+  assert.equal(marked, true);
+  assert.match(statement, /status = 'failed'/);
+  assert.match(statement, /attempt_id = \$2/);
+  assert.match(statement, /lease_token = \$3/);
+  assert.match(statement, /lease_expires_at = now\(\)/);
+  assert.deepEqual(parameters, [claim.file.id, claim.attemptId, claim.leaseToken]);
 });
 
 test('reconciliation rejects a late terminal write from a replaced ingestion lease', async () => {

@@ -9,6 +9,7 @@ import {
   FileIngestionClaim,
   FileIngestionReconciliation,
   listDispatchableFileIds,
+  markFileIngestionAttemptUnavailable,
   reconcileFileIngestionAttempt,
   reconcileFileIngestionJobs,
   renewFileIngestionLease,
@@ -43,6 +44,7 @@ interface ExecuteFileIngestionAttemptOptions {
   reconcileAttempt?: (
     claim: FileIngestionClaim,
   ) => Promise<FileIngestionReconciliation>;
+  markAttemptUnavailable?: (claim: FileIngestionClaim) => Promise<boolean>;
   warn?: (message: string, error: unknown) => void;
 }
 
@@ -96,6 +98,8 @@ export const executeFileIngestionAttempt = async (
 ): Promise<FileIngestionReconciliation> => {
   const ingestFile = options.ingestFile || ingestRagFile;
   const reconcileAttempt = options.reconcileAttempt || reconcileFileIngestionAttempt;
+  const markAttemptUnavailable = options.markAttemptUnavailable
+    || markFileIngestionAttemptUnavailable;
   const warn = options.warn || defaultWarn;
   const controller = new AbortController();
   const startHeartbeat = options.startHeartbeat || ((activeClaim, onLeaseLost) => (
@@ -111,6 +115,13 @@ export const executeFileIngestionAttempt = async (
     }, controller.signal);
   } catch (error) {
     warn('[FileQueue] RAG ingestion request ended before reconciliation:', error);
+    if ((error as { code?: unknown })?.code === 'RAG_CIRCUIT_OPEN') {
+      try {
+        await markAttemptUnavailable(claim);
+      } catch (markError) {
+        warn('[FileQueue] Failed to release ingestion attempt after open circuit:', markError);
+      }
+    }
   } finally {
     try {
       await stopHeartbeat();

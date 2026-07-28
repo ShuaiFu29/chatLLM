@@ -2,6 +2,7 @@ import base64
 import hashlib
 import json
 import re
+import threading
 import unicodedata
 import urllib.request
 from urllib.parse import urlparse
@@ -1056,6 +1057,12 @@ RETURN {ok: true, cached_extractions: cached_extractions} AS row
 """
 
 
+# Neo4j graph replacement touches shared entity relationship groups. Keep one
+# explicit file transaction active per RAG process so concurrent ingestion does
+# not turn transient relationship-group deadlocks into failed documents.
+_GRAPH_FILE_TRANSACTION_LOCK = threading.Lock()
+
+
 class GraphFileTransaction:
     def __init__(self):
         self.enabled = settings.neo4j_enabled
@@ -1069,20 +1076,29 @@ class GraphFileTransaction:
         self._context_rows: list[dict] = []
         self._extraction_cache: dict[str, str] = {}
         self._entity_registry: list[dict] = []
+        self._write_lock_acquired = False
 
     def __enter__(self):
+        if self.enabled:
+            _GRAPH_FILE_TRANSACTION_LOCK.acquire()
+            self._write_lock_acquired = True
         return self
 
     def __exit__(self, exc_type, _exc, _traceback):
-        if exc_type is not None:
-            self._rollback_without_masking()
-            return False
         try:
-            self.commit()
-        except Exception:
-            self._rollback_without_masking()
-            raise
-        return False
+            if exc_type is not None:
+                self._rollback_without_masking()
+                return False
+            try:
+                self.commit()
+            except Exception:
+                self._rollback_without_masking()
+                raise
+            return False
+        finally:
+            if self._write_lock_acquired:
+                self._write_lock_acquired = False
+                _GRAPH_FILE_TRANSACTION_LOCK.release()
 
     @property
     def result(self) -> dict:

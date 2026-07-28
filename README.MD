@@ -234,7 +234,7 @@ Docker 首次创建空 PostgreSQL 数据库时会使用 `server/migrations/0001_
 
 ### 运维健康检查
 
-后端 `/health/ready` 验证 PostgreSQL、Redis 与已鉴权的 RAG readiness；RAG `/health/ready` 验证 PostgreSQL、Milvus、Elasticsearch、Neo4j，并返回 Query Rewrite、Reranker、Graph 抽取、Redis 检索缓存、Judge 和 Markdown 索引版本的真实模式。历史 Markdown 仍使用旧 Chunk 策略时返回 `stale_file_count/stale_chunk_count/reindex_required` 并标记 capability `degraded`，但不会把仍可服务的进程判成 503。受 `METRICS_TOKEN` 保护的 `/health/queues` 额外公开 `cleanup`、`ingestion_leases` 与 `eval_leases` 状态。清理任务耗尽重试次数或任一活动租约过期时，该端点返回 `503` 与 `degraded`，响应不包含下游原始错误。
+后端 `/health/ready` 验证 PostgreSQL、Redis 与已鉴权的 RAG readiness；RAG `/health/ready` 验证 PostgreSQL、Milvus、Elasticsearch、Neo4j，并返回 Query Rewrite、Reranker、Graph 抽取、Redis 检索缓存、Judge 和 Markdown 索引版本的真实模式。主动关闭的可选模型能力报告为 `disabled`，不会误报为运行故障；已启用但不可用的能力才报告为 `degraded`。历史 Markdown 仍使用旧 Chunk 策略时返回 `stale_file_count/stale_chunk_count/reindex_required` 并标记 capability `degraded`，但不会把仍可服务的进程判成 503。受 `METRICS_TOKEN` 保护的 `/health/queues` 额外公开 `cleanup`、`ingestion_leases` 与 `eval_leases` 状态。清理任务耗尽重试次数或任一活动租约过期时，该端点返回 `503` 与 `degraded`，响应不包含下游原始错误。
 
 统一检查会自动从 `server/.env` / `rag-service/.env` 读取共享令牌，也可以使用 `OPS_RAG_TOKEN` 与 `OPS_METRICS_TOKEN` 显式覆盖：
 

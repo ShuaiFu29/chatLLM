@@ -58,10 +58,45 @@ class CapabilityTests(unittest.TestCase):
             report = build_capability_report(markdown_index)
 
         self.assertEqual(report["status"], "degraded")
+        self.assertEqual(report["features"]["query_rewrite"]["status"], "disabled")
         self.assertEqual(report["features"]["query_rewrite"]["mode"], "deterministic_multi_turn")
+        self.assertEqual(report["features"]["reranker"]["status"], "disabled")
         self.assertEqual(report["features"]["reranker"]["version"], "local-evidence-v2")
+        self.assertEqual(report["features"]["graph_extraction"]["status"], "disabled")
         self.assertEqual(report["features"]["graph_extraction"]["mode"], "rules_fallback")
         self.assertTrue(report["features"]["markdown_index"]["reindex_required"])
+
+    def test_intentionally_disabled_optional_features_do_not_degrade_healthy_core(self):
+        markdown_index = {
+            "status": "ok",
+            "current_chunk_strategy_version": db.CHUNK_STRATEGY_VERSION,
+            "indexed_file_count": 8,
+            "stale_file_count": 0,
+            "stale_chunk_count": 0,
+            "reindex_required": False,
+        }
+        with (
+            patch.object(settings, "query_rewrite_enabled", False),
+            patch.object(settings, "reranker_enabled", False),
+            patch.object(settings, "neo4j_enabled", True),
+            patch.object(settings, "graph_extraction_enabled", False),
+            patch.object(settings, "redis_cache_enabled", False),
+            patch.object(settings, "redis_cache_disabled_reason", ""),
+            patch.object(settings, "rag_judge_enabled", False),
+        ):
+            report = build_capability_report(markdown_index)
+
+        self.assertEqual(report["status"], "ok")
+        self.assertTrue(all(
+            report["features"][feature]["status"] == "disabled"
+            for feature in (
+                "query_rewrite",
+                "reranker",
+                "graph_extraction",
+                "retrieval_cache",
+                "answer_judge",
+            )
+        ))
 
     def test_markdown_index_status_counts_only_materialized_stale_chunks(self):
         cursor = _Cursor({

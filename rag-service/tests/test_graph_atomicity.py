@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import unittest
 from urllib.parse import urlparse
 from unittest.mock import DEFAULT, patch
@@ -130,6 +131,26 @@ class FakeGraphFileTransaction:
 
 
 class GraphAtomicityTests(unittest.TestCase):
+    def test_file_graph_transactions_are_serialized_within_one_rag_process(self):
+        first = graph_store.GraphFileTransaction()
+        second_entered = threading.Event()
+
+        def enter_second():
+            with graph_store.GraphFileTransaction():
+                second_entered.set()
+
+        with patch.object(graph_store.settings, "neo4j_enabled", True):
+            first.enabled = True
+            first.__enter__()
+            worker = threading.Thread(target=enter_second, daemon=True)
+            worker.start()
+            self.assertFalse(second_entered.wait(0.05))
+            first.__exit__(None, None, None)
+            self.assertTrue(second_entered.wait(1))
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+
     def test_global_scope_is_normalized_to_a_non_null_key(self):
         facts = graph_store.extract_graph_facts(file_data(None), chunk_rows(1))
 

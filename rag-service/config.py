@@ -2,9 +2,34 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 
-load_dotenv(dotenv_path=Path(__file__).with_name(".env"))
+
+SERVICE_ENV_PATH = Path(__file__).with_name(".env")
+PROJECT_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _load_local_cache_redis_password() -> None:
+    """Make the Compose cache password available for .env interpolation.
+
+    Production deployments should inject CACHE_REDIS_URL directly. The local
+    workspace keeps infrastructure credentials in the root .env, so importing
+    only this one disposable-cache password avoids duplicating it in the RAG
+    service environment file.
+    """
+    if os.environ.get("CACHE_REDIS_PASSWORD"):
+        return
+    infrastructure_env = dotenv_values(PROJECT_ENV_PATH)
+    password = (
+        infrastructure_env.get("CACHE_REDIS_PASSWORD")
+        or infrastructure_env.get("REDIS_PASSWORD")
+    )
+    if password:
+        os.environ["CACHE_REDIS_PASSWORD"] = str(password)
+
+
+_load_local_cache_redis_password()
+load_dotenv(dotenv_path=SERVICE_ENV_PATH)
 
 
 @dataclass
@@ -244,7 +269,7 @@ def load_settings() -> Settings:
         neo4j_user=os.environ.get("NEO4J_USER", "neo4j").strip() or "neo4j",
         neo4j_password=os.environ.get("NEO4J_PASSWORD", "chatllm-password").strip() or "chatllm-password",
         neo4j_database=os.environ.get("NEO4J_DATABASE", "neo4j").strip() or "neo4j",
-        neo4j_timeout_ms=_positive_int("NEO4J_TIMEOUT_MS", "15000"),
+        neo4j_timeout_ms=_positive_int("NEO4J_TIMEOUT_MS", "60000"),
         neo4j_batch_size=_positive_int("NEO4J_BATCH_SIZE", "100"),
         graph_extraction_enabled=graph_extraction_enabled,
         graph_extraction_api_key=graph_extraction_api_key,

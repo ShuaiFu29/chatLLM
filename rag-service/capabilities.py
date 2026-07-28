@@ -23,20 +23,20 @@ def build_capability_report(
         _feature("enabled", "semantic_llm_with_validated_fallback", QUERY_REWRITER_VERSION)
         if settings.query_rewrite_enabled
         else _feature(
-            "degraded",
+            "disabled",
             "deterministic_multi_turn",
             "deterministic-query-rewrite-v2",
-            "QUERY_REWRITE_ENABLED is false; implicit semantics remain conservative",
+            "QUERY_REWRITE_ENABLED is false; deterministic multi-turn rewriting remains active",
         )
     )
     reranker = (
         _feature("enabled", "provider_after_rrf", "compatible-reranker-v1")
         if settings.reranker_enabled
         else _feature(
-            "degraded",
+            "disabled",
             "deterministic_local_evidence",
             LOCAL_RERANKER_VERSION,
-            "RERANKER_ENABLED is false; no cross-encoder semantic score is available",
+            "RERANKER_ENABLED is false; deterministic evidence reranking remains active",
         )
     )
 
@@ -50,10 +50,10 @@ def build_capability_report(
         )
     else:
         graph = _feature(
-            "degraded",
+            "disabled",
             "rules_fallback",
             settings.graph_ontology_version,
-            "GRAPH_EXTRACTION_ENABLED is false; only explicit rule relations are indexed",
+            "GRAPH_EXTRACTION_ENABLED is false; conservative rule relations remain active",
         )
 
     if settings.redis_cache_enabled and cache_redis_status == "ok":
@@ -65,12 +65,19 @@ def build_capability_report(
             "exact-evidence-cache-v2",
             "Cache Redis is configured but unavailable; requests fall back to PostgreSQL",
         )
-    else:
+    elif settings.redis_cache_disabled_reason:
         retrieval_cache = _feature(
             "degraded",
             "postgres_l2_only",
             "exact-evidence-cache-v2",
-            settings.redis_cache_disabled_reason or "REDIS_CACHE_ENABLED is false",
+            settings.redis_cache_disabled_reason,
+        )
+    else:
+        retrieval_cache = _feature(
+            "disabled",
+            "postgres_l2_only",
+            "exact-evidence-cache-v2",
+            "REDIS_CACHE_ENABLED is false",
         )
 
     answer_judge = (

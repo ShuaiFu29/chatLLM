@@ -839,6 +839,34 @@ export const renewFileIngestionLease = async (
   return leaseExpiresAt instanceof Date ? leaseExpiresAt.toISOString() : String(leaseExpiresAt);
 };
 
+interface MarkFileIngestionAttemptUnavailableOptions {
+  runQuery?: typeof query;
+}
+
+export const markFileIngestionAttemptUnavailable = async (
+  claim: Pick<FileIngestionClaim, 'file' | 'attemptId' | 'leaseToken'>,
+  options: MarkFileIngestionAttemptUnavailableOptions = {}
+) => {
+  const runQuery = options.runQuery || query;
+  const { rows } = await runQuery<{ file_id: string }>(
+    `update file_ingestion_jobs
+     set status = 'failed',
+         stage = 'failed',
+         error_message = 'RAG service is temporarily unavailable',
+         lease_expires_at = now(),
+         heartbeat_at = now(),
+         updated_at = now()
+     where file_id = $1
+       and attempt_id = $2
+       and lease_token = $3
+       and status in ('queued', 'processing')
+       and lease_expires_at > now()
+     returning file_id`,
+    [claim.file.id, claim.attemptId, claim.leaseToken]
+  );
+  return rows.length > 0;
+};
+
 interface FileIngestionJobRow {
   file_id: string;
   status: 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';

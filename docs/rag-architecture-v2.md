@@ -40,7 +40,7 @@ npm --prefix server run reindex:markdown -- -- --force --confirm-all --limit 100
 
 该命令支持受控强制重摄取所有符合范围的稳定态 Markdown，因此可以重建现有资料，但它不是在线索引完整性探针，也不证明 Elasticsearch、Milvus、Neo4j 当前数据完整。运行前应先 dry-run，生产环境应分项目、分批执行并观察 Worker；外部数据库本身仍应保留独立备份。
 
-`/health/ready` 会额外返回当前 Chunk 策略、已经物化的 Markdown 数量、旧策略文件/Chunk 数和 `reindex_required`。旧索引只把 capability 标成 `degraded`，不会让仍可服务的进程返回 503；PostgreSQL、Milvus、Elasticsearch 或 Neo4j 连接失败才影响基础 readiness。
+`/health/ready` 会额外返回当前 Chunk 策略、已经物化的 Markdown 数量、旧策略文件/Chunk 数和 `reindex_required`。主动关闭的可选模型能力标记为 `disabled`；已启用但依赖不可用或索引仍陈旧时才标记为 `degraded`。旧索引不会让仍可服务的进程返回 503；PostgreSQL、Milvus、Elasticsearch 或 Neo4j 连接失败才影响基础 readiness。
 
 ## Redis、BullMQ 与 PostgreSQL 职责
 
