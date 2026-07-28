@@ -39,47 +39,68 @@ interface AuthState {
   deleteAccount: () => Promise<void>;
 }
 
+let authStateRevision = 0;
+let authCheckPromise: Promise<void> | null = null;
+
+const advanceAuthStateRevision = () => {
+  authStateRevision += 1;
+  return authStateRevision;
+};
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   loading: true,
 
-  checkAuth: async (force = false) => {
+  checkAuth: (force = false) => {
+    if (authCheckPromise) return authCheckPromise;
+
     // Check if user has logged in before to avoid unnecessary 401s on initial load
     const hasLoggedIn = authSessionHintStorage.read();
 
     if (!force && hasLoggedIn === false) {
       set({ user: null, loading: false });
-      return;
+      return Promise.resolve();
     }
 
-    try {
-      // api instance handles interceptors for 401->refresh
-      const res = await api.get('/auth/me');
-      set({ user: res.data.user });
-      authSessionHintStorage.write(true);
-    } catch (err: unknown) {
-      const status = (err as { response?: { status?: number } })?.response?.status;
+    const requestRevision = authStateRevision;
+    set({ loading: true });
+    const pendingCheck = (async () => {
+      try {
+        // api instance handles interceptors for 401->refresh
+        const res = await api.get<{ user: User }>('/auth/me');
+        if (requestRevision !== authStateRevision) return;
+        set({ user: res.data.user });
+        authSessionHintStorage.write(true);
+      } catch (err: unknown) {
+        if (requestRevision !== authStateRevision) return;
+        const { status } = toSafeError(err);
 
-      if (status === 401) {
         set({ user: null });
-        authSessionHintStorage.write(false);
-      } else {
-        set({ user: null });
+        if (status === 401) authSessionHintStorage.write(false);
+      } finally {
+        if (requestRevision === authStateRevision) set({ loading: false });
+        authCheckPromise = null;
       }
-    } finally {
-      set({ loading: false });
-    }
+    })();
+    authCheckPromise = pendingCheck;
+    return pendingCheck;
   },
 
   loginWithPassword: async (input) => {
+    const operationRevision = advanceAuthStateRevision();
+    set({ loading: false });
     const res = await api.post<{ user: User }>('/auth/login', input);
-    set({ user: res.data.user });
+    if (operationRevision !== authStateRevision) return;
+    set({ user: res.data.user, loading: false });
     authSessionHintStorage.write(true);
   },
 
   register: async (input) => {
+    const operationRevision = advanceAuthStateRevision();
+    set({ loading: false });
     const res = await api.post<{ user: User }>('/auth/register', input);
-    set({ user: res.data.user });
+    if (operationRevision !== authStateRevision) return;
+    set({ user: res.data.user, loading: false });
     authSessionHintStorage.write(true);
   },
 
@@ -94,19 +115,22 @@ export const useAuthStore = create<AuthState>((set) => ({
     } catch (err) {
       console.warn('Logout request failed; clearing local session anyway.', toSafeError(err));
     } finally {
-      set({ user: null });
+      advanceAuthStateRevision();
+      set({ user: null, loading: false });
       authSessionHintStorage.write(false);
     }
   },
 
   updateProfile: async (data: Partial<User>) => {
     const res = await api.put('/auth/me', data);
-    set({ user: res.data.user });
+    advanceAuthStateRevision();
+    set({ user: res.data.user, loading: false });
   },
 
   deleteAccount: async () => {
     await api.delete('/auth/me');
-    set({ user: null });
+    advanceAuthStateRevision();
+    set({ user: null, loading: false });
     authSessionHintStorage.write(false);
     window.location.href = '/login';
   }

@@ -18,6 +18,16 @@ const user: User = {
   display_name: 'Ada',
 };
 
+const deferred = <T,>() => {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+};
+
 const createMemoryStorage = () => {
   const values = new Map<string, string>();
   return {
@@ -83,5 +93,84 @@ describe('local authentication actions', () => {
     useAuthStore.getState().loginWithGithub(true);
 
     expect(assign).toHaveBeenCalledWith('/api/auth/github/login?remember=true');
+  });
+
+  test('deduplicates concurrent authoritative authentication checks', async () => {
+    const response = deferred<{ data: { user: User } }>();
+    vi.mocked(api.get).mockReturnValue(response.promise as never);
+
+    const firstCheck = useAuthStore.getState().checkAuth(true);
+    const secondCheck = useAuthStore.getState().checkAuth(false);
+
+    expect(secondCheck).toBe(firstCheck);
+    expect(api.get).toHaveBeenCalledTimes(1);
+
+    response.resolve({ data: { user } });
+    await Promise.all([firstCheck, secondCheck]);
+
+    expect(useAuthStore.getState()).toMatchObject({ user, loading: false });
+  });
+
+  test('does not let an older authentication check overwrite a later local login', async () => {
+    const githubUser = { ...user, id: '22222222-2222-4222-8222-222222222222' };
+    const localUser = { ...user, id: '33333333-3333-4333-8333-333333333333' };
+    const response = deferred<{ data: { user: User } }>();
+    vi.mocked(api.get).mockReturnValue(response.promise as never);
+    vi.mocked(api.post).mockResolvedValue({ data: { user: localUser } } as never);
+
+    const authCheck = useAuthStore.getState().checkAuth(true);
+    await useAuthStore.getState().loginWithPassword({
+      email: 'ada@example.com',
+      password: 'correct horse',
+      rememberMe: true,
+    });
+    response.resolve({ data: { user: githubUser } });
+    await authCheck;
+
+    expect(useAuthStore.getState()).toMatchObject({ user: localUser, loading: false });
+  });
+
+  test('invalidates an older authentication check as soon as local login starts', async () => {
+    const githubUser = { ...user, id: '22222222-2222-4222-8222-222222222222' };
+    const localUser = { ...user, id: '33333333-3333-4333-8333-333333333333' };
+    const authResponse = deferred<{ data: { user: User } }>();
+    const loginResponse = deferred<{ data: { user: User } }>();
+    vi.mocked(api.get).mockReturnValue(authResponse.promise as never);
+    vi.mocked(api.post).mockReturnValue(loginResponse.promise as never);
+
+    const authCheck = useAuthStore.getState().checkAuth(true);
+    const login = useAuthStore.getState().loginWithPassword({
+      email: 'ada@example.com',
+      password: 'correct horse',
+      rememberMe: true,
+    });
+    authResponse.resolve({ data: { user: githubUser } });
+    await authCheck;
+
+    expect(useAuthStore.getState()).toMatchObject({ user: null, loading: false });
+
+    loginResponse.resolve({ data: { user: localUser } });
+    await login;
+    expect(useAuthStore.getState()).toMatchObject({ user: localUser, loading: false });
+  });
+
+  test('does not let a stale 401 clear a newer login session hint', async () => {
+    const { values, storage } = createMemoryStorage();
+    vi.stubGlobal('localStorage', storage);
+    const response = deferred<{ data: { user: User } }>();
+    vi.mocked(api.get).mockReturnValue(response.promise as never);
+    vi.mocked(api.post).mockResolvedValue({ data: { user } } as never);
+
+    const authCheck = useAuthStore.getState().checkAuth(true);
+    await useAuthStore.getState().loginWithPassword({
+      email: 'ada@example.com',
+      password: 'correct horse',
+      rememberMe: false,
+    });
+    response.reject({ response: { status: 401 } });
+    await authCheck;
+
+    expect(values.get('chatllm.auth-session-hint:v1')).toBe('{"hasLoggedIn":true}');
+    expect(useAuthStore.getState()).toMatchObject({ user, loading: false });
   });
 });

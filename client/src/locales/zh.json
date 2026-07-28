@@ -44,6 +44,7 @@
     "loginAction": "登录",
     "registerAction": "创建账号",
     "submitting": "请稍候...",
+    "validationSummary": "请检查以下内容：",
     "or": "或",
     "continueWithGithub": "使用 GitHub 继续",
     "signInWithGithub": "使用 GitHub 登录",

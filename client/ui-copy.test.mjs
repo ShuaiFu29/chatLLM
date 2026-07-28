@@ -166,6 +166,15 @@ test('account access offers local login, registration, seven-day sessions, and o
   assert.match(loginSource, /loginWithGithub\(rememberMe\)/);
   assert.match(loginSource, /auth\.showPassword/);
   assert.match(loginSource, /auth\.hidePassword/);
+  assert.match(loginSource, /tabIndex=\{mode === tabMode \? 0 : -1\}/);
+  assert.match(loginSource, /getAuthTabForKey/);
+  assert.match(loginSource, /tabRefs\.current\[nextMode\]\?\.focus\(\)/);
+  assert.match(loginSource, /getFirstInvalidAuthField/);
+  assert.match(loginSource, /fieldRefs\.current\[firstInvalidField\]\?\.focus\(\)/);
+  assert.match(loginSource, /id="auth-validation-summary"/);
+  assert.match(loginSource, /aria-live="assertive"/);
+  assert.match(appSource, /authInitializationStarted/);
+  assert.match(appSource, /void checkAuth\(oauthLoginSuccess\)/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -174,6 +183,7 @@ test('account access offers local login, registration, seven-day sessions, and o
     assert.ok(locale.auth?.registerTab, `${localeFile.locale}.json needs auth.registerTab`);
     assert.ok(locale.auth?.rememberSevenDays, `${localeFile.locale}.json needs auth.rememberSevenDays`);
     assert.ok(locale.auth?.continueWithGithub, `${localeFile.locale}.json needs auth.continueWithGithub`);
+    assert.ok(locale.auth?.validationSummary, `${localeFile.locale}.json needs auth.validationSummary`);
     assert.ok(locale.auth?.errors?.invalidCredentials, `${localeFile.locale}.json needs a safe credential error`);
   }
 });

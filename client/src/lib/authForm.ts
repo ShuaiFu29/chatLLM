@@ -23,6 +23,34 @@ export interface AuthFormValues {
 export type AuthFormErrors = Partial<Record<AuthField, AuthValidationError>>;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const LOGIN_FIELD_ORDER: readonly AuthField[] = ['email', 'password'];
+const REGISTER_FIELD_ORDER: readonly AuthField[] = [
+  'displayName',
+  'email',
+  'password',
+  'confirmPassword',
+];
+
+export const getAuthTabForKey = (
+  currentMode: AuthMode,
+  key: string,
+): AuthMode | null => {
+  if (key === 'Home') return 'login';
+  if (key === 'End') return 'register';
+  if (key === 'ArrowLeft' || key === 'ArrowRight') {
+    return currentMode === 'login' ? 'register' : 'login';
+  }
+  return null;
+};
+
+export const getAuthFieldOrder = (mode: AuthMode) => (
+  mode === 'register' ? REGISTER_FIELD_ORDER : LOGIN_FIELD_ORDER
+);
+
+export const getFirstInvalidAuthField = (
+  mode: AuthMode,
+  errors: AuthFormErrors,
+) => getAuthFieldOrder(mode).find((field) => errors[field]) ?? null;
 
 export const validateAuthForm = (
   mode: AuthMode,

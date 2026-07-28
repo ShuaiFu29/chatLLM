@@ -1,7 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { useAuthStore } from './stores/useAuthStore';
 import { useThemeStore } from './stores/useThemeStore';
-import { useEffect, lazy, Suspense } from 'react';
+import { useEffect, lazy, Suspense, useRef, useState } from 'react';
 import ProtectedRoute from './components/ProtectedRoute';
 import MainLayout from './layouts/MainLayout';
 import Loading from './components/Loading';
@@ -23,18 +23,18 @@ const PersonaCenterPage = lazy(() => import('./pages/PersonaCenter'));
 function App() {
   const checkAuth = useAuthStore((state) => state.checkAuth);
   const applyTheme = useThemeStore((state) => state.applyTheme);
+  const authInitializationStarted = useRef(false);
+  const [oauthLoginSuccess] = useState(() => (
+    new URLSearchParams(window.location.search).get('login') === 'success'
+  ));
 
   useEffect(() => {
-    // Check for login success param from OAuth callback
-    const params = new URLSearchParams(window.location.search);
-    const loginSuccess = params.get('login') === 'success';
-
-    if (loginSuccess) {
-      // Clear the param from URL without refreshing
-      window.history.replaceState({}, '', window.location.pathname);
-      checkAuth(true); // Force check
-    } else {
-      checkAuth(); // Normal check (respects localStorage)
+    if (!authInitializationStarted.current) {
+      authInitializationStarted.current = true;
+      if (oauthLoginSuccess) {
+        window.history.replaceState({}, '', window.location.pathname);
+      }
+      void checkAuth(oauthLoginSuccess);
     }
 
     applyTheme(); // Ensure theme is applied on app mount
@@ -48,7 +48,7 @@ function App() {
       }, 500);
     }
     
-  }, [checkAuth, applyTheme]);
+  }, [checkAuth, applyTheme, oauthLoginSuccess]);
 
   return (
     <BrowserRouter>

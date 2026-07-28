@@ -1,4 +1,9 @@
-import { useState, type FormEvent } from 'react';
+import {
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import type { TFunction } from 'i18next';
 import {
   Eye,
@@ -12,6 +17,9 @@ import {
 import { Navigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import {
+  getAuthFieldOrder,
+  getAuthTabForKey,
+  getFirstInvalidAuthField,
   validateAuthForm,
   type AuthField,
   type AuthFormErrors,
@@ -54,6 +62,7 @@ interface PasswordFieldProps {
   disabled: boolean;
   error?: string;
   id: string;
+  inputRef: (element: HTMLInputElement | null) => void;
   label: string;
   onChange: (value: string) => void;
   placeholder: string;
@@ -65,6 +74,7 @@ function PasswordField({
   disabled,
   error,
   id,
+  inputRef,
   label,
   onChange,
   placeholder,
@@ -82,6 +92,7 @@ function PasswordField({
       <div className="relative">
         <LockKeyhole aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
         <input
+          ref={inputRef}
           id={id}
           type={isVisible ? 'text' : 'password'}
           value={value}
@@ -129,6 +140,16 @@ export default function LoginPage() {
   const [fieldErrors, setFieldErrors] = useState<AuthFormErrors>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const tabRefs = useRef<Record<AuthMode, HTMLButtonElement | null>>({
+    login: null,
+    register: null,
+  });
+  const fieldRefs = useRef<Record<AuthField, HTMLInputElement | null>>({
+    displayName: null,
+    email: null,
+    password: null,
+    confirmPassword: null,
+  });
 
   const clearFieldError = (field: AuthField) => {
     setFieldErrors((current) => {
@@ -149,6 +170,17 @@ export default function LoginPage() {
     setSubmitError(null);
   };
 
+  const handleTabKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    currentMode: AuthMode,
+  ) => {
+    const nextMode = getAuthTabForKey(currentMode, event.key);
+    if (!nextMode) return;
+    event.preventDefault();
+    changeMode(nextMode);
+    tabRefs.current[nextMode]?.focus();
+  };
+
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (isSubmitting) return;
@@ -157,7 +189,11 @@ export default function LoginPage() {
     const validationErrors = validateAuthForm(mode, values);
     setFieldErrors(validationErrors);
     setSubmitError(null);
-    if (Object.keys(validationErrors).length > 0) return;
+    const firstInvalidField = getFirstInvalidAuthField(mode, validationErrors);
+    if (firstInvalidField) {
+      fieldRefs.current[firstInvalidField]?.focus();
+      return;
+    }
 
     setIsSubmitting(true);
     try {
@@ -193,6 +229,10 @@ export default function LoginPage() {
     const error = fieldErrors[field];
     return error ? getValidationMessage(error, t) : undefined;
   };
+  const validationMessages = getAuthFieldOrder(mode).flatMap((field) => {
+    const message = fieldErrorMessage(field);
+    return message ? [{ field, message }] : [];
+  });
 
   return (
     <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-bg-base px-4 py-8 transition-colors duration-300 sm:py-12">
@@ -212,13 +252,16 @@ export default function LoginPage() {
           {(['login', 'register'] as const).map((tabMode) => (
             <button
               key={tabMode}
+              ref={(element) => { tabRefs.current[tabMode] = element; }}
               id={`auth-${tabMode}-tab`}
               type="button"
               role="tab"
               aria-selected={mode === tabMode}
               aria-controls="auth-form-panel"
+              tabIndex={mode === tabMode ? 0 : -1}
               disabled={isSubmitting}
               onClick={() => changeMode(tabMode)}
+              onKeyDown={(event) => handleTabKeyDown(event, tabMode)}
               className={`rounded-lg px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:cursor-not-allowed disabled:opacity-60 ${
                 mode === tabMode
                   ? 'bg-bg-surface text-text-main shadow-sm'
@@ -236,6 +279,23 @@ export default function LoginPage() {
           aria-labelledby={`auth-${mode}-tab`}
         >
           <form className="space-y-4" noValidate onSubmit={handleSubmit}>
+            {validationMessages.length > 0 ? (
+              <div
+                id="auth-validation-summary"
+                role="alert"
+                aria-live="assertive"
+                aria-atomic="true"
+                className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-left text-sm text-red-300"
+              >
+                <p className="font-medium">{t('auth.validationSummary')}</p>
+                <ul className="mt-1 list-disc space-y-0.5 pl-5 text-xs">
+                  {validationMessages.map(({ field, message }) => (
+                    <li key={field}>{message}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             {mode === 'register' ? (
               <div className="space-y-1.5">
                 <label className="block text-left text-sm font-medium text-text-main" htmlFor="auth-display-name">
@@ -244,6 +304,7 @@ export default function LoginPage() {
                 <div className="relative">
                   <UserRound aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
                   <input
+                    ref={(element) => { fieldRefs.current.displayName = element; }}
                     id="auth-display-name"
                     type="text"
                     value={displayName}
@@ -275,6 +336,7 @@ export default function LoginPage() {
               <div className="relative">
                 <Mail aria-hidden="true" className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
                 <input
+                  ref={(element) => { fieldRefs.current.email = element; }}
                   id="auth-email"
                   type="email"
                   inputMode="email"
@@ -304,6 +366,7 @@ export default function LoginPage() {
             <PasswordField
               key={`auth-password-${mode}`}
               id="auth-password"
+              inputRef={(element) => { fieldRefs.current.password = element; }}
               label={t('auth.password')}
               placeholder={t('auth.passwordPlaceholder')}
               value={password}
@@ -320,6 +383,7 @@ export default function LoginPage() {
             {mode === 'register' ? (
               <PasswordField
                 id="auth-confirm-password"
+                inputRef={(element) => { fieldRefs.current.confirmPassword = element; }}
                 label={t('auth.confirmPassword')}
                 placeholder={t('auth.confirmPasswordPlaceholder')}
                 value={confirmPassword}
@@ -348,7 +412,12 @@ export default function LoginPage() {
             </label>
 
             {submitError ? (
-              <div role="alert" className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-left text-sm text-red-300">
+              <div
+                role="alert"
+                aria-live="assertive"
+                aria-atomic="true"
+                className="rounded-xl border border-red-500/20 bg-red-500/10 px-3 py-2.5 text-left text-sm text-red-300"
+              >
                 {submitError}
               </div>
             ) : null}
