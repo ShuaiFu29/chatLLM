@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, memo } from 'react';
 import { Send, Paperclip, Loader2, Square, Play, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { DOCUMENT_UPLOAD_ACCEPT } from '../lib/uploadManager';
 
 interface ChatInputProps {
   input: string;
@@ -77,7 +78,7 @@ const ChatInput = memo(({
             ref={fileInputRef}
             onChange={onFileUpload}
             className="hidden"
-            accept=".md,.markdown"
+            accept={DOCUMENT_UPLOAD_ACCEPT}
           />
           <button
             type="button"

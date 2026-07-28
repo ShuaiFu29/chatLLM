@@ -11,6 +11,7 @@ export interface KnowledgeFile {
   created_at: string;
   error_message?: string;
   project_space_id?: string | null;
+  document_kind?: string;
 }
 
 interface FetchOptions {

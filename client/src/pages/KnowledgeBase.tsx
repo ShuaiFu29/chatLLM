@@ -3,7 +3,15 @@ import { Upload, FileText, Trash2, Loader2, Database, CheckCircle, AlertCircle, 
 import { useTranslation } from 'react-i18next';
 import api from '../lib/api';
 import { toSafeError } from '../lib/safeError';
-import { isSupportedMarkdownDocument, uploadFile, type UploadProgress } from '../lib/uploadManager';
+import {
+  DOCUMENT_UPLOAD_ACCEPT,
+  DOCUMENT_UPLOAD_LIMIT_SUMMARY,
+  formatDocumentSizeLimit,
+  formatDocumentTypeName,
+  uploadFile,
+  validateDocumentUpload,
+  type UploadProgress,
+} from '../lib/uploadManager';
 import Modal from '../components/Modal';
 import DocumentViewerModal, { type DocumentReference } from '../components/DocumentViewerModal';
 import Skeleton from '../components/Skeleton';
@@ -118,8 +126,17 @@ export default function KnowledgeBase() {
   };
 
   const processFile = async (file: File) => {
-    if (!isSupportedMarkdownDocument(file)) {
-      showNotification('error', t('knowledge.unsupportedFileType'));
+    const validation = validateDocumentUpload(file);
+    if (!validation.ok) {
+      if (validation.code === 'too-large') {
+        showNotification('error', t('knowledge.fileTooLarge', {
+          filename: file.name,
+          fileType: formatDocumentTypeName(validation.documentType),
+          maxSize: formatDocumentSizeLimit(validation.maxBytes),
+        }));
+      } else {
+        showNotification('error', t('knowledge.unsupportedFileType'));
+      }
       return;
     }
 
@@ -198,9 +215,16 @@ export default function KnowledgeBase() {
     }
   };
 
-  const formatFilename = (filename: string) => {
-    // Remove the document extension and trailing whitespace.
-    return filename.replace(/\.(?:md|markdown)$/i, "").trim();
+  const getUploadStatusLabel = (status: string) => {
+    switch (status) {
+      case 'hashing': return t('knowledge.uploadStatusHashing');
+      case 'uploading': return t('knowledge.uploadStatusUploading');
+      case 'merging': return t('knowledge.uploadStatusMerging');
+      case 'processing': return t('knowledge.uploadStatusProcessing');
+      case 'completed': return t('knowledge.uploadStatusCompleted');
+      case 'error': return t('knowledge.uploadStatusError');
+      default: return t('knowledge.uploadStatusStarting');
+    }
   };
 
   const canViewFile = (file: KnowledgeFile) => file.status === 'completed';
@@ -291,6 +315,9 @@ export default function KnowledgeBase() {
           <div>
             <h2 className="text-lg font-medium">{t('knowledge.uploadedDocuments')}</h2>
             <p className="text-sm text-text-muted">{t('knowledge.description')}</p>
+            <p className="mt-1 max-w-2xl text-xs leading-relaxed text-text-muted">
+              {t('knowledge.supportedTypesHint', { limits: DOCUMENT_UPLOAD_LIMIT_SUMMARY })}
+            </p>
           </div>
           <div className="flex gap-2 w-full md:w-auto">
             <input
@@ -299,7 +326,7 @@ export default function KnowledgeBase() {
               ref={fileInputRef}
               onChange={handleFileUpload}
               className="hidden"
-              accept=".md,.markdown"
+              accept={DOCUMENT_UPLOAD_ACCEPT}
             />
             <button
               onClick={() => fileInputRef.current?.click()}
@@ -317,7 +344,7 @@ export default function KnowledgeBase() {
           <div className="mb-6 p-4 bg-bg-surface border border-border rounded-xl">
             <div className="flex justify-between items-center mb-2">
               <span className="font-medium">{uploadState.name}</span>
-              <span className="text-sm text-text-muted capitalize">{uploadState.status} {uploadState.progress}%</span>
+              <span className="text-sm text-text-muted">{getUploadStatusLabel(uploadState.status)} {uploadState.progress}%</span>
             </div>
             <div className="w-full bg-bg-base rounded-full h-2.5 overflow-hidden">
               <div
@@ -380,7 +407,7 @@ export default function KnowledgeBase() {
                           <FileText className="w-5 h-5" />
                         </div>
                         <div className="min-w-0">
-                          <span className="font-medium text-text-main block break-words leading-snug">{formatFilename(file.filename)}</span>
+                          <span className="font-medium text-text-main block break-words leading-snug">{file.filename.trim()}</span>
                           {file.error_message && <span className="text-xs text-red-400 block mt-1 break-words leading-relaxed">{file.error_message}</span>}
                         </div>
                       </div>
@@ -400,7 +427,11 @@ export default function KnowledgeBase() {
                     <td className="px-6 py-4 text-right align-middle">
                       <div className="flex justify-end gap-1">
                         <button
-                          onClick={() => setSelectedDocument({ id: file.id, filename: file.filename })}
+                          onClick={() => setSelectedDocument({
+                            id: file.id,
+                            filename: file.filename,
+                            document_kind: file.document_kind,
+                          })}
                           disabled={!canViewFile(file)}
                           className="p-2 text-text-muted hover:text-primary hover:bg-primary/10 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-text-muted"
                           title={canViewFile(file) ? t('knowledge.viewFileAction') : t('knowledge.fileNotReadyAction')}
@@ -473,13 +504,17 @@ export default function KnowledgeBase() {
                       <FileText className="w-5 h-5" />
                     </div>
                     <div className="min-w-0">
-                      <span className="font-medium text-text-main block truncate">{formatFilename(file.filename)}</span>
+                      <span className="font-medium text-text-main block truncate">{file.filename.trim()}</span>
                       <span className="text-xs text-text-muted">{new Date(file.created_at).toLocaleDateString()}</span>
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <button
-                      onClick={() => setSelectedDocument({ id: file.id, filename: file.filename })}
+                      onClick={() => setSelectedDocument({
+                        id: file.id,
+                        filename: file.filename,
+                        document_kind: file.document_kind,
+                      })}
                       disabled={!canViewFile(file)}
                       className="p-2 text-text-muted hover:text-primary active:bg-primary/10 rounded-lg transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:text-text-muted disabled:active:bg-transparent"
                       title={canViewFile(file) ? t('knowledge.viewFileAction') : t('knowledge.fileNotReadyAction')}

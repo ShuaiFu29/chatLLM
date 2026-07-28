@@ -1,10 +1,57 @@
 import api from './api';
 import { toSafeError } from './safeError';
+import documentTypeRegistry from '../../../shared/document-types.json';
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2MB
 const DIRECT_UPLOAD_CONCURRENCY = 4;
 const PRESIGN_BATCH_SIZE = 100;
-const MARKDOWN_EXTENSIONS = ['.md', '.markdown'];
+
+export interface DocumentTypeCapability {
+  documentKind: string;
+  extensions: readonly string[];
+  canonicalMimeType: string;
+  acceptedMimeTypes: readonly string[];
+  maxBytes: number;
+  conversionProfile: string;
+}
+
+export const DOCUMENT_TYPE_CAPABILITIES = documentTypeRegistry.documentTypes as readonly DocumentTypeCapability[];
+
+const DOCUMENT_TYPES_BY_EXTENSION = new Map(
+  DOCUMENT_TYPE_CAPABILITIES.flatMap((documentType) => (
+    documentType.extensions.map((extension) => [extension, documentType] as const)
+  )),
+);
+
+export const DOCUMENT_UPLOAD_ACCEPT = DOCUMENT_TYPE_CAPABILITIES
+  .flatMap((documentType) => documentType.extensions.map((extension) => `.${extension}`))
+  .join(',');
+
+export const formatDocumentSizeLimit = (maxBytes: number) => {
+  const megabytes = maxBytes / (1024 * 1024);
+  return `${Number.isInteger(megabytes) ? megabytes : megabytes.toFixed(1)} MB`;
+};
+
+export const formatDocumentTypeName = (documentType: DocumentTypeCapability) => (
+  documentType.extensions.map((extension) => extension.toUpperCase()).join('/')
+);
+
+export const DOCUMENT_UPLOAD_LIMIT_SUMMARY = DOCUMENT_TYPE_CAPABILITIES
+  .map((documentType) => (
+    `${documentType.extensions.map((extension) => `.${extension}`).join('/')} ${formatDocumentSizeLimit(documentType.maxBytes)}`
+  ))
+  .join(' · ');
+
+export type DocumentUploadValidation =
+  | { ok: true; documentType: DocumentTypeCapability }
+  | { ok: false; code: 'unsupported' }
+  | {
+    ok: false;
+    code: 'too-large';
+    documentType: DocumentTypeCapability;
+    actualBytes: number;
+    maxBytes: number;
+  };
 
 export interface UploadProgress {
   status: 'hashing' | 'uploading' | 'merging' | 'processing' | 'completed' | 'error';
@@ -12,9 +59,31 @@ export interface UploadProgress {
   message?: string;
 }
 
-export const isSupportedMarkdownDocument = (file: File | { name: string }) => {
+export const getDocumentTypeCapability = (filename: string) => {
+  const normalizedName = filename.trim().toLowerCase();
+  const extensionStart = normalizedName.lastIndexOf('.');
+  if (extensionStart < 0 || extensionStart === normalizedName.length - 1) return null;
+  return DOCUMENT_TYPES_BY_EXTENSION.get(normalizedName.slice(extensionStart + 1)) || null;
+};
+
+export const isSupportedDocument = (file: File | { name: string }) => {
   const normalizedName = file.name.trim().toLowerCase();
-  return MARKDOWN_EXTENSIONS.some((extension) => normalizedName.endsWith(extension));
+  return getDocumentTypeCapability(normalizedName) !== null;
+};
+
+export const validateDocumentUpload = (file: File | { name: string; size: number }): DocumentUploadValidation => {
+  const documentType = getDocumentTypeCapability(file.name);
+  if (!documentType) return { ok: false, code: 'unsupported' };
+  if (file.size > documentType.maxBytes) {
+    return {
+      ok: false,
+      code: 'too-large',
+      documentType,
+      actualBytes: file.size,
+      maxBytes: documentType.maxBytes,
+    };
+  }
+  return { ok: true, documentType };
 };
 
 interface UploadCheckResponse {
@@ -288,8 +357,12 @@ export const uploadFile = async (
   options?: { projectSpaceId?: string | null }
 ) => {
   try {
-    if (!isSupportedMarkdownDocument(file)) {
-      throw new Error('Only Markdown files (.md, .markdown) are supported');
+    const validation = validateDocumentUpload(file);
+    if (!validation.ok) {
+      if (validation.code === 'too-large') {
+        throw new Error(`Document exceeds the ${formatDocumentSizeLimit(validation.maxBytes)} size limit`);
+      }
+      throw new Error('Unsupported document type');
     }
 
     // 1. Hash (Web Worker)

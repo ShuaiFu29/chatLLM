@@ -4,6 +4,7 @@ import { toSafeError } from '../lib/safeError';
 import i18n from '../i18n';
 import { chatRequestState } from './chatRequestState';
 import { RequestGenerationGuard } from './requestGeneration';
+import type { SourceLocator } from '../lib/sourceLocator';
 
 export interface Conversation {
   id: string;
@@ -42,14 +43,20 @@ export interface Message {
     retryable: boolean;
   };
   ragSkipped?: boolean;
-  sources?: {
-    chunk_id?: string;
-    file_id?: string;
-    filename: string;
-    chunk_index?: number;
-    similarity: number;
-    content: string;
-  }[];
+  sources?: ChatSource[];
+}
+
+export interface ChatSource {
+  chunk_id?: string;
+  file_id?: string;
+  filename: string;
+  chunk_index?: number;
+  similarity: number;
+  content: string;
+  document_kind?: string;
+  conversion_generation_id?: string;
+  source_unit_ids?: string[];
+  source_locator?: SourceLocator;
 }
 
 export interface RagTraceStep {

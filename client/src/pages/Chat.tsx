@@ -3,7 +3,13 @@ import { useAuthStore } from '../stores/useAuthStore';
 import { ChatStreamError, useChatStore } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
-import { isSupportedMarkdownDocument, uploadFile, type UploadProgress } from '../lib/uploadManager';
+import {
+  formatDocumentSizeLimit,
+  formatDocumentTypeName,
+  uploadFile,
+  validateDocumentUpload,
+  type UploadProgress,
+} from '../lib/uploadManager';
 import { toSafeError } from '../lib/safeError';
 import ChatSettingsDialog from '../components/ChatSettingsDialog';
 import ChatHeader from '../components/ChatHeader';
@@ -181,8 +187,17 @@ export default function ChatPage() {
     if (!file) return;
     e.target.value = '';
 
-    if (!isSupportedMarkdownDocument(file)) {
-      toast.error(t('chat.unsupportedFileType'));
+    const validation = validateDocumentUpload(file);
+    if (!validation.ok) {
+      if (validation.code === 'too-large') {
+        toast.error(t('chat.fileTooLarge', {
+          filename: file.name,
+          fileType: formatDocumentTypeName(validation.documentType),
+          maxSize: formatDocumentSizeLimit(validation.maxBytes),
+        }));
+      } else {
+        toast.error(t('chat.unsupportedFileType'));
+      }
       return;
     }
 

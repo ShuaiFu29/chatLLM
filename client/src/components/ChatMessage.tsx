@@ -1,10 +1,11 @@
 import { memo, lazy, Suspense, useState } from 'react';
-import { AlertTriangle, Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil, Gauge, Route } from 'lucide-react';
+import { AlertTriangle, Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil, Gauge, Route, MapPin } from 'lucide-react';
 import type { Message } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 import { getAvatarUrl } from '../lib/avatar';
+import { getSourceLocatorLabel } from '../lib/sourceLocator';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
@@ -39,10 +40,6 @@ const ChatMessage = memo(({
 }: ChatMessageProps) => {
   const { t } = useTranslation();
   const [selectedSourceDocument, setSelectedSourceDocument] = useState<DocumentReference | null>(null);
-
-  const formatFilename = (filename: string) => {
-    return filename.replace(/\.(?:md|markdown)$/i, "").trim();
-  };
 
   const traceSummary = msg.traceSummary || msg.rag_trace || null;
   const qualitySummary = msg.qualitySummary || traceSummary?.quality || null;
@@ -211,6 +208,8 @@ const ChatMessage = memo(({
                   </div>
                   <div className="grid grid-cols-1 gap-2">
                     {msg.sources.slice(0, 4).map((source, idx) => {
+                      const locatorLabel = getSourceLocatorLabel(source.source_locator, source.document_kind);
+                      const locatorText = locatorLabel ? t(locatorLabel.key, locatorLabel.values) : '';
                       const sourceContent = (
                         <>
                           <div className="p-1.5 rounded-md bg-primary/10 text-primary group-hover/source:bg-primary group-hover/source:text-white transition-colors">
@@ -218,12 +217,18 @@ const ChatMessage = memo(({
                           </div>
                           <div className="flex min-w-0 flex-1 flex-col gap-1">
                             <div className="flex min-w-0 items-center gap-2">
-                              <span className="truncate text-xs font-medium text-text-main">{formatFilename(source.filename)}</span>
+                              <span className="truncate text-xs font-medium text-text-main">{source.filename.trim()}</span>
                               <span className="shrink-0 text-[10px] text-text-muted">
                                 {Math.round(source.similarity * 100)}%
                                 {source.chunk_index !== undefined ? ` · #${source.chunk_index + 1}` : ''}
                               </span>
                             </div>
+                            {locatorText && (
+                              <span className="inline-flex items-center gap-1 text-[11px] text-text-muted">
+                                <MapPin className="h-3 w-3 shrink-0" />
+                                {locatorText}
+                              </span>
+                            )}
                             {source.file_id ? (
                               <span className="text-[11px] text-primary">{t('chat.viewOriginalDocument')}</span>
                             ) : source.content ? (
@@ -243,6 +248,10 @@ const ChatMessage = memo(({
                             filename: source.filename,
                             citationContent: source.content,
                             chunkIndex: source.chunk_index,
+                            document_kind: source.document_kind,
+                            conversion_generation_id: source.conversion_generation_id,
+                            source_unit_ids: source.source_unit_ids,
+                            source_locator: source.source_locator,
                           })}
                           className="group/source flex items-start gap-2 rounded-lg border border-border/50 bg-bg-surface/50 p-2 text-left transition-all hover:border-primary/60 hover:bg-bg-surface"
                           aria-label={t('chat.viewOriginalDocument')}
