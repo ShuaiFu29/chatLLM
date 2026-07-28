@@ -227,6 +227,7 @@ interface ChatState {
   selectConversation: (id: string) => Promise<void>;
   loadOlderMessages: (id?: string) => Promise<void>;
   sendMessage: (content: string, isContinue?: boolean, targetConversationId?: string) => Promise<void>;
+  reset: () => void;
 }
 
 const DEFAULT_MESSAGE_PAGE_LIMIT = 100;
@@ -353,18 +354,22 @@ const invalidateConversationList = (set: ChatSet) => {
   set({ loadingConversations: false });
 };
 
-export const useChatStore = create<ChatState>((set, get) => ({
-  conversations: [],
+const initialChatState = {
+  conversations: [] as Conversation[],
   currentConversationId: null,
-  messages: [],
-  messagesCache: {},
-  messagePagination: {},
+  messages: [] as Message[],
+  messagesCache: {} as Record<string, Message[]>,
+  messagePagination: {} as Record<string, MessagePageInfo>,
   loadingConversations: false,
   loadingMessages: false,
   loadingOlderMessages: false,
   sendingMessage: false,
   isStopped: false,
   abortController: null,
+};
+
+export const useChatStore = create<ChatState>((set, get) => ({
+  ...initialChatState,
 
   fetchConversations: async (options = { includeArchived: true }) => {
     const ticket = conversationListRequestGuard.begin('conversations');
@@ -1173,5 +1178,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         ));
       }
     }
-  }
+  },
+
+  reset: () => {
+    conversationListRequestGuard.abortAll();
+    chatRequestState.reset();
+    set(initialChatState);
+  },
 }));

@@ -10,6 +10,7 @@ vi.mock('../lib/api', () => ({ default: apiMock }));
 
 const storage = new Map<string, string>();
 let useProjectSpaceStore: typeof import('./useProjectSpaceStore')['useProjectSpaceStore'];
+let isProjectSpaceSelectionReady: typeof import('./useProjectSpaceStore')['isProjectSpaceSelectionReady'];
 
 const deferred = <T,>() => {
   let resolve!: (value: T) => void;
@@ -37,7 +38,19 @@ beforeAll(async () => {
     setItem: vi.fn((key: string, value: string) => { storage.set(key, value); }),
     removeItem: vi.fn((key: string) => { storage.delete(key); }),
   });
-  ({ useProjectSpaceStore } = await import('./useProjectSpaceStore'));
+  ({
+    isProjectSpaceSelectionReady,
+    useProjectSpaceStore,
+  } = await import('./useProjectSpaceStore'));
+});
+
+test('knowledge requests wait until a persisted project-space selection is validated', () => {
+  const spaces = [space('space-a', 'A')];
+
+  expect(isProjectSpaceSelectionReady([], 'stale-space')).toBe(false);
+  expect(isProjectSpaceSelectionReady(spaces, 'stale-space')).toBe(false);
+  expect(isProjectSpaceSelectionReady(spaces, null)).toBe(false);
+  expect(isProjectSpaceSelectionReady(spaces, 'space-a')).toBe(true);
 });
 
 beforeEach(() => {

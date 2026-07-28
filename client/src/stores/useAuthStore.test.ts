@@ -3,6 +3,7 @@ import api from '../lib/api';
 import { useAuthStore, type User } from './useAuthStore';
 
 vi.mock('../lib/api', () => ({
+  authenticatedFetch: vi.fn(),
   default: {
     delete: vi.fn(),
     get: vi.fn(),
@@ -10,6 +11,11 @@ vi.mock('../lib/api', () => ({
     put: vi.fn(),
   },
 }));
+
+import { useChatStore } from './useChatStore';
+import { useKnowledgeFilesStore } from './useKnowledgeFilesStore';
+import { useProjectSpaceStore } from './useProjectSpaceStore';
+import { useSearchStore } from './useSearchStore';
 
 const user: User = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -43,6 +49,10 @@ const createMemoryStorage = () => {
 beforeEach(() => {
   vi.clearAllMocks();
   useAuthStore.setState({ user: null, loading: false });
+  useChatStore.getState().reset();
+  useKnowledgeFilesStore.getState().reset();
+  useProjectSpaceStore.getState().reset();
+  useSearchStore.getState().reset();
 });
 
 afterEach(() => {
@@ -93,6 +103,54 @@ describe('local authentication actions', () => {
     useAuthStore.getState().loginWithGithub(true);
 
     expect(assign).toHaveBeenCalledWith('/api/auth/github/login?remember=true');
+  });
+
+  test('logout clears every user-scoped store before the server request finishes', async () => {
+    const response = deferred<void>();
+    vi.mocked(api.post).mockReturnValue(response.promise as never);
+    useAuthStore.setState({ user, loading: false });
+    useChatStore.setState({
+      conversations: [{
+        id: 'conversation-id',
+        title: 'private conversation',
+        created_at: '2026-07-28T00:00:00.000Z',
+        updated_at: '2026-07-28T00:00:00.000Z',
+      }],
+    });
+    useKnowledgeFilesStore.setState({
+      files: [{
+        id: 'file-id',
+        filename: 'private.pdf',
+        status: 'completed',
+        progress: 100,
+        created_at: '2026-07-28T00:00:00.000Z',
+      }],
+    });
+    useProjectSpaceStore.setState({
+      projectSpaces: [{
+        id: '22222222-2222-4222-8222-222222222222',
+        user_id: user.id,
+        name: 'Private workspace',
+        description: '',
+        is_default: true,
+        created_at: '2026-07-28T00:00:00.000Z',
+        updated_at: '2026-07-28T00:00:00.000Z',
+      }],
+      currentProjectSpaceId: '22222222-2222-4222-8222-222222222222',
+    });
+    useSearchStore.setState({ query: 'private', results: [{ id: 'result-id' } as never] });
+
+    const logout = useAuthStore.getState().logout();
+
+    expect(useAuthStore.getState().user).toBeNull();
+    expect(useChatStore.getState().conversations).toEqual([]);
+    expect(useKnowledgeFilesStore.getState().files).toEqual([]);
+    expect(useProjectSpaceStore.getState().projectSpaces).toEqual([]);
+    expect(useProjectSpaceStore.getState().currentProjectSpaceId).toBeNull();
+    expect(useSearchStore.getState()).toMatchObject({ query: '', results: [] });
+
+    response.resolve();
+    await logout;
   });
 
   test('deduplicates concurrent authoritative authentication checks', async () => {

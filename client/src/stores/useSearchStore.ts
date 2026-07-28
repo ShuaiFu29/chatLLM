@@ -38,6 +38,7 @@ interface SearchState {
   setFilters: (filters: Partial<SearchFilters>) => void;
   searchMessages: (query: string) => Promise<void>;
   clearResults: () => void;
+  reset: () => void;
 }
 
 const defaultFilters: SearchFilters = {
@@ -51,12 +52,16 @@ const defaultFilters: SearchFilters = {
 
 const searchRequestGuard = new RequestGenerationGuard();
 
-export const useSearchStore = create<SearchState>((set, get) => ({
+const initialSearchState = {
   isOpen: false,
   query: '',
-  results: [],
+  results: [] as SearchResult[],
   isLoading: false,
   filters: defaultFilters,
+};
+
+export const useSearchStore = create<SearchState>((set, get) => ({
+  ...initialSearchState,
 
   setIsOpen: (open) => set({ isOpen: open }),
 
@@ -110,5 +115,10 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   clearResults: () => {
     searchRequestGuard.abort('search');
     set({ results: [], query: '', isLoading: false });
-  }
+  },
+
+  reset: () => {
+    searchRequestGuard.abortAll();
+    set(initialSearchState);
+  },
 }));

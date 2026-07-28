@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import api from '../lib/api';
 import { authSessionHintStorage } from '../lib/localStorage';
 import { toSafeError } from '../lib/safeError';
+import { resetUserScopedStores } from './resetUserScopedStores';
 
 interface UserSettings {
   temperature?: number;
@@ -88,6 +89,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   loginWithPassword: async (input) => {
     const operationRevision = advanceAuthStateRevision();
+    resetUserScopedStores();
     set({ loading: false });
     const res = await api.post<{ user: User }>('/auth/login', input);
     if (operationRevision !== authStateRevision) return;
@@ -97,6 +99,7 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   register: async (input) => {
     const operationRevision = advanceAuthStateRevision();
+    resetUserScopedStores();
     set({ loading: false });
     const res = await api.post<{ user: User }>('/auth/register', input);
     if (operationRevision !== authStateRevision) return;
@@ -110,14 +113,14 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
+    advanceAuthStateRevision();
+    resetUserScopedStores();
+    set({ user: null, loading: false });
+    authSessionHintStorage.write(false);
     try {
       await api.post('/auth/logout');
     } catch (err) {
       console.warn('Logout request failed; clearing local session anyway.', toSafeError(err));
-    } finally {
-      advanceAuthStateRevision();
-      set({ user: null, loading: false });
-      authSessionHintStorage.write(false);
     }
   },
 
@@ -130,6 +133,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   deleteAccount: async () => {
     await api.delete('/auth/me');
     advanceAuthStateRevision();
+    resetUserScopedStores();
     set({ user: null, loading: false });
     authSessionHintStorage.write(false);
     window.location.href = '/login';

@@ -14,6 +14,14 @@ export interface ProjectSpace {
   updated_at: string;
 }
 
+export const isProjectSpaceSelectionReady = (
+  projectSpaces: ProjectSpace[],
+  currentProjectSpaceId: string | null,
+) => Boolean(
+  currentProjectSpaceId
+  && projectSpaces.some((space) => space.id === currentProjectSpaceId),
+);
+
 interface ProjectSpaceState {
   projectSpaces: ProjectSpace[];
   currentProjectSpaceId: string | null;
@@ -23,6 +31,7 @@ interface ProjectSpaceState {
   renameProjectSpace: (id: string, name: string) => Promise<void>;
   deleteProjectSpace: (id: string) => Promise<void>;
   selectProjectSpace: (id: string) => void;
+  reset: () => void;
 }
 
 const projectSpaceRequestGuard = new RequestGenerationGuard();
@@ -147,5 +156,15 @@ export const useProjectSpaceStore = create<ProjectSpaceState>((set, get) => ({
   selectProjectSpace: (id: string) => {
     currentProjectSpaceStorage.write(id);
     set({ currentProjectSpaceId: id });
+  },
+
+  reset: () => {
+    projectSpaceRequestGuard.abortAll();
+    currentProjectSpaceStorage.write(null);
+    set({
+      projectSpaces: [],
+      currentProjectSpaceId: null,
+      loadingProjectSpaces: false,
+    });
   },
 }));

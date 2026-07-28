@@ -8,7 +8,11 @@ import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
 import { useSearchStore } from '../stores/useSearchStore';
-import { useProjectSpaceStore, type ProjectSpace } from '../stores/useProjectSpaceStore';
+import {
+  isProjectSpaceSelectionReady,
+  useProjectSpaceStore,
+  type ProjectSpace,
+} from '../stores/useProjectSpaceStore';
 import { getAvatarUrl } from '../lib/avatar';
 import { useKnowledgeFilesStore } from '../stores/useKnowledgeFilesStore';
 
@@ -112,8 +116,9 @@ export default function MainLayout() {
   }, [fetchConversations, fetchProjectSpaces]);
 
   useEffect(() => {
+    if (!isProjectSpaceSelectionReady(projectSpaces, currentProjectSpaceId)) return;
     void fetchKnowledgeFiles(currentProjectSpaceId);
-  }, [currentProjectSpaceId, fetchKnowledgeFiles]);
+  }, [currentProjectSpaceId, fetchKnowledgeFiles, projectSpaces]);
 
   useEffect(() => {
     if (editingId && editInputRef.current) {
