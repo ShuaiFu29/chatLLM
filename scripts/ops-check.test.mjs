@@ -19,7 +19,7 @@ const rootEnvExample = fs.existsSync(rootEnvExampleUrl)
   : '';
 const serverEnvExample = fs.readFileSync(new URL('../server/.env.example', import.meta.url), 'utf8');
 const ragEnvExample = fs.readFileSync(new URL('../rag-service/.env.example', import.meta.url), 'utf8');
-const readmeSource = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+const readmeSource = fs.readFileSync(new URL('../README.MD', import.meta.url), 'utf8');
 const isolatedEnvFiles = { serverEnv: {}, ragEnv: {} };
 const testOpsEnv = {
   OPS_METRICS_TOKEN: 'metrics-token-for-ops-tests',
@@ -105,11 +105,11 @@ test('configuration examples and README document secure lifecycle operations', (
 
   for (const variable of serverVariables) {
     assert.match(serverEnvExample, new RegExp(`^${variable}=`, 'm'), `${variable} missing from server/.env.example`);
-    assert.match(readmeSource, new RegExp(`\\b${variable}\\b`), `${variable} missing from README.md`);
+    assert.match(readmeSource, new RegExp(`\\b${variable}\\b`), `${variable} missing from README.MD`);
   }
   for (const variable of ragVariables) {
     assert.match(ragEnvExample, new RegExp(`^${variable}=`, 'm'), `${variable} missing from rag-service/.env.example`);
-    assert.match(readmeSource, new RegExp(`\\b${variable}\\b`), `${variable} missing from README.md`);
+    assert.match(readmeSource, new RegExp(`\\b${variable}\\b`), `${variable} missing from README.MD`);
   }
 
   for (const source of [rootEnvExample, serverEnvExample, ragEnvExample, readmeSource]) {
