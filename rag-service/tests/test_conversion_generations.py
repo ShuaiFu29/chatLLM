@@ -10,7 +10,6 @@ if str(ROOT) not in sys.path:
 
 import db
 
-
 SHA_A = "a" * 64
 SHA_B = "b" * 64
 SHA_C = "c" * 64
@@ -304,6 +303,80 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
         self.assertIn("manifest_byte_size = %s", sql)
         self.assertIn("completed_with_warnings", params)
         self.assertEqual(connection.commits, 1)
+
+    def test_complete_generation_idempotently_replays_the_same_terminal_values(self):
+        completed = _generation(
+            status="completed",
+            markdown_hash=SHA_B,
+            source_map_hash=SHA_C,
+            manifest_hash=SHA_D,
+            markdown_byte_size=100,
+            source_map_byte_size=200,
+            manifest_byte_size=300,
+            warning_count=0,
+            unit_count=4,
+        )
+        cursor = _ScriptedCursor([None, completed])
+        connection = _FakeConnection(cursor)
+
+        @contextmanager
+        def fake_conn():
+            yield connection
+
+        with patch.object(db, "get_conn", fake_conn):
+            result = db.complete_conversion_generation(
+                "file-1",
+                completed["id"],
+                self.attempt_id,
+                self.lease_token,
+                markdown_hash=SHA_B,
+                source_map_hash=SHA_C,
+                manifest_hash=SHA_D,
+                markdown_byte_size=100,
+                source_map_byte_size=200,
+                manifest_byte_size=300,
+                warning_count=0,
+                unit_count=4,
+            )
+
+        self.assertEqual(result, completed)
+        self.assertEqual(len(cursor.calls), 2)
+        self.assertIn("generation.status = 'converting'", cursor.calls[0][0])
+        self.assertIn("for update of generation, job", cursor.calls[1][0])
+        self.assertEqual(connection.commits, 1)
+
+    def test_complete_generation_rejects_a_mismatched_terminal_replay(self):
+        completed = _generation(
+            status="completed",
+            markdown_hash=SHA_B,
+            source_map_hash=SHA_C,
+            manifest_hash=SHA_D,
+            markdown_byte_size=999,
+            source_map_byte_size=200,
+            manifest_byte_size=300,
+            warning_count=0,
+            unit_count=4,
+        )
+        cursor = _ScriptedCursor([None, completed])
+
+        with patch.object(db, "get_conn", _fake_connection(cursor)), self.assertRaisesRegex(
+            db.ConversionGenerationStateError,
+            "markdown_byte_size",
+        ):
+            db.complete_conversion_generation(
+                "file-1",
+                completed["id"],
+                self.attempt_id,
+                self.lease_token,
+                markdown_hash=SHA_B,
+                source_map_hash=SHA_C,
+                manifest_hash=SHA_D,
+                markdown_byte_size=100,
+                source_map_byte_size=200,
+                manifest_byte_size=300,
+                warning_count=0,
+                unit_count=4,
+            )
 
     def test_fail_generation_persists_only_a_stable_error_code(self):
         failed = _generation(status="failed", error_code="PDF_NO_TEXT_LAYER")

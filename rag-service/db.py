@@ -1,15 +1,14 @@
 import hashlib
 import json
 import re
+from collections.abc import Iterable
 from contextlib import contextmanager
 from queue import Empty, LifoQueue
 from threading import Lock
-from typing import Iterable
 
 import psycopg
-from psycopg.rows import dict_row
 from config import settings
-
+from psycopg.rows import dict_row
 
 LEGACY_CHUNK_STRATEGY_VERSION = "markdown-v1:chunk1000-overlap100"
 CHUNK_STRATEGY_VERSION = "markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100"
@@ -872,9 +871,50 @@ def complete_conversion_generation(
             )
             generation = cur.fetchone()
             if not generation:
-                raise IngestionLeaseLostError(
-                    f"Conversion generation is not completable for file {file_id}, attempt {attempt_id}"
+                cur.execute(
+                    f"""
+                    select {_qualified_conversion_generation_columns('generation')}
+                    from file_conversion_generations generation
+                    join file_ingestion_jobs job
+                      on job.file_id = generation.file_id
+                     and job.conversion_generation_id = generation.id
+                    where generation.id = %s
+                      and generation.file_id = %s
+                      and job.attempt_id = %s
+                      and job.lease_token = %s
+                      and job.status = 'processing'
+                      and job.lease_expires_at > now()
+                    for update of generation, job
+                    """,
+                    (generation_id, file_id, attempt_id, lease_token),
                 )
+                generation = cur.fetchone()
+                if not generation:
+                    raise IngestionLeaseLostError(
+                        f"Conversion generation is not completable for file {file_id}, attempt {attempt_id}"
+                    )
+
+                expected_terminal_values = {
+                    "status": completed_status,
+                    "markdown_hash": normalized_markdown_hash,
+                    "source_map_hash": normalized_source_map_hash,
+                    "manifest_hash": normalized_manifest_hash,
+                    "markdown_byte_size": markdown_byte_size,
+                    "source_map_byte_size": source_map_byte_size,
+                    "manifest_byte_size": manifest_byte_size,
+                    "warning_count": warning_count,
+                    "unit_count": unit_count,
+                }
+                mismatches = [
+                    field
+                    for field, expected_value in expected_terminal_values.items()
+                    if generation.get(field) != expected_value
+                ]
+                if mismatches:
+                    raise ConversionGenerationStateError(
+                        "completed conversion generation does not match the idempotent replay: "
+                        + ", ".join(mismatches)
+                    )
         conn.commit()
         return generation
 
@@ -1361,6 +1401,8 @@ def _build_chunk_metadata(
     chunk_index: int,
     file_data: dict,
     content: str,
+    source_unit_ids: list[str] | tuple[str, ...] = (),
+    source_locator: dict | None = None,
 ) -> dict:
     heading_path = _chunk_heading_path(content)
     parent_identity = "\0".join((file_id, *heading_path)) if heading_path else f"{file_id}\0__root__"
@@ -1373,17 +1415,42 @@ def _build_chunk_metadata(
         "file_id": file_id,
         "chunk_index": chunk_index,
         "chunk_strategy_version": CHUNK_STRATEGY_VERSION,
+        "document_kind": file_data.get("document_kind") or "markdown",
+        "conversion_generation_id": (
+            str(file_data["conversion_generation_id"])
+            if file_data.get("conversion_generation_id")
+            else None
+        ),
+        "source_locator": dict(source_locator or {}),
         "heading_path": heading_path,
         "heading_depth": len(heading_path),
         "parent_section_id": hashlib.sha256(parent_identity.encode("utf-8")).hexdigest()[:24],
     }
 
 
+def _chunk_values(chunk) -> tuple[str, tuple[str, ...], dict]:
+    if isinstance(chunk, str):
+        return chunk, (), {}
+    content = getattr(chunk, "content", None)
+    source_unit_ids = getattr(chunk, "source_unit_ids", None)
+    source_locator = getattr(chunk, "source_locator", None)
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("converted chunk content must be a non-empty string")
+    if not isinstance(source_unit_ids, (list, tuple)) or not all(
+        isinstance(unit_id, str) and re.fullmatch(r"u_[0-9a-f]{32}", unit_id)
+        for unit_id in source_unit_ids
+    ):
+        raise ValueError("converted chunk source_unit_ids are invalid")
+    if not isinstance(source_locator, dict):
+        raise ValueError("converted chunk source_locator must be an object")
+    return content, tuple(source_unit_ids), dict(source_locator)
+
+
 def insert_file_chunk_batch(
     file_id: str,
     user_id: str,
     start_index: int,
-    chunks: list[str],
+    chunks: list,
     file_data: dict,
 ) -> list[dict]:
     if not chunks:
@@ -1394,35 +1461,97 @@ def insert_file_chunk_batch(
             inserted: list[dict] = []
             for offset, chunk in enumerate(chunks):
                 chunk_index = start_index + offset
-                metadata = _build_chunk_metadata(file_id, user_id, chunk_index, file_data, chunk)
+                content, source_unit_ids, source_locator = _chunk_values(chunk)
+                metadata = _build_chunk_metadata(
+                    file_id,
+                    user_id,
+                    chunk_index,
+                    file_data,
+                    content,
+                    source_unit_ids,
+                    source_locator,
+                )
                 cur.execute(
                     """
-                    insert into file_chunks (file_id, user_id, chunk_index, content, metadata)
-                    values (%s, %s, %s, %s, %s)
-                    returning id, file_id, user_id, chunk_index, content, metadata
+                    insert into file_chunks (
+                      file_id,
+                      user_id,
+                      chunk_index,
+                      content,
+                      metadata,
+                      conversion_generation_id,
+                      source_unit_ids,
+                      source_locator,
+                      content_hash
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    returning id, file_id, user_id, chunk_index, content, metadata,
+                              conversion_generation_id, source_unit_ids, source_locator,
+                              content_hash, token_count
                     """,
-                    (file_id, user_id, chunk_index, chunk, json.dumps(metadata)),
+                    (
+                        file_id,
+                        user_id,
+                        chunk_index,
+                        content,
+                        json.dumps(metadata),
+                        file_data.get("conversion_generation_id"),
+                        list(source_unit_ids),
+                        json.dumps(source_locator),
+                        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    ),
                 )
                 inserted.append(cur.fetchone())
         conn.commit()
         return inserted
 
 
-def replace_file_chunks(file_id: str, user_id: str, chunks: list[str], file_data: dict) -> list[dict]:
+def replace_file_chunks(file_id: str, user_id: str, chunks: list, file_data: dict) -> list[dict]:
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("delete from file_chunks where file_id = %s", (file_id,))
 
             inserted: list[dict] = []
             for index, chunk in enumerate(chunks):
-                metadata = _build_chunk_metadata(file_id, user_id, index, file_data, chunk)
+                content, source_unit_ids, source_locator = _chunk_values(chunk)
+                metadata = _build_chunk_metadata(
+                    file_id,
+                    user_id,
+                    index,
+                    file_data,
+                    content,
+                    source_unit_ids,
+                    source_locator,
+                )
                 cur.execute(
                     """
-                    insert into file_chunks (file_id, user_id, chunk_index, content, metadata)
-                    values (%s, %s, %s, %s, %s)
-                    returning id, file_id, user_id, chunk_index, content, metadata
+                    insert into file_chunks (
+                      file_id,
+                      user_id,
+                      chunk_index,
+                      content,
+                      metadata,
+                      conversion_generation_id,
+                      source_unit_ids,
+                      source_locator,
+                      content_hash
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    returning id, file_id, user_id, chunk_index, content, metadata,
+                              conversion_generation_id, source_unit_ids, source_locator,
+                              content_hash, token_count
                     """,
-                    (file_id, user_id, index, chunk, json.dumps(metadata)),
+                    (
+                        file_id,
+                        user_id,
+                        index,
+                        content,
+                        json.dumps(metadata),
+                        file_data.get("conversion_generation_id"),
+                        list(source_unit_ids),
+                        json.dumps(source_locator),
+                        hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    ),
                 )
                 inserted.append(cur.fetchone())
 
