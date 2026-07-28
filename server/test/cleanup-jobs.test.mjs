@@ -120,7 +120,179 @@ test('late upload publication cannot revive a deleting file and requeues object 
   assert.match(files, /lease_token = null/i);
 });
 
-test('file cleanup resumes from durable completed steps', async () => {
+test('file cleanup snapshots raw, multipart, and every conversion generation object key', async () => {
+  const repositoryPath = path.join(serverRoot, 'dist', 'repositories', 'cleanupJobs.js');
+  const { enqueueFileCleanup } = require(repositoryPath);
+  const fileId = '11111111-1111-4111-8111-111111111111';
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const rawKey = `users/${userId}/files/${fileId}/raw/original.pdf`;
+  const multipartKey = `users/${userId}/files/${fileId}/raw/incomplete.pdf`;
+  const statuses = ['converting', 'completed', 'completed_with_warnings', 'failed', 'superseded'];
+  const generations = statuses.map((status, index) => ({
+    status,
+    source_object_key: index === 1 ? `${rawKey}.historical` : rawKey,
+    markdown_object_key: `users/${userId}/files/${fileId}/derived/g-${index}/document.md`,
+    source_map_object_key: `users/${userId}/files/${fileId}/derived/g-${index}/source-map.jsonl.zst`,
+    manifest_object_key: index === 3
+      ? null
+      : `users/${userId}/files/${fileId}/derived/g-${index}/manifest.json`,
+  }));
+  const calls = [];
+  let capturedPayload;
+  const client = {
+    query: async (sql, params = []) => {
+      calls.push({ sql, params });
+      if (/from users/i.test(sql)) return { rows: [{ id: userId }] };
+      if (/select id, user_id, object_key[\s\S]*from files/i.test(sql)) {
+        return { rows: [{ id: fileId, user_id: userId, object_key: rawKey }] };
+      }
+      if (/update files/i.test(sql)) return { rows: [] };
+      if (/update file_ingestion_jobs/i.test(sql)) return { rows: [] };
+      if (/from file_conversion_generations/i.test(sql)) return { rows: generations };
+      if (/from upload_multipart_sessions/i.test(sql)) {
+        return {
+          rows: [{
+            object_key: multipartKey,
+            storage_upload_id: 'multipart-upload-id',
+            status: 'uploading',
+          }],
+        };
+      }
+      if (/update upload_multipart_sessions/i.test(sql)) return { rows: [] };
+      if (/insert into artifact_cleanup_jobs/i.test(sql)) {
+        capturedPayload = JSON.parse(params[5]);
+        return { rows: [{ id: 'cleanup-job', payload: capturedPayload }] };
+      }
+      throw new Error(`Unexpected cleanup query: ${sql}`);
+    },
+  };
+
+  const result = await enqueueFileCleanup(fileId, userId, {
+    runInTransaction: async (callback) => callback(client),
+  });
+
+  assert.equal(result.id, 'cleanup-job');
+  assert.equal(capturedPayload.object_key, rawKey);
+  assert.equal(capturedPayload.multipart_object_key, multipartKey);
+  assert.equal(capturedPayload.multipart_upload_id, 'multipart-upload-id');
+  assert.equal(new Set(capturedPayload.storage_object_keys).size, capturedPayload.storage_object_keys.length);
+  assert.deepEqual(capturedPayload.storage_object_keys, [
+    rawKey,
+    multipartKey,
+    generations[0].markdown_object_key,
+    generations[0].source_map_object_key,
+    generations[0].manifest_object_key,
+    generations[1].source_object_key,
+    generations[1].markdown_object_key,
+    generations[1].source_map_object_key,
+    generations[1].manifest_object_key,
+    generations[2].markdown_object_key,
+    generations[2].source_map_object_key,
+    generations[2].manifest_object_key,
+    generations[3].markdown_object_key,
+    generations[3].source_map_object_key,
+    generations[4].markdown_object_key,
+    generations[4].source_map_object_key,
+    generations[4].manifest_object_key,
+  ]);
+
+  const fileLockIndex = calls.findIndex(({ sql }) => /from files[\s\S]*for update/i.test(sql));
+  const ingestionCancelIndex = calls.findIndex(({ sql }) => /update file_ingestion_jobs/i.test(sql));
+  const generationIndex = calls.findIndex(({ sql }) => /from file_conversion_generations/i.test(sql));
+  assert.ok(fileLockIndex >= 0 && fileLockIndex < ingestionCancelIndex);
+  assert.ok(ingestionCancelIndex < generationIndex);
+  assert.match(calls[generationIndex].sql, /where file_id = \$1\s+for update/i);
+  assert.doesNotMatch(calls[generationIndex].sql, /where[\s\S]*status\s*(?:=|in\s*\()/i);
+});
+
+test('file cleanup worker deletes deduplicated snapshot and legacy keys before checkpointing', async () => {
+  const servicePath = path.join(serverRoot, 'dist', 'services', 'cleanupQueue.js');
+  const { executeArtifactCleanupJob, storageKeysFromPayload } = require(servicePath);
+  const payload = {
+    storage_object_keys: ['raw', 'derived-md', 'raw', null, 42, 'derived-map'],
+    object_key: 'raw',
+    multipart_object_key: 'multipart',
+  };
+  assert.deepEqual(storageKeysFromPayload(payload), [
+    'raw',
+    'derived-md',
+    'derived-map',
+    'multipart',
+  ]);
+
+  const calls = [];
+  const result = await executeArtifactCleanupJob({
+    id: 'job-snapshot',
+    resource_type: 'file',
+    resource_id: 'file-1',
+    lease_token: '11111111-1111-4111-8111-111111111111',
+    step_state: { rag_deleted: true, multipart_aborted: true },
+    payload,
+  }, {
+    deleteStorageObject: async (key) => calls.push(`storage:${key}`),
+    updateStep: async (_claim, step) => calls.push(`step:${step}`),
+    finalizeFile: async () => calls.push('finalize-file'),
+    markFailed: async () => calls.push('failed'),
+    warn: () => undefined,
+  });
+
+  assert.deepEqual(calls, [
+    'storage:raw',
+    'storage:derived-md',
+    'storage:derived-map',
+    'storage:multipart',
+    'step:storage_deleted',
+    'finalize-file',
+  ]);
+  assert.deepEqual(result, { state: 'completed' });
+});
+
+test('file cleanup retries every storage key when deletion fails before its checkpoint', async () => {
+  const servicePath = path.join(serverRoot, 'dist', 'services', 'cleanupQueue.js');
+  const { executeArtifactCleanupJob } = require(servicePath);
+  const job = {
+    id: 'job-retry',
+    resource_type: 'file',
+    resource_id: 'file-1',
+    lease_token: '11111111-1111-4111-8111-111111111111',
+    step_state: { rag_deleted: true, multipart_aborted: true },
+    payload: { storage_object_keys: ['raw', 'derived-md', 'derived-map'] },
+  };
+  const firstAttempt = [];
+  const firstResult = await executeArtifactCleanupJob(job, {
+    deleteStorageObject: async (key) => {
+      firstAttempt.push(`storage:${key}`);
+      if (key === 'derived-md') throw new Error('temporary storage failure');
+    },
+    updateStep: async (_claim, step) => firstAttempt.push(`step:${step}`),
+    finalizeFile: async () => firstAttempt.push('finalize-file'),
+    markFailed: async () => firstAttempt.push('failed'),
+    warn: () => undefined,
+  });
+  assert.deepEqual(firstResult, { state: 'failed' });
+  assert.deepEqual(firstAttempt, ['storage:raw', 'storage:derived-md', 'failed']);
+  assert.equal(firstAttempt.includes('step:storage_deleted'), false);
+  assert.equal(firstAttempt.includes('finalize-file'), false);
+
+  const retryAttempt = [];
+  const retryResult = await executeArtifactCleanupJob(job, {
+    deleteStorageObject: async (key) => retryAttempt.push(`storage:${key}`),
+    updateStep: async (_claim, step) => retryAttempt.push(`step:${step}`),
+    finalizeFile: async () => retryAttempt.push('finalize-file'),
+    markFailed: async () => retryAttempt.push('failed'),
+    warn: () => undefined,
+  });
+  assert.deepEqual(retryResult, { state: 'completed' });
+  assert.deepEqual(retryAttempt, [
+    'storage:raw',
+    'storage:derived-md',
+    'storage:derived-map',
+    'step:storage_deleted',
+    'finalize-file',
+  ]);
+});
+
+test('file cleanup resumes from durable completed steps with a legacy payload', async () => {
   const servicePath = path.join(serverRoot, 'dist', 'services', 'cleanupQueue.js');
   assert.equal(existsSync(servicePath), true, 'cleanup queue service is missing');
   const { executeArtifactCleanupJob } = require(servicePath);

@@ -88,10 +88,19 @@ const abortMultipartFromPayload = async (payload: Record<string, unknown>) => {
   }
 };
 
-const storageKeysFromPayload = (payload: Record<string, unknown>) => Array.from(new Set(
-  [payload.object_key, payload.multipart_object_key]
-    .filter((value): value is string => typeof value === 'string' && Boolean(value))
-));
+export const storageKeysFromPayload = (payload: Record<string, unknown>) => {
+  const snapshottedKeys = Array.isArray(payload.storage_object_keys)
+    ? payload.storage_object_keys
+    : [];
+  return Array.from(new Set(
+    [
+      ...snapshottedKeys,
+      // Keep legacy cleanup jobs dispatchable after rolling deployment.
+      payload.object_key,
+      payload.multipart_object_key,
+    ].filter((value): value is string => typeof value === 'string' && value.length > 0),
+  ));
+};
 
 export const executeArtifactCleanupJob = async (
   job: CleanupJobClaim,

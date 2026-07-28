@@ -119,6 +119,18 @@ interface MultipartCleanupSource {
   status: string;
 }
 
+interface ConversionGenerationCleanupSource {
+  status: string;
+  source_object_key?: string | null;
+  markdown_object_key?: string | null;
+  source_map_object_key?: string | null;
+  manifest_object_key?: string | null;
+}
+
+const uniqueStorageObjectKeys = (values: unknown[]) => Array.from(new Set(
+  values.filter((value): value is string => typeof value === 'string' && value.length > 0),
+));
+
 const prepareFileCleanupWithClient = async (
   client: PoolClient,
   file: FileCleanupSource,
@@ -149,6 +161,19 @@ const prepareFileCleanupWithClient = async (
     [file.id]
   );
 
+  const { rows: generationRows } = await client.query<ConversionGenerationCleanupSource>(
+    `select
+       status,
+       source_object_key,
+       markdown_object_key,
+       source_map_object_key,
+       manifest_object_key
+     from file_conversion_generations
+     where file_id = $1
+     for update`,
+    [file.id]
+  );
+
   const { rows: multipartRows } = await client.query<MultipartCleanupSource>(
     `select object_key, storage_upload_id, status
      from upload_multipart_sessions
@@ -171,12 +196,23 @@ const prepareFileCleanupWithClient = async (
   const multipartIsActive = Boolean(
     multipart && ['initiated', 'uploading', 'completing', 'cancelling'].includes(multipart.status)
   );
+  const storageObjectKeys = uniqueStorageObjectKeys([
+    file.object_key,
+    multipart?.object_key,
+    ...generationRows.flatMap((generation) => [
+      generation.source_object_key,
+      generation.markdown_object_key,
+      generation.source_map_object_key,
+      generation.manifest_object_key,
+    ]),
+  ]);
   return insertCleanupJobWithClient(client, {
     resourceType: 'file',
     resourceId: file.id,
     ownerUserId: file.user_id,
     parentJobId,
     payload: {
+      storage_object_keys: storageObjectKeys,
       object_key: file.object_key || null,
       multipart_object_key: multipart?.object_key || null,
       multipart_upload_id: multipartIsActive ? multipart?.storage_upload_id : null,
