@@ -51,8 +51,11 @@ export const ensureBucket = async () => {
 export const sanitizeFilename = (filename: string) =>
   path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
 
-export const buildDocumentKey = (userId: string, fileId: string, filename: string) =>
-  `users/${userId}/files/${fileId}/${sanitizeFilename(filename)}`;
+export const buildDocumentKey = (userId: string, fileId: string, filename: string) => {
+  const extension = path.extname(sanitizeFilename(filename)).toLowerCase();
+  const safeExtension = /^\.[a-z0-9]{1,16}$/.test(extension) ? extension : '';
+  return `users/${userId}/files/${fileId}/raw/original${safeExtension}`;
+};
 
 export const buildAvatarKey = (userId: string, filename: string) =>
   `users/${userId}/avatars/${randomUUID()}-${sanitizeFilename(filename)}`;

@@ -688,6 +688,7 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
          vector_batches,
          checkpoint,
          error_message,
+         conversion_generation_id,
          started_at,
          completed_at,
          heartbeat_at,
@@ -697,7 +698,7 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
        )
        values (
          $1, $2, $3, 'processing', 'claimed', 0, 0, 0, 0, 0, 0,
-         '{}'::jsonb, null, now(), null, now(), $4, $5,
+         '{}'::jsonb, null, null, now(), null, now(), $4, $5,
          now() + ($6::double precision * interval '1 millisecond')
        )
        on conflict (file_id) do update set
@@ -713,6 +714,7 @@ export const claimNextPendingFile = async (options: ClaimNextPendingFileOptions 
          vector_batches = 0,
          checkpoint = '{}'::jsonb,
          error_message = null,
+         conversion_generation_id = null,
          started_at = now(),
          completed_at = null,
          heartbeat_at = now(),

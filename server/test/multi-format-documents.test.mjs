@@ -17,6 +17,14 @@ const uploadService = readFileSync(
   path.join(serverRoot, 'src', 'modules', 'upload', 'upload.service.ts'),
   'utf8',
 );
+const storage = readFileSync(
+  path.join(serverRoot, 'src', 'lib', 'storage.ts'),
+  'utf8',
+);
+const filesRepository = readFileSync(
+  path.join(serverRoot, 'src', 'repositories', 'files.ts'),
+  'utf8',
+);
 
 test('multi-format migration records document identity separately from the original object', () => {
   assert.match(migration, /add column if not exists document_kind text not null default 'markdown'/i);
@@ -79,4 +87,20 @@ test('authenticated upload API exposes the authoritative document capabilities',
   assert.match(uploadController, /@Get\('capabilities'\)/);
   assert.match(uploadController, /getDocumentCapabilities\(\)/);
   assert.match(uploadService, /return DOCUMENT_TYPE_REGISTRY/);
+});
+
+test('new originals use a stable raw object layout while historical object keys remain readable', () => {
+  assert.match(
+    storage,
+    /users\/\$\{userId\}\/files\/\$\{fileId\}\/raw\/original\$\{safeExtension\}/,
+  );
+  assert.match(storage, /path\.extname\(sanitizeFilename\(filename\)\)\.toLowerCase\(\)/);
+});
+
+test('a newly claimed attempt cannot inherit an earlier conversion generation', () => {
+  assert.match(
+    filesRepository,
+    /conversion_generation_id,[\s\S]{0,200}started_at[\s\S]{0,300}'\{\}'::jsonb, null, null, now\(\)/i,
+  );
+  assert.match(filesRepository, /conversion_generation_id = null/);
 });

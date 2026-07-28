@@ -20,6 +20,10 @@ class IngestionLeaseLostError(RuntimeError):
     """Raised when an ingestion worker no longer owns the current attempt."""
 
 
+class ConversionGenerationStateError(RuntimeError):
+    """Raised when an immutable conversion generation cannot make the requested transition."""
+
+
 class EvalLeaseLostError(RuntimeError):
     """Raised when an evaluation worker no longer owns the current run."""
 
@@ -433,95 +437,96 @@ def get_retrieval_scope(user_id: str, project_space_id: str | None = None) -> di
             }
 
 
-def bump_project_knowledge_version(user_id: str, project_space_id: str | None, reason: str) -> dict | None:
+def _bump_project_knowledge_version(
+    cur,
+    user_id: str,
+    project_space_id: str | None,
+    reason: str,
+) -> dict | None:
     if not project_space_id:
         return None
 
-    with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                update project_spaces
-                set knowledge_version = knowledge_version + 1,
-                    knowledge_version_updated_at = now(),
-                    updated_at = now()
-                where id::text = %s and user_id::text = %s
-                returning id, user_id, knowledge_version
-                """,
-                (project_space_id, user_id),
-            )
-            space = cur.fetchone()
-            if not space:
-                conn.commit()
-                return None
+    cur.execute(
+        """
+        update project_spaces
+        set knowledge_version = knowledge_version + 1,
+            knowledge_version_updated_at = now(),
+            updated_at = now()
+        where id::text = %s and user_id::text = %s
+        returning id, user_id, knowledge_version
+        """,
+        (project_space_id, user_id),
+    )
+    space = cur.fetchone()
+    if not space:
+        return None
 
-            knowledge_version = int(space.get("knowledge_version") or 1)
-            cur.execute(
-                """
-                select exists (
-                  select 1
-                  from file_chunks
-                  join files on files.id = file_chunks.file_id
-                  where files.user_id::text = %s
-                    and files.project_space_id::text = %s
-                    and coalesce(file_chunks.metadata->>'chunk_strategy_version', '') <> %s
-                  limit 1
-                ) as has_legacy_chunks
-                """,
-                (user_id, project_space_id, CHUNK_STRATEGY_VERSION),
-            )
-            effective_chunk_strategy = (
-                MIXED_CHUNK_STRATEGY_VERSION
-                if bool((cur.fetchone() or {}).get("has_legacy_chunks"))
-                else CHUNK_STRATEGY_VERSION
-            )
-            cur.execute(
-                """
-                insert into rag_index_versions (
-                  user_id,
-                  project_space_id,
-                  knowledge_version,
-                  vector_version,
-                  bm25_version,
-                  graph_version,
-                  chunk_strategy_version,
-                  embedding_model,
-                  embedding_dimension,
-                  settings_fingerprint
-                )
-                values (%s, %s, %s, 2, 2, 2, %s, %s, %s, %s)
-                on conflict (user_id, project_space_id) do update set
-                  knowledge_version = excluded.knowledge_version,
-                  vector_version = rag_index_versions.vector_version + 1,
-                  bm25_version = rag_index_versions.bm25_version + 1,
-                  graph_version = rag_index_versions.graph_version + 1,
-                  chunk_strategy_version = excluded.chunk_strategy_version,
-                  embedding_model = excluded.embedding_model,
-                  embedding_dimension = excluded.embedding_dimension,
-                  settings_fingerprint = excluded.settings_fingerprint,
-                  updated_at = now()
-                returning vector_version, bm25_version, graph_version
-                """,
-                (
-                    user_id,
-                    project_space_id,
-                    knowledge_version,
-                    effective_chunk_strategy,
-                    settings.embedding_model,
-                    settings.embedding_dimension,
-                    _index_settings_fingerprint(effective_chunk_strategy),
-                ),
-            )
-            index_version = cur.fetchone() or {}
-            cur.execute(
-                """
-                delete from rag_retrieval_cache
-                where user_id::text = %s
-                  and project_space_id::text = %s
-                """,
-                (user_id, project_space_id),
-            )
-        conn.commit()
+    knowledge_version = int(space.get("knowledge_version") or 1)
+    cur.execute(
+        """
+        select exists (
+          select 1
+          from file_chunks
+          join files on files.id = file_chunks.file_id
+          where files.user_id::text = %s
+            and files.project_space_id::text = %s
+            and coalesce(file_chunks.metadata->>'chunk_strategy_version', '') <> %s
+          limit 1
+        ) as has_legacy_chunks
+        """,
+        (user_id, project_space_id, CHUNK_STRATEGY_VERSION),
+    )
+    effective_chunk_strategy = (
+        MIXED_CHUNK_STRATEGY_VERSION
+        if bool((cur.fetchone() or {}).get("has_legacy_chunks"))
+        else CHUNK_STRATEGY_VERSION
+    )
+    cur.execute(
+        """
+        insert into rag_index_versions (
+          user_id,
+          project_space_id,
+          knowledge_version,
+          vector_version,
+          bm25_version,
+          graph_version,
+          chunk_strategy_version,
+          embedding_model,
+          embedding_dimension,
+          settings_fingerprint
+        )
+        values (%s, %s, %s, 2, 2, 2, %s, %s, %s, %s)
+        on conflict (user_id, project_space_id) do update set
+          knowledge_version = excluded.knowledge_version,
+          vector_version = rag_index_versions.vector_version + 1,
+          bm25_version = rag_index_versions.bm25_version + 1,
+          graph_version = rag_index_versions.graph_version + 1,
+          chunk_strategy_version = excluded.chunk_strategy_version,
+          embedding_model = excluded.embedding_model,
+          embedding_dimension = excluded.embedding_dimension,
+          settings_fingerprint = excluded.settings_fingerprint,
+          updated_at = now()
+        returning vector_version, bm25_version, graph_version
+        """,
+        (
+            user_id,
+            project_space_id,
+            knowledge_version,
+            effective_chunk_strategy,
+            settings.embedding_model,
+            settings.embedding_dimension,
+            _index_settings_fingerprint(effective_chunk_strategy),
+        ),
+    )
+    index_version = cur.fetchone() or {}
+    cur.execute(
+        """
+        delete from rag_retrieval_cache
+        where user_id::text = %s
+          and project_space_id::text = %s
+        """,
+        (user_id, project_space_id),
+    )
 
     return {
         "reason": reason,
@@ -534,19 +539,554 @@ def bump_project_knowledge_version(user_id: str, project_space_id: str | None, r
     }
 
 
+def bump_project_knowledge_version(user_id: str, project_space_id: str | None, reason: str) -> dict | None:
+    if not project_space_id:
+        return None
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            result = _bump_project_knowledge_version(cur, user_id, project_space_id, reason)
+        conn.commit()
+        return result
+
+
 def get_file(file_id: str):
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                select id, user_id, filename, file_hash, file_size, file_type,
-                       object_key, project_space_id, status, progress, error_message, created_at, updated_at
-                from files
-                where id = %s
+                select
+                  target_file.id,
+                  target_file.user_id,
+                  target_file.filename,
+                  target_file.file_hash,
+                  target_file.file_size,
+                  target_file.file_type,
+                  target_file.document_kind,
+                  target_file.declared_mime_type,
+                  target_file.detected_mime_type,
+                  target_file.active_conversion_generation_id,
+                  coalesce(
+                    claim.conversion_profile,
+                    case target_file.document_kind
+                      when 'markdown' then 'markdown-v1'
+                      when 'plaintext' then 'plaintext-v1'
+                      when 'pdf' then 'pdf-text-v1'
+                      when 'docx' then 'docx-v1'
+                      when 'pptx' then 'pptx-v1'
+                      when 'xlsx' then 'xlsx-v1'
+                      when 'csv' then 'csv-v1'
+                    end
+                  ) as conversion_profile,
+                  target_file.object_key,
+                  target_file.project_space_id,
+                  target_file.status,
+                  target_file.progress,
+                  target_file.error_message,
+                  target_file.created_at,
+                  target_file.updated_at
+                from files target_file
+                left join file_content_claims claim on claim.file_id = target_file.id
+                where target_file.id = %s
                 """,
                 (file_id,),
             )
             return cur.fetchone()
+
+
+_CONVERSION_GENERATION_COLUMNS = """
+  id,
+  file_id,
+  attempt_id,
+  document_kind,
+  source_object_key,
+  markdown_object_key,
+  source_map_object_key,
+  manifest_object_key,
+  converter_name,
+  converter_version,
+  conversion_profile,
+  source_hash,
+  markdown_hash,
+  source_map_hash,
+  manifest_hash,
+  markdown_byte_size,
+  source_map_byte_size,
+  manifest_byte_size,
+  status,
+  warning_count,
+  unit_count,
+  error_code,
+  created_at,
+  completed_at,
+  updated_at
+"""
+
+
+def _qualified_conversion_generation_columns(alias: str) -> str:
+    return ",\n".join(
+        f"{alias}.{column.strip()}"
+        for column in _CONVERSION_GENERATION_COLUMNS.split(",")
+        if column.strip()
+    )
+
+
+_IMMUTABLE_CONVERSION_FIELDS = (
+    "file_id",
+    "attempt_id",
+    "document_kind",
+    "source_object_key",
+    "markdown_object_key",
+    "source_map_object_key",
+    "manifest_object_key",
+    "converter_name",
+    "converter_version",
+    "conversion_profile",
+    "source_hash",
+)
+
+
+def _require_sha256(value: str, field: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise ValueError(f"{field} must be a lowercase SHA-256 digest")
+    return normalized
+
+
+def _require_nonnegative_int(value: int, field: str) -> int:
+    if type(value) is not int or value < 0:
+        raise ValueError(f"{field} must be a non-negative integer")
+    return value
+
+
+def create_or_reuse_conversion_generation(
+    file_id: str,
+    attempt_id,
+    lease_token,
+    *,
+    generation_id,
+    document_kind: str,
+    source_object_key: str,
+    markdown_object_key: str,
+    source_map_object_key: str,
+    manifest_object_key: str,
+    converter_name: str,
+    converter_version: str,
+    conversion_profile: str,
+    source_hash: str,
+) -> dict:
+    """Create one immutable generation per ingestion attempt and bind it to the leased job."""
+
+    normalized_source_hash = _require_sha256(source_hash, "source_hash")
+    expected = {
+        "file_id": str(file_id),
+        "attempt_id": str(attempt_id),
+        "document_kind": str(document_kind),
+        "source_object_key": str(source_object_key),
+        "markdown_object_key": str(markdown_object_key),
+        "source_map_object_key": str(source_map_object_key),
+        "manifest_object_key": str(manifest_object_key),
+        "converter_name": str(converter_name),
+        "converter_version": str(converter_version),
+        "conversion_profile": str(conversion_profile),
+        "source_hash": normalized_source_hash,
+    }
+    if any(not expected[field].strip() for field in _IMMUTABLE_CONVERSION_FIELDS):
+        raise ValueError("conversion generation identity fields must be non-empty")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select job.file_id
+                from file_ingestion_jobs job
+                join files target_file on target_file.id = job.file_id
+                where job.file_id = %s
+                  and job.attempt_id = %s
+                  and job.lease_token = %s
+                  and job.status = 'processing'
+                  and job.lease_expires_at > now()
+                  and target_file.status = 'processing'
+                for update of job, target_file
+                """,
+                (file_id, attempt_id, lease_token),
+            )
+            if not cur.fetchone():
+                raise IngestionLeaseLostError(
+                    f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
+                )
+
+            cur.execute(
+                f"""
+                select {_CONVERSION_GENERATION_COLUMNS}
+                from file_conversion_generations
+                where attempt_id = %s
+                for update
+                """,
+                (attempt_id,),
+            )
+            generation = cur.fetchone()
+            if generation:
+                mismatches = [
+                    field
+                    for field in _IMMUTABLE_CONVERSION_FIELDS
+                    if str(generation.get(field) or "") != expected[field]
+                ]
+                if mismatches:
+                    raise ConversionGenerationStateError(
+                        "existing conversion generation does not match immutable fields: "
+                        + ", ".join(mismatches)
+                    )
+            else:
+                cur.execute(
+                    f"""
+                    insert into file_conversion_generations (
+                      id,
+                      file_id,
+                      attempt_id,
+                      document_kind,
+                      source_object_key,
+                      markdown_object_key,
+                      source_map_object_key,
+                      manifest_object_key,
+                      converter_name,
+                      converter_version,
+                      conversion_profile,
+                      source_hash
+                    )
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    returning {_CONVERSION_GENERATION_COLUMNS}
+                    """,
+                    (
+                        generation_id,
+                        file_id,
+                        attempt_id,
+                        document_kind,
+                        source_object_key,
+                        markdown_object_key,
+                        source_map_object_key,
+                        manifest_object_key,
+                        converter_name,
+                        converter_version,
+                        conversion_profile,
+                        normalized_source_hash,
+                    ),
+                )
+                generation = cur.fetchone()
+                if not generation:
+                    raise ConversionGenerationStateError("conversion generation was not created")
+
+            cur.execute(
+                """
+                update file_ingestion_jobs
+                set conversion_generation_id = %s,
+                    updated_at = now()
+                where file_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
+                returning file_id
+                """,
+                (generation["id"], file_id, attempt_id, lease_token),
+            )
+            if not cur.fetchone():
+                raise IngestionLeaseLostError(
+                    f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
+                )
+        conn.commit()
+        return generation
+
+
+def complete_conversion_generation(
+    file_id: str,
+    generation_id,
+    attempt_id,
+    lease_token,
+    *,
+    markdown_hash: str,
+    source_map_hash: str,
+    manifest_hash: str,
+    markdown_byte_size: int,
+    source_map_byte_size: int,
+    manifest_byte_size: int,
+    warning_count: int,
+    unit_count: int,
+) -> dict:
+    """Complete an immutable generation only while its bound ingestion lease is active."""
+
+    normalized_markdown_hash = _require_sha256(markdown_hash, "markdown_hash")
+    normalized_source_map_hash = _require_sha256(source_map_hash, "source_map_hash")
+    normalized_manifest_hash = _require_sha256(manifest_hash, "manifest_hash")
+    markdown_byte_size = _require_nonnegative_int(markdown_byte_size, "markdown_byte_size")
+    source_map_byte_size = _require_nonnegative_int(source_map_byte_size, "source_map_byte_size")
+    manifest_byte_size = _require_nonnegative_int(manifest_byte_size, "manifest_byte_size")
+    warning_count = _require_nonnegative_int(warning_count, "warning_count")
+    unit_count = _require_nonnegative_int(unit_count, "unit_count")
+    completed_status = "completed_with_warnings" if warning_count else "completed"
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                update file_conversion_generations generation
+                set markdown_hash = %s,
+                    source_map_hash = %s,
+                    manifest_hash = %s,
+                    markdown_byte_size = %s,
+                    source_map_byte_size = %s,
+                    manifest_byte_size = %s,
+                    status = %s,
+                    warning_count = %s,
+                    unit_count = %s,
+                    error_code = null,
+                    completed_at = now(),
+                    updated_at = now()
+                from file_ingestion_jobs job
+                where generation.id = %s
+                  and generation.file_id = %s
+                  and generation.status = 'converting'
+                  and job.file_id = generation.file_id
+                  and job.conversion_generation_id = generation.id
+                  and job.attempt_id = %s
+                  and job.lease_token = %s
+                  and job.status = 'processing'
+                  and job.lease_expires_at > now()
+                returning {_qualified_conversion_generation_columns('generation')}
+                """,
+                (
+                    normalized_markdown_hash,
+                    normalized_source_map_hash,
+                    normalized_manifest_hash,
+                    markdown_byte_size,
+                    source_map_byte_size,
+                    manifest_byte_size,
+                    completed_status,
+                    warning_count,
+                    unit_count,
+                    generation_id,
+                    file_id,
+                    attempt_id,
+                    lease_token,
+                ),
+            )
+            generation = cur.fetchone()
+            if not generation:
+                raise IngestionLeaseLostError(
+                    f"Conversion generation is not completable for file {file_id}, attempt {attempt_id}"
+                )
+        conn.commit()
+        return generation
+
+
+def fail_conversion_generation(
+    file_id: str,
+    generation_id,
+    attempt_id,
+    lease_token,
+    error_code: str,
+) -> dict:
+    """Record a stable conversion failure without persisting parser exception details."""
+
+    normalized_error_code = str(error_code or "").strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", normalized_error_code):
+        raise ValueError("error_code must be a stable uppercase identifier")
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                update file_conversion_generations generation
+                set status = 'failed',
+                    error_code = %s,
+                    completed_at = now(),
+                    updated_at = now()
+                from file_ingestion_jobs job
+                where generation.id = %s
+                  and generation.file_id = %s
+                  and generation.status = 'converting'
+                  and job.file_id = generation.file_id
+                  and job.conversion_generation_id = generation.id
+                  and job.attempt_id = %s
+                  and job.lease_token = %s
+                  and job.status = 'processing'
+                  and job.lease_expires_at > now()
+                returning {_qualified_conversion_generation_columns('generation')}
+                """,
+                (normalized_error_code, generation_id, file_id, attempt_id, lease_token),
+            )
+            generation = cur.fetchone()
+            if not generation:
+                raise IngestionLeaseLostError(
+                    f"Conversion generation is not fail-able for file {file_id}, attempt {attempt_id}"
+                )
+        conn.commit()
+        return generation
+
+
+def activate_conversion_generation_and_complete_ingestion_job(
+    file_id: str,
+    generation_id,
+    attempt_id,
+    lease_token,
+    *,
+    total_chunks: int,
+    indexed_chunks: int,
+    keyword_batches: int = 0,
+    graph_batches: int = 0,
+    vector_batches: int = 0,
+    checkpoint: dict | None = None,
+    detected_mime_type: str | None = None,
+) -> dict:
+    """Atomically activate a fully indexed generation and complete its leased job."""
+
+    total_chunks = _require_nonnegative_int(total_chunks, "total_chunks")
+    indexed_chunks = _require_nonnegative_int(indexed_chunks, "indexed_chunks")
+    keyword_batches = _require_nonnegative_int(keyword_batches, "keyword_batches")
+    graph_batches = _require_nonnegative_int(graph_batches, "graph_batches")
+    vector_batches = _require_nonnegative_int(vector_batches, "vector_batches")
+    if total_chunks == 0 or indexed_chunks != total_chunks:
+        raise ConversionGenerationStateError(
+            "a conversion generation can only be activated after every non-empty chunk is indexed"
+        )
+
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select
+                  generation.id,
+                  generation.warning_count,
+                  target_file.user_id::text as user_id,
+                  target_file.project_space_id::text as project_space_id,
+                  target_file.active_conversion_generation_id,
+                  (
+                    select count(*)::bigint
+                    from file_chunks chunk
+                    where chunk.file_id = target_file.id
+                      and chunk.conversion_generation_id = generation.id
+                  ) as persisted_chunk_count
+                from file_ingestion_jobs job
+                join files target_file on target_file.id = job.file_id
+                join file_conversion_generations generation
+                  on generation.id = job.conversion_generation_id
+                 and generation.file_id = job.file_id
+                where job.file_id = %s
+                  and generation.id = %s
+                  and generation.status in ('completed', 'completed_with_warnings')
+                  and job.attempt_id = %s
+                  and job.lease_token = %s
+                  and job.status = 'processing'
+                  and job.lease_expires_at > now()
+                  and target_file.status = 'processing'
+                for update of job, target_file, generation
+                """,
+                (file_id, generation_id, attempt_id, lease_token),
+            )
+            state = cur.fetchone()
+            if not state:
+                raise IngestionLeaseLostError(
+                    f"Conversion generation is not activatable for file {file_id}, attempt {attempt_id}"
+                )
+            if int(state.get("persisted_chunk_count") or 0) != total_chunks:
+                raise ConversionGenerationStateError(
+                    "persisted conversion generation chunk count does not match the completed job"
+                )
+
+            previous_generation_id = state.get("active_conversion_generation_id")
+            if previous_generation_id and str(previous_generation_id) != str(generation_id):
+                cur.execute(
+                    """
+                    update file_conversion_generations
+                    set status = 'superseded',
+                        updated_at = now()
+                    where id = %s
+                      and file_id = %s
+                      and status in ('completed', 'completed_with_warnings')
+                    """,
+                    (previous_generation_id, file_id),
+                )
+
+            cur.execute(
+                """
+                update files
+                set active_conversion_generation_id = %s,
+                    detected_mime_type = coalesce(%s, detected_mime_type),
+                    conversion_warning_count = %s,
+                    updated_at = now()
+                where id = %s
+                  and status = 'processing'
+                returning id
+                """,
+                (generation_id, detected_mime_type, int(state.get("warning_count") or 0), file_id),
+            )
+            if not cur.fetchone():
+                raise ConversionGenerationStateError("file is not in an activatable processing state")
+
+            publication = _bump_project_knowledge_version(
+                cur,
+                state["user_id"],
+                state.get("project_space_id"),
+                "file_ingested",
+            )
+            if state.get("project_space_id") and not publication:
+                raise ConversionGenerationStateError(
+                    "file project space disappeared during generation activation"
+                )
+
+            cur.execute(
+                """
+                update file_ingestion_jobs
+                set status = 'completed',
+                    stage = 'completed',
+                    progress = 100,
+                    total_chunks = %s,
+                    indexed_chunks = %s,
+                    keyword_batches = %s,
+                    graph_batches = %s,
+                    vector_batches = %s,
+                    checkpoint = coalesce(%s::jsonb, checkpoint),
+                    error_message = null,
+                    completed_at = now(),
+                    heartbeat_at = now(),
+                    lease_expires_at = now(),
+                    updated_at = now()
+                where file_id = %s
+                  and conversion_generation_id = %s
+                  and attempt_id = %s
+                  and lease_token = %s
+                  and status = 'processing'
+                  and lease_expires_at > now()
+                returning file_id
+                """,
+                (
+                    total_chunks,
+                    indexed_chunks,
+                    keyword_batches,
+                    graph_batches,
+                    vector_batches,
+                    json.dumps(checkpoint) if checkpoint is not None else None,
+                    file_id,
+                    generation_id,
+                    attempt_id,
+                    lease_token,
+                ),
+            )
+            if not cur.fetchone():
+                raise IngestionLeaseLostError(
+                    f"Ingestion lease is no longer active for file {file_id}, attempt {attempt_id}"
+                )
+        conn.commit()
+        return {
+            "file_id": file_id,
+            "conversion_generation_id": str(generation_id),
+            "previous_conversion_generation_id": (
+                str(previous_generation_id) if previous_generation_id else None
+            ),
+            "total_chunks": total_chunks,
+            "indexed_chunks": indexed_chunks,
+            "publication": publication,
+        }
 
 
 def _require_ingestion_update(cur, file_id: str, attempt_id, lease_token):
@@ -614,6 +1154,7 @@ def start_ingestion_job(
                 update file_ingestion_jobs
                 set stage = %s,
                     progress = 0,
+                    conversion_generation_id = null,
                     checkpoint = %s::jsonb,
                     error_message = null,
                     heartbeat_at = now(),
