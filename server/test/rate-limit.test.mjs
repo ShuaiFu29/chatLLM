@@ -199,6 +199,42 @@ test('independent RateLimitGuard instances consume one shared IP bucket', async 
   assert.doesNotMatch(shared.calls[0].bucketKey, /10\.0\.0\.1/);
 });
 
+test('credential routes also share a private normalized identity bucket across IPs', async () => {
+  const shared = createSharedConsumer();
+  const scope = createScopedGuard({
+    keyPrefix: `auth-identity-test-${Date.now()}`,
+    max: 1,
+    identityBodyField: 'email',
+    message: 'Too many login attempts',
+  });
+
+  await withConsumer(shared.consume, async () => {
+    assert.equal(await scope.guard.canActivate(scope.context({
+      method: 'POST',
+      ip: '10.0.0.1',
+      cookies: {},
+      body: { email: '  ADA@Example.COM  ' },
+    }, createMockReply())), true);
+
+    await assert.rejects(
+      scope.guard.canActivate(scope.context({
+        method: 'POST',
+        ip: '10.0.0.2',
+        cookies: {},
+        body: { email: 'ada@example.com' },
+      }, createMockReply())),
+      (error) => error.getStatus() === 429
+        && error.getResponse().error === 'Too many login attempts',
+    );
+  });
+
+  assert.equal(shared.calls.length, 4);
+  assert.notEqual(shared.calls[0].bucketKey, shared.calls[2].bucketKey);
+  assert.equal(shared.calls[1].bucketKey, shared.calls[3].bucketKey);
+  assert.match(shared.calls[1].bucketKey, /:identity:[a-f0-9]{64}$/);
+  assert.doesNotMatch(JSON.stringify(shared.calls), /ada@example\.com/i);
+});
+
 test('RateLimitGuard fails closed without reflecting repository errors', async () => {
   const secret = 'postgres://user:secret-password@database.internal/chatllm';
   const logs = [];

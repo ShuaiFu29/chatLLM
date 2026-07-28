@@ -13,6 +13,8 @@ const SHA256 = 'a'.repeat(64);
 
 const expectedRouteSchemas = {
   'modules/auth/auth.controller.ts': [
+    'authRegister',
+    'authLogin',
     'authRefresh',
     'authUpdateProfile',
     'authDeleteAccount',
@@ -79,6 +81,17 @@ const expectedRouteSchemas = {
 };
 
 const validBodies = {
+  authRegister: {
+    email: 'ada@example.com',
+    password: 'correct horse battery staple',
+    displayName: 'Ada',
+    rememberMe: true,
+  },
+  authLogin: {
+    email: 'ada@example.com',
+    password: 'correct horse battery staple',
+    rememberMe: false,
+  },
   authRefresh: {},
   authUpdateProfile: { display_name: 'Ada' },
   authDeleteAccount: {},
@@ -244,6 +257,13 @@ test('wrong scalar and collection types are rejected instead of coerced or filte
   const { parseBody } = loadValidation();
   const { mutationSchemas } = loadSchemas();
   const rejected = [
+    ['authLogin', { email: 'ada@example.com', password: 'password123', rememberMe: 'true' }],
+    ['authRegister', {
+      email: 'ada@example.com',
+      password: 'password123',
+      displayName: 42,
+      rememberMe: false,
+    }],
     ['authUpdateProfile', { display_name: 42 }],
     ['chatSendMessage', { content: ['hello'] }],
     ['chatUpdateConversation', { tags: ['valid', 42] }],
@@ -259,6 +279,39 @@ test('wrong scalar and collection types are rejected instead of coerced or filte
   for (const [name, body] of rejected) {
     assert.throws(() => parseBody(mutationSchemas[name].body, body), `${name} coerced a wrong type`);
   }
+});
+
+test('local auth schemas normalize email and enforce credential boundaries', () => {
+  const { parseBody } = loadValidation();
+  const { mutationSchemas } = loadSchemas();
+
+  assert.deepEqual(
+    parseBody(mutationSchemas.authLogin.body, {
+      email: '  ADA@Example.COM  ',
+      password: 'password123',
+    }),
+    {
+      email: 'ada@example.com',
+      password: 'password123',
+      rememberMe: false,
+    },
+  );
+
+  for (const body of [
+    { email: 'not-an-email', password: 'password123' },
+    { email: 'ada@example.com', password: 'short' },
+    { email: 'ada@example.com', password: 'x'.repeat(129) },
+  ]) {
+    assert.throws(() => parseBody(mutationSchemas.authLogin.body, body));
+  }
+
+  assert.throws(() => parseBody(mutationSchemas.authRegister.body, {
+    email: 'ada@example.com',
+    password: 'password123',
+    displayName: 'Ada',
+    rememberMe: false,
+    role: 'admin',
+  }));
 });
 
 test('string booleans are rejected and literal false is preserved', () => {

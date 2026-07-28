@@ -1,4 +1,4 @@
-import { createHash } from 'crypto';
+import { createHash, createHmac } from 'crypto';
 import {
   CanActivate,
   ExecutionContext,
@@ -21,6 +21,7 @@ const RATE_LIMIT_SCOPE = Symbol('chatllm.rate-limit-scope');
 export interface RateLimitScopeOptions {
   keyPrefix: string;
   max: number;
+  identityBodyField?: string;
   message?: string;
   skipMethods?: readonly string[];
 }
@@ -46,6 +47,23 @@ const getBucketKey = (request: AppRequest, keyPrefix: string) => {
   return `${keyPrefix}:${digest}`;
 };
 
+const getIdentityBucketKey = (
+  request: AppRequest,
+  options: RateLimitScopeOptions,
+) => {
+  const field = options.identityBodyField;
+  if (!field) return null;
+  const rawIdentity = request.body?.[field];
+  if (typeof rawIdentity !== 'string') return null;
+  const identity = rawIdentity.trim().toLowerCase().slice(0, 320);
+  if (!identity) return null;
+
+  const digest = createHmac('sha256', serverEnv.JWT_SECRET)
+    .update(`${field}:${identity}`, 'utf8')
+    .digest('hex');
+  return `${options.keyPrefix}:identity:${digest}`;
+};
+
 export type RateLimitDecision = {
   allowed: true;
 } | {
@@ -57,13 +75,14 @@ export type RateLimitDecision = {
   };
 };
 
-export const consumeRequestRateLimit = async (
-  request: AppRequest,
+const consumeBucketRateLimit = async (
+  bucketKey: string,
+  requestId: string | undefined,
   reply: AppReply,
   options: RateLimitScopeOptions,
 ): Promise<RateLimitDecision> => {
   const bucket = await consumeRateLimitBucket({
-    bucketKey: getBucketKey(request, options.keyPrefix),
+    bucketKey,
     windowMs: serverEnv.RATE_LIMIT_WINDOW_MS,
   });
   const now = Date.now();
@@ -82,10 +101,21 @@ export const consumeRequestRateLimit = async (
     statusCode: 429,
     body: {
       error: options.message || 'Too many requests',
-      requestId: request.requestId,
+      requestId,
     },
   };
 };
+
+export const consumeRequestRateLimit = async (
+  request: AppRequest,
+  reply: AppReply,
+  options: RateLimitScopeOptions,
+): Promise<RateLimitDecision> => consumeBucketRateLimit(
+  getBucketKey(request, options.keyPrefix),
+  request.requestId,
+  reply,
+  options,
+);
 
 @Injectable()
 export class RateLimitGuard implements CanActivate {
@@ -112,6 +142,19 @@ export class RateLimitGuard implements CanActivate {
       const decision = await consumeRequestRateLimit(request, reply, scope);
       if (!decision.allowed) {
         throw new HttpException(decision.body, decision.statusCode);
+      }
+
+      const identityBucketKey = getIdentityBucketKey(request, scope);
+      if (identityBucketKey) {
+        const identityDecision = await consumeBucketRateLimit(
+          identityBucketKey,
+          request.requestId,
+          reply,
+          scope,
+        );
+        if (!identityDecision.allowed) {
+          throw new HttpException(identityDecision.body, identityDecision.statusCode);
+        }
       }
       return true;
     } catch (error) {

@@ -44,6 +44,23 @@ const optionalRequiredText = (maxLength: number) => requiredText(maxLength).opti
 const finiteNumber = z.number().finite();
 const projectSpaceAliases = [['project_space_id', 'projectSpaceId']] as const;
 
+const authEmail = z.string().trim().toLowerCase().min(3).max(320).email();
+const authPassword = z.string().min(8).max(128);
+const rememberMe = z.boolean().default(false);
+
+const authRegisterBody = strictBody({
+  email: authEmail,
+  password: authPassword,
+  displayName: requiredText(120),
+  rememberMe,
+});
+
+const authLoginBody = strictBody({
+  email: authEmail,
+  password: authPassword,
+  rememberMe,
+});
+
 const conversationIdParams = strictObject({ conversationId: uuid });
 const messageIdParams = strictObject({ messageId: uuid });
 const conversationMessageIdParams = strictObject({ conversationId: uuid, messageId: uuid });
@@ -295,6 +312,8 @@ const uploadMergeBody = strictBody({
 });
 
 export const mutationSchemas = {
+  authRegister: { body: authRegisterBody },
+  authLogin: { body: authLoginBody },
   authRefresh: { body: emptyBody },
   authUpdateProfile: { body: authUpdateProfileBody },
   authDeleteAccount: { body: emptyBody },

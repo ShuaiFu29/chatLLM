@@ -9,7 +9,7 @@ const ACCESS_TOKEN_DURATION = '15m';
 
 type AccessTokenPayload = {
   id: string;
-  github_id: number;
+  github_id: number | null;
   username: string;
   avatar_url?: string;
   display_name?: string;
@@ -20,7 +20,7 @@ const isAccessTokenPayload = (payload: string | jwt.JwtPayload): payload is jwt.
 
   return (
     typeof payload.id === 'string' &&
-    typeof payload.github_id === 'number' &&
+    (payload.github_id === null || typeof payload.github_id === 'number') &&
     typeof payload.username === 'string' &&
     (payload.avatar_url === undefined || typeof payload.avatar_url === 'string') &&
     (payload.display_name === undefined || typeof payload.display_name === 'string')

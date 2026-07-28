@@ -34,3 +34,20 @@ test('security migration replaces raw refresh tokens with surrogate ids and uniq
   assert.match(sql, /create unique index[^;]*sessions\s*\(token_hash\)/i);
   assert.doesNotMatch(sql, /raw_token|refresh_token/i);
 });
+
+test('local auth migration supports local identities and explicit remember-me sessions', () => {
+  const migrationPath = path.join(serverRoot, 'migrations', '0031_local_auth.sql');
+  assert.equal(existsSync(migrationPath), true, '0031 local auth migration is missing');
+
+  const sql = existsSync(migrationPath) ? readFileSync(migrationPath, 'utf8') : '';
+  assert.match(sql, /alter table users alter column github_id drop not null/i);
+  assert.match(sql, /add column if not exists email text/i);
+  assert.match(sql, /add column if not exists password_hash text/i);
+  assert.match(sql, /email = lower\(btrim\(email\)\)/i);
+  assert.match(sql, /users_local_credentials_pair_check/i);
+  assert.match(sql, /users_login_method_check/i);
+  assert.match(sql, /password_hash like 'scrypt\$v1\$%'/i);
+  assert.match(sql, /create unique index[^;]*users_email_unique_idx[^;]*on users\(email\)/i);
+  assert.match(sql, /add column if not exists remember_me boolean not null default true/i);
+  assert.match(sql, /alter column remember_me set default false/i);
+});

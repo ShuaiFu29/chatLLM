@@ -26,7 +26,10 @@ test('hashRefreshToken returns the stable 64-character SHA-256 digest', () => {
 
 test('session repository persists and queries token hashes instead of raw refresh tokens', () => {
   assert.match(sessionsSource, /createHash\('sha256'\)\.update\(rawToken, 'utf8'\)\.digest\('hex'\)/);
-  assert.match(sessionsSource, /insert into sessions \(token_hash, user_id, expires_at\)/);
+  assert.match(
+    sessionsSource,
+    /insert into sessions \(token_hash, user_id, expires_at, remember_me\)/,
+  );
   assert.match(sessionsSource, /where s\.token_hash = \$1/);
   assert.match(sessionsSource, /delete from sessions where token_hash = \$1/);
   assert.match(sessionsSource, /and expires_at > now\(\)/);
@@ -43,7 +46,15 @@ test('AuthService generates random 32-byte refresh tokens and rotates them atomi
 
   assert.match(authSource, /randomBytes\(32\)\.toString\('base64url'\)/);
   assert.doesNotMatch(authSource, /randomUUID\(\)/);
-  assert.match(refreshBody, /rotateSession\(oldRefreshToken, newRefreshToken, expiresAt\)/);
+  assert.match(
+    refreshBody,
+    /rotateSession\([\s\S]*oldRefreshToken,[\s\S]*newRefreshToken/,
+  );
+  assert.doesNotMatch(refreshBody, /getSessionExpiries\(\)/);
+  assert.match(
+    refreshBody,
+    /setAuthCookies\([\s\S]*session\.remember_me,[\s\S]*session\.expires_at/,
+  );
   assert.doesNotMatch(refreshBody, /findSessionWithUser\(/);
   assert.doesNotMatch(refreshBody, /deleteSession\(/);
   assert.doesNotMatch(refreshBody, /createSession\(/);
@@ -64,7 +75,7 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
   let insertedSessions = 0;
   const calls = [];
   const userId = 'd4bf7f87-0769-486c-bdb8-351df9f6cb38';
-  const expiresAt = '2099-01-01T00:00:00.000Z';
+  const expiresAt = '2099-01-07T00:00:00.000Z';
 
   const runInTransaction = async (callback) => callback({
     query: async (text, params = []) => {
@@ -80,7 +91,10 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
 
       if (normalized.startsWith('select user_id') && normalized.includes('from sessions')) {
         return activeHash === params[0]
-          ? { rows: [{ user_id: userId }], rowCount: 1 }
+          ? {
+              rows: [{ user_id: userId, remember_me: true, expires_at: expiresAt }],
+              rowCount: 1,
+            }
           : { rows: [], rowCount: 0 };
       }
 
@@ -92,6 +106,7 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
             id: `new-session-${insertedSessions}`,
             user_id: userId,
             expires_at: params[2],
+            remember_me: params[3],
             created_at: '2026-07-12T00:00:00.000Z',
           }],
           rowCount: 1,
@@ -120,12 +135,14 @@ test('concurrent rotations of one raw token produce exactly one replacement sess
   });
 
   const results = await Promise.all(replacementTokens.map((replacement) =>
-    sessionsModule.rotateSession(oldRawToken, replacement, expiresAt, runInTransaction)
+    sessionsModule.rotateSession(oldRawToken, replacement, runInTransaction)
   ));
 
   assert.equal(results.filter(Boolean).length, 1);
   assert.equal(insertedSessions, 1);
   assert.equal(results.find(Boolean).user.id, userId);
+  assert.equal(results.find(Boolean).remember_me, true);
+  assert.equal(results.find(Boolean).expires_at, expiresAt);
   assert.ok(replacementTokens.map(sessionsModule.hashRefreshToken).includes(activeHash));
 
   const databaseArguments = JSON.stringify(calls.map((call) => call.params));

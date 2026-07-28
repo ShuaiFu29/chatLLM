@@ -6,6 +6,7 @@ export interface DbSession {
   id: string;
   user_id: string;
   expires_at: string;
+  remember_me: boolean;
   created_at: string;
 }
 
@@ -15,7 +16,7 @@ export interface SessionWithUser extends DbSession {
 
 interface SessionUserRow extends DbSession {
   user_id_actual: string;
-  github_id: number | string;
+  github_id: number | string | null;
   username: string;
   avatar_url: string;
   avatar_object_key?: string | null;
@@ -29,10 +30,11 @@ const toSessionWithUser = (row: SessionUserRow): SessionWithUser => ({
   id: row.id,
   user_id: row.user_id,
   expires_at: row.expires_at,
+  remember_me: row.remember_me,
   created_at: row.created_at,
   user: {
     id: row.user_id_actual,
-    github_id: Number(row.github_id),
+    github_id: row.github_id === null ? null : Number(row.github_id),
     username: row.username,
     avatar_url: row.avatar_url,
     avatar_object_key: row.avatar_object_key,
@@ -50,6 +52,7 @@ export const createSession = async (
   rawToken: string,
   userId: string,
   expiresAt: string,
+  rememberMe: boolean,
   runInTransaction: typeof withTransaction = withTransaction
 ) => {
   await runInTransaction(async (client) => {
@@ -64,9 +67,9 @@ export const createSession = async (
     if (!user.rows[0]) throw new Error('Session user is unavailable');
 
     await client.query(
-      `insert into sessions (token_hash, user_id, expires_at)
-       values ($1, $2, $3)`,
-      [hashRefreshToken(rawToken), userId, expiresAt]
+      `insert into sessions (token_hash, user_id, expires_at, remember_me)
+       values ($1, $2, $3, $4)`,
+      [hashRefreshToken(rawToken), userId, expiresAt, rememberMe]
     );
   });
 };
@@ -77,6 +80,7 @@ export const findSessionWithUser = async (rawToken: string) => {
        s.id,
        s.user_id,
        s.expires_at,
+       s.remember_me,
        s.created_at,
        u.id as user_id_actual,
        u.github_id,
@@ -103,12 +107,15 @@ export const findSessionWithUser = async (rawToken: string) => {
 export const rotateSession = async (
   oldRawToken: string,
   newRawToken: string,
-  expiresAt: string,
   runInTransaction: typeof withTransaction = withTransaction
 ): Promise<SessionWithUser | null> => {
   return runInTransaction(async (client) => {
-    const { rows: candidateRows } = await client.query<{ user_id: string }>(
-      `select user_id
+    const { rows: candidateRows } = await client.query<{
+      user_id: string;
+      remember_me: boolean;
+      expires_at: string;
+    }>(
+      `select user_id, remember_me, expires_at
        from sessions
        where token_hash = $1
          and expires_at > now()`,
@@ -149,10 +156,15 @@ export const rotateSession = async (
     if (!consumed) return null;
 
     const { rows: sessionRows } = await client.query<DbSession>(
-      `insert into sessions (token_hash, user_id, expires_at)
-       values ($1, $2, $3)
-       returning id, user_id, expires_at, created_at`,
-      [hashRefreshToken(newRawToken), consumed.user_id, expiresAt]
+      `insert into sessions (token_hash, user_id, expires_at, remember_me)
+       values ($1, $2, $3, $4)
+       returning id, user_id, expires_at, remember_me, created_at`,
+      [
+        hashRefreshToken(newRawToken),
+        consumed.user_id,
+        candidate.expires_at,
+        candidate.remember_me,
+      ]
     );
     const session = sessionRows[0];
 
@@ -164,7 +176,7 @@ export const rotateSession = async (
       ...session,
       user: {
         ...user,
-        github_id: Number(user.github_id),
+        github_id: user.github_id === null ? null : Number(user.github_id),
       },
     };
   });

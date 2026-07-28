@@ -74,6 +74,30 @@ test('verifyAccessToken accepts tokens generated for a complete user', () => {
   });
 });
 
+test('verifyAccessToken accepts local users without a GitHub identity', () => {
+  const result = runJwtExpression(`
+    (() => {
+      const user = {
+        id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
+        github_id: null,
+        username: 'Ada',
+        avatar_url: '',
+        display_name: 'Ada'
+      };
+      return verifyAccessToken(generateAccessToken(user));
+    })()
+  `);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(parseLastJsonLine(result.stdout), {
+    id: 'd4bf7f87-0769-486c-bdb8-351df9f6cb38',
+    github_id: null,
+    username: 'Ada',
+    avatar_url: '',
+    display_name: 'Ada',
+  });
+});
+
 test('verifyAccessToken rejects signed tokens with missing user fields', () => {
   const result = runJwtExpression(`
     (() => {

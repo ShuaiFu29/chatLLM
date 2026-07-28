@@ -163,6 +163,8 @@ test('AuthController delegates plain Nest values without native request or reply
   const calls = [];
   const results = {
     githubLogin: { route: 'github-login' },
+    register: { route: 'register' },
+    login: { route: 'login' },
     githubCallback: { route: 'github-callback' },
     refresh: { route: 'refresh' },
     getMe: { route: 'me' },
@@ -181,8 +183,16 @@ test('AuthController delegates plain Nest values without native request or reply
   const user = { id: 'auth-user' };
   const cookies = { refresh_token: 'refresh-token' };
   const profile = { display_name: 'Ada' };
+  const loginInput = {
+    email: 'ada@example.com',
+    password: 'password123',
+    rememberMe: true,
+  };
+  const registerInput = { ...loginInput, displayName: 'Ada' };
 
-  assert.equal(controller.githubLogin(), results.githubLogin);
+  assert.equal(controller.githubLogin('true'), results.githubLogin);
+  assert.equal(controller.register(registerInput, 'request-register'), results.register);
+  assert.equal(controller.login(loginInput, 'request-login'), results.login);
   assert.equal(
     controller.githubCallback('oauth-code', 'oauth-state', cookies, 'request-callback'),
     results.githubCallback,
@@ -193,7 +203,9 @@ test('AuthController delegates plain Nest values without native request or reply
   assert.equal(controller.delete(user, 'request-delete'), results.deleteAccount);
   assert.equal(controller.logout(cookies), results.logout);
   assert.deepEqual(calls, [
-    ['githubLogin'],
+    ['githubLogin', true],
+    ['register', registerInput, 'request-register'],
+    ['login', loginInput, 'request-login'],
     ['githubCallback', {
       code: 'oauth-code',
       state: 'oauth-state',
@@ -225,6 +237,9 @@ test('AuthService expresses redirects, failures, and cookie clearing as Nest res
   assert.match(login.options.headers.Location, /^https:\/\/github\.com\/login\/oauth\/authorize\?/);
   assert.equal(login.options.cookies[0].action, 'set');
   assert.equal(login.options.cookies[0].name, 'github_oauth_state');
+  assert.equal(login.options.cookies[1].name, 'github_oauth_remember');
+  assert.equal(login.options.cookies[1].value, '0');
+  assert.equal(service.githubLogin(true).options.cookies[1].value, '1');
   assert.deepEqual(missingCode.body, { error: 'Missing code' });
   assert.equal(missingCode.options.statusCode, 400);
   assert.deepEqual(missingRefresh.body, { error: 'No refresh token provided' });

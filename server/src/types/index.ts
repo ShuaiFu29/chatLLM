@@ -6,7 +6,7 @@ export interface UserSettings {
 
 export interface User {
   id: string; // PostgreSQL UUID string
-  github_id: number;
+  github_id: number | null;
   username: string;
   avatar_url: string;
   display_name?: string;

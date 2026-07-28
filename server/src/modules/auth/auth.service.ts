@@ -8,14 +8,28 @@ import {
 } from '../../common/http/http-response';
 import { serverEnv } from '../../lib/env';
 import { generateAccessToken } from '../../lib/jwt';
+import {
+  DUMMY_PASSWORD_HASH,
+  hashPassword,
+  verifyPassword,
+} from '../../lib/password';
 import { toSafeError } from '../../lib/safeError';
 import { enqueueAccountCleanup } from '../../repositories/cleanupJobs';
 import { createSession, deleteSession, rotateSession } from '../../repositories/sessions';
-import { createUser, findUserByGithubId, findUserById, updateUser } from '../../repositories/users';
+import {
+  createLocalUser,
+  createUser,
+  EmailAlreadyRegisteredError,
+  findUserByGithubId,
+  findUserById,
+  findUserCredentialsByEmail,
+  updateUser,
+} from '../../repositories/users';
 import { artifactCleanupQueue } from '../../services/cleanupQueue';
 import { User } from '../../types';
 
-const REFRESH_TOKEN_DURATION = 7 * 24 * 60 * 60 * 1000;
+const REMEMBERED_SESSION_DURATION = 7 * 24 * 60 * 60 * 1000;
+const BROWSER_SESSION_DURATION = 24 * 60 * 60 * 1000;
 const ACCESS_TOKEN_DURATION = 15 * 60 * 1000;
 const generateRefreshToken = () => crypto.randomBytes(32).toString('base64url');
 
@@ -32,6 +46,16 @@ export interface GithubCallbackInput {
   state?: string;
   cookies: AuthCookies;
   requestId?: string;
+}
+
+export interface LocalLoginInput {
+  email: string;
+  password: string;
+  rememberMe: boolean;
+}
+
+export interface LocalRegisterInput extends LocalLoginInput {
+  displayName: string;
 }
 
 let proxyAgent: ProxyAgent | undefined;
@@ -69,7 +93,30 @@ const cookieLifetime = (durationMs: number) => ({
   expires: new Date(Date.now() + durationMs),
 });
 
-const setAuthCookies = (accessToken: string, refreshToken: string): ResponseCookie[] => [
+const persistentCookieLifetime = (rememberMe: boolean, durationMs: number) => (
+  rememberMe ? cookieLifetime(durationMs) : {}
+);
+
+const persistentRefreshCookieLifetime = (
+  rememberMe: boolean,
+  expiresAt?: string,
+) => {
+  if (!rememberMe) return {};
+  if (!expiresAt) return cookieLifetime(REMEMBERED_SESSION_DURATION);
+
+  const expires = new Date(expiresAt);
+  return {
+    expires,
+    maxAge: Math.max(Math.floor((expires.getTime() - Date.now()) / 1000), 1),
+  };
+};
+
+const setAuthCookies = (
+  accessToken: string,
+  refreshToken: string,
+  rememberMe: boolean,
+  refreshExpiresAt?: string,
+): ResponseCookie[] => [
   {
     action: 'set',
     name: 'access_token',
@@ -79,7 +126,7 @@ const setAuthCookies = (accessToken: string, refreshToken: string): ResponseCook
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      ...cookieLifetime(ACCESS_TOKEN_DURATION),
+      ...persistentCookieLifetime(rememberMe, ACCESS_TOKEN_DURATION),
     },
   },
   {
@@ -91,7 +138,7 @@ const setAuthCookies = (accessToken: string, refreshToken: string): ResponseCook
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/api/auth',
-      ...cookieLifetime(REFRESH_TOKEN_DURATION),
+      ...persistentRefreshCookieLifetime(rememberMe, refreshExpiresAt),
     },
   },
 ];
@@ -102,11 +149,41 @@ const clearAuthCookies = (): ResponseCookie[] => [
   { action: 'clear', name: 'refresh_token', options: { path: '/api/auth/refresh' } },
 ];
 
-const clearGithubStateCookie = (): ResponseCookie => ({
-  action: 'clear',
-  name: 'github_oauth_state',
-  options: { path: '/api/auth' },
+const clearGithubOauthCookies = (): ResponseCookie[] => [
+  {
+    action: 'clear',
+    name: 'github_oauth_state',
+    options: { path: '/api/auth' },
+  },
+  {
+    action: 'clear',
+    name: 'github_oauth_remember',
+    options: { path: '/api/auth' },
+  },
+];
+
+const getSessionExpiries = () => ({
+  remembered: new Date(Date.now() + REMEMBERED_SESSION_DURATION).toISOString(),
+  browserSession: new Date(Date.now() + BROWSER_SESSION_DURATION).toISOString(),
 });
+
+const createAuthenticatedSession = async (user: User, rememberMe: boolean) => {
+  const refreshToken = generateRefreshToken();
+  const expiries = getSessionExpiries();
+  await createSession(
+    refreshToken,
+    user.id,
+    rememberMe ? expiries.remembered : expiries.browserSession,
+    rememberMe,
+  );
+  const accessToken = generateAccessToken(user);
+  return setAuthCookies(
+    accessToken,
+    refreshToken,
+    rememberMe,
+    rememberMe ? expiries.remembered : undefined,
+  );
+};
 
 const redirectResponse = (
   url: string,
@@ -119,7 +196,7 @@ const redirectResponse = (
 
 @Injectable()
 export class AuthService {
-  githubLogin() {
+  githubLogin(rememberMe = false) {
     const state = crypto.randomBytes(16).toString('hex');
     const params = new URLSearchParams({
       client_id: serverEnv.GITHUB_CLIENT_ID || '',
@@ -130,19 +207,84 @@ export class AuthService {
 
     return redirectResponse(
       `https://github.com/login/oauth/authorize?${params.toString()}`,
-      [{
-        action: 'set',
-        name: 'github_oauth_state',
-        value: state,
-        options: {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: 'lax',
-          path: '/api/auth',
-          ...cookieLifetime(10 * 60 * 1000),
+      [
+        {
+          action: 'set',
+          name: 'github_oauth_state',
+          value: state,
+          options: {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            path: '/api/auth',
+            ...cookieLifetime(10 * 60 * 1000),
+          },
         },
-      }],
+        {
+          action: 'set',
+          name: 'github_oauth_remember',
+          value: rememberMe ? '1' : '0',
+          options: {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'lax',
+            path: '/api/auth',
+            ...cookieLifetime(10 * 60 * 1000),
+          },
+        },
+      ],
     );
+  }
+
+  async register(input: LocalRegisterInput, requestId?: string) {
+    try {
+      const passwordHash = await hashPassword(input.password);
+      const user = await createLocalUser({
+        email: input.email,
+        passwordHash,
+        displayName: input.displayName,
+      });
+      const cookies = await createAuthenticatedSession(user, input.rememberMe);
+      return httpResponse({ user }, { statusCode: 201, cookies });
+    } catch (error) {
+      if (error instanceof EmailAlreadyRegisteredError) {
+        return httpResponse(
+          { error: 'Email is already registered' },
+          { statusCode: 409 },
+        );
+      }
+      console.error('[Auth] Registration failed:', toSafeError(error, requestId));
+      return httpResponse({ error: 'Registration failed' }, { statusCode: 500 });
+    }
+  }
+
+  async login(input: LocalLoginInput, requestId?: string) {
+    try {
+      const credentials = await findUserCredentialsByEmail(input.email);
+      const passwordMatches = await verifyPassword(
+        input.password,
+        credentials?.passwordHash || DUMMY_PASSWORD_HASH,
+      );
+      if (
+        !credentials
+        || !passwordMatches
+        || credentials.user.deletion_status !== 'active'
+      ) {
+        return httpResponse(
+          { error: 'Invalid email or password' },
+          { statusCode: 401 },
+        );
+      }
+
+      const cookies = await createAuthenticatedSession(
+        credentials.user,
+        input.rememberMe,
+      );
+      return httpResponse({ user: credentials.user }, { cookies });
+    } catch (error) {
+      console.error('[Auth] Login failed:', toSafeError(error, requestId));
+      return httpResponse({ error: 'Authentication failed' }, { statusCode: 500 });
+    }
   }
 
   async githubCallback(input: GithubCallbackInput) {
@@ -150,13 +292,20 @@ export class AuthService {
     const storedState = cookies.github_oauth_state;
 
     if (!code) {
-      return httpResponse({ error: 'Missing code' }, { statusCode: 400 });
+      return httpResponse(
+        { error: 'Missing code' },
+        { statusCode: 400, cookies: clearGithubOauthCookies() },
+      );
     }
     if (!state || !storedState || state !== storedState) {
-      return httpResponse({ error: 'Invalid state' }, { statusCode: 403 });
+      return httpResponse(
+        { error: 'Invalid state' },
+        { statusCode: 403, cookies: clearGithubOauthCookies() },
+      );
     }
 
-    const stateCookie = clearGithubStateCookie();
+    const oauthCookies = clearGithubOauthCookies();
+    const rememberMe = cookies.github_oauth_remember === '1';
     try {
       const tokenBody = new URLSearchParams({
         client_id: serverEnv.GITHUB_CLIENT_ID || '',
@@ -178,7 +327,7 @@ export class AuthService {
       if (!githubAccessToken) {
         return httpResponse(
           { error: 'Failed to get access token' },
-          { statusCode: 400, cookies: [stateCookie] },
+          { statusCode: 400, cookies: oauthCookies },
         );
       }
 
@@ -194,7 +343,7 @@ export class AuthService {
       if (user?.deletion_status === 'pending') {
         return httpResponse(
           { error: 'Account deletion is in progress' },
-          { statusCode: 409, cookies: [stateCookie] },
+          { statusCode: 409, cookies: oauthCookies },
         );
       }
       if (!user) {
@@ -206,19 +355,16 @@ export class AuthService {
         });
       }
 
-      const refreshToken = generateRefreshToken();
-      const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DURATION).toISOString();
-      await createSession(refreshToken, user.id, expiresAt);
-      const accessToken = generateAccessToken(user);
+      const authCookies = await createAuthenticatedSession(user, rememberMe);
       return redirectResponse(
         `${serverEnv.FRONTEND_URL}?login=success`,
-        [stateCookie, ...setAuthCookies(accessToken, refreshToken)],
+        [...oauthCookies, ...authCookies],
       );
     } catch (error) {
       console.error('[Auth] GitHub callback failed:', toSafeError(error, requestId));
       return httpResponse(
         { error: 'Authentication failed' },
-        { statusCode: 500, cookies: [stateCookie] },
+        { statusCode: 500, cookies: oauthCookies },
       );
     }
   }
@@ -231,8 +377,10 @@ export class AuthService {
 
     try {
       const newRefreshToken = generateRefreshToken();
-      const expiresAt = new Date(Date.now() + REFRESH_TOKEN_DURATION).toISOString();
-      const session = await rotateSession(oldRefreshToken, newRefreshToken, expiresAt);
+      const session = await rotateSession(
+        oldRefreshToken,
+        newRefreshToken,
+      );
       if (!session) {
         return httpResponse(
           { error: 'Invalid or expired refresh token' },
@@ -243,7 +391,14 @@ export class AuthService {
       const newAccessToken = generateAccessToken(session.user);
       return httpResponse(
         { success: true },
-        { cookies: setAuthCookies(newAccessToken, newRefreshToken) },
+        {
+          cookies: setAuthCookies(
+            newAccessToken,
+            newRefreshToken,
+            session.remember_me,
+            session.expires_at,
+          ),
+        },
       );
     } catch (error) {
       console.error('Refresh Token Error:', toSafeError(error, requestId));
