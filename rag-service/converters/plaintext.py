@@ -4,10 +4,9 @@ import codecs
 from pathlib import Path
 
 from charset_normalizer import from_bytes
-
 from converted_document import ConversionResult, DocumentConversionError
-from converters.base import DocumentConverter
 
+from converters.base import DocumentConverter
 
 _BOMS = (
     (codecs.BOM_UTF32_LE, "utf-32"),

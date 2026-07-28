@@ -4,6 +4,10 @@ python-dotenv
 psycopg[binary]
 boto3
 charset-normalizer
+pypdf
+python-docx
+python-pptx
+openpyxl
 pymilvus
 langchain
 langchain-text-splitters

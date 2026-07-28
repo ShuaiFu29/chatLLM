@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 import sys
 import tempfile
 import unittest
@@ -8,22 +7,23 @@ from pathlib import Path
 
 import zstandard
 
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from converted_document import DocumentConversionError  # noqa: E402
-from converters import ConversionLimits, convert_document, get_converter  # noqa: E402
-from converters.markdown import MarkdownConverter  # noqa: E402
-from converters.plaintext import PlainTextConverter  # noqa: E402
-from source_map import iter_source_unit_ids, strip_source_unit_markers  # noqa: E402
+from converted_document import DocumentConversionError
+from converters import ConversionLimits, convert_document, get_converter
+from converters.markdown import MarkdownConverter
+from converters.plaintext import PlainTextConverter
+from source_map import iter_source_unit_ids, strip_source_unit_markers
 
 
 def read_source_map(path: Path) -> list[dict]:
-    with path.open("rb") as raw:
-        with zstandard.ZstdDecompressor().stream_reader(raw) as reader:
-            payload = reader.read().decode("utf-8")
+    with (
+        path.open("rb") as raw,
+        zstandard.ZstdDecompressor().stream_reader(raw) as reader,
+    ):
+        payload = reader.read().decode("utf-8")
     return [json.loads(line) for line in payload.splitlines()]
 
 
@@ -92,7 +92,7 @@ class DocumentConverterTests(unittest.TestCase):
 
     def test_plain_text_utf8_and_gb18030_are_converted_locally(self):
         utf8_source = self.root / "utf8.txt"
-        utf8_source.write_bytes("第一段\r\n\r\n第二段".encode("utf-8"))
+        utf8_source.write_bytes("第一段\r\n\r\n第二段".encode())
         utf8_result = PlainTextConverter().convert(utf8_source, self.root / "utf8-derived")
         self.assertEqual(
             strip_source_unit_markers(utf8_result.document.path.read_text(encoding="utf-8")),
@@ -151,8 +151,8 @@ class DocumentConverterTests(unittest.TestCase):
             )
         self.assertEqual(context.exception.code, "SOURCE_TOO_LARGE")
 
-        unsupported = self.root / "document.pdf"
-        unsupported.write_bytes(b"%PDF")
+        unsupported = self.root / "document.rtf"
+        unsupported.write_bytes(b"{\\rtf1}")
         with self.assertRaises(DocumentConversionError) as context:
             get_converter(unsupported)
         self.assertEqual(context.exception.code, "UNSUPPORTED_DOCUMENT_TYPE")
@@ -224,6 +224,15 @@ class DocumentConverterTests(unittest.TestCase):
             content = artifact.path.read_bytes()
             self.assertEqual(artifact.byte_size, len(content))
             self.assertEqual(artifact.sha256, hashlib.sha256(content).hexdigest())
+
+    def test_converter_registry_matches_shared_document_type_contract(self):
+        contract = json.loads((ROOT.parent / "shared" / "document-types.json").read_text(encoding="utf-8"))
+
+        for document_type in contract["documentTypes"]:
+            for extension in document_type["extensions"]:
+                converter = get_converter(self.root / f"sample.{extension.upper()}")
+                self.assertEqual(converter.document_kind, document_type["documentKind"])
+                self.assertEqual(converter.conversion_profile, document_type["conversionProfile"])
 
 
 if __name__ == "__main__":

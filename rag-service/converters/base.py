@@ -6,12 +6,12 @@ import os
 import re
 import tempfile
 from abc import ABC, abstractmethod
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator
+from typing import Any
 
 import zstandard
-
 from converted_document import (
     CONVERSION_SCHEMA_VERSION,
     ConversionArtifact,
@@ -20,7 +20,6 @@ from converted_document import (
     DocumentConversionError,
 )
 from source_map import SourceUnit, source_unit_marker
-
 
 CONVERTER_VERSION = "1.0.0"
 _FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
@@ -49,6 +48,14 @@ class TextBlock:
     text: str
     line_start: int
     line_end: int
+
+
+@dataclass(frozen=True)
+class LocatedTextBlock:
+    """A generated Markdown unit with an exact original-document locator."""
+
+    text: str
+    source: Mapping[str, Any]
 
 
 class DocumentConverter(ABC):
@@ -130,6 +137,48 @@ class DocumentConverter(ABC):
         source_encoding: str,
         warnings: tuple[str, ...] = (),
     ) -> ConversionResult:
+        return self._convert_items(
+            inspection,
+            output_dir,
+            _iter_text_items(
+                lines,
+                self.limits.max_unit_chars,
+                self.limits.max_source_bytes + 1,
+            ),
+            source_encoding,
+            warnings,
+        )
+
+    def _convert_located_blocks(
+        self,
+        inspection: SourceInspection,
+        output_dir: str | Path,
+        blocks: Iterable[LocatedTextBlock],
+        source_encoding: str,
+        warnings: tuple[str, ...] = (),
+    ) -> ConversionResult:
+        """Persist generated Markdown while retaining caller-provided locators."""
+
+        return self._convert_items(
+            inspection,
+            output_dir,
+            _iter_located_items(
+                blocks,
+                self.limits.max_unit_chars,
+                self.limits.max_source_bytes + 1,
+            ),
+            source_encoding,
+            warnings,
+        )
+
+    def _convert_items(
+        self,
+        inspection: SourceInspection,
+        output_dir: str | Path,
+        items: Iterable[str | TextBlock | LocatedTextBlock],
+        source_encoding: str,
+        warnings: tuple[str, ...],
+    ) -> ConversionResult:
         output_root, final_paths = _prepare_output_paths(inspection.path, output_dir)
         temporary_paths: list[Path] = []
         published_paths: list[Path] = []
@@ -147,11 +196,7 @@ class DocumentConverter(ABC):
             with markdown_temp.open("wb") as markdown_stream, source_map_temp.open("wb") as map_raw:
                 compressor = zstandard.ZstdCompressor(level=3, write_checksum=True)
                 with compressor.stream_writer(map_raw, closefd=False) as map_stream:
-                    for item in _iter_text_items(
-                        lines,
-                        self.limits.max_unit_chars,
-                        self.limits.max_source_bytes + 1,
-                    ):
+                    for item in items:
                         if isinstance(item, str):
                             encoded = item.encode("utf-8")
                             markdown_stream.write(encoded)
@@ -159,7 +204,17 @@ class DocumentConverter(ABC):
                             byte_offset += len(encoded)
                             continue
 
-                        unit_id = _source_unit_id(self.document_kind, item)
+                        if isinstance(item, LocatedTextBlock):
+                            source = dict(item.source)
+                            unit_id = _located_source_unit_id(self.document_kind, item)
+                        else:
+                            source = {
+                                "type": self.source_type,
+                                "line_start": item.line_start,
+                                "line_end": item.line_end,
+                                "kind": self._block_kind(item.text),
+                            }
+                            unit_id = _source_unit_id(self.document_kind, item)
                         marker = source_unit_marker(unit_id).encode("utf-8")
                         markdown_stream.write(marker)
                         markdown_hash.update(marker)
@@ -176,12 +231,7 @@ class DocumentConverter(ABC):
                             unit_id=unit_id,
                             markdown_byte_start=start,
                             markdown_byte_end=byte_offset,
-                            source={
-                                "type": self.source_type,
-                                "line_start": item.line_start,
-                                "line_end": item.line_end,
-                                "kind": self._block_kind(item.text),
-                            },
+                            source=source,
                         )
                         map_stream.write(unit.to_json_line())
                         unit_count += 1
@@ -324,6 +374,64 @@ def _source_unit_id(document_kind: str, block: TextBlock) -> str:
     digest.update(b"\0")
     digest.update(block.text.encode("utf-8"))
     return f"u_{digest.hexdigest()[:32]}"
+
+
+def _located_source_unit_id(document_kind: str, block: LocatedTextBlock) -> str:
+    try:
+        source = json.dumps(
+            dict(block.source),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (TypeError, ValueError) as error:
+        raise DocumentConversionError(
+            "INVALID_SOURCE_LOCATOR",
+            "source locator must be JSON serializable",
+        ) from error
+    digest = hashlib.sha256()
+    digest.update(document_kind.encode("ascii"))
+    digest.update(b"\0")
+    digest.update(source)
+    digest.update(b"\0")
+    digest.update(block.text.encode("utf-8"))
+    return f"u_{digest.hexdigest()[:32]}"
+
+
+def _iter_located_items(
+    blocks: Iterable[LocatedTextBlock],
+    max_unit_chars: int,
+    max_document_chars: int,
+) -> Iterator[str | LocatedTextBlock]:
+    document_chars = 0
+    emitted = False
+    for block in blocks:
+        text = block.text.replace("\r\n", "\n").replace("\r", "\n")
+        if not text.strip():
+            continue
+        if not text.endswith("\n"):
+            text += "\n"
+        if len(text) > max_unit_chars:
+            raise DocumentConversionError(
+                "SOURCE_UNIT_TOO_LARGE",
+                "a source text unit exceeds the configured conversion limit",
+            )
+        if any(_RESERVED_MARKER_RE.fullmatch(line) for line in text.splitlines(keepends=True)):
+            raise DocumentConversionError(
+                "RESERVED_SOURCE_MARKER",
+                "source document contains a reserved source-unit marker",
+            )
+        separator_size = 1 if emitted else 0
+        document_chars += len(text) + separator_size
+        if document_chars > max_document_chars:
+            raise DocumentConversionError(
+                "SOURCE_TOO_LARGE",
+                "converted document exceeds the configured conversion limit",
+            )
+        if emitted:
+            yield "\n"
+        yield LocatedTextBlock(text=text, source=dict(block.source))
+        emitted = True
 
 
 def _iter_text_items(
