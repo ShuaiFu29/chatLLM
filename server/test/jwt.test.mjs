@@ -17,6 +17,7 @@ const baseEnv = {
   PATHEXT: process.env.PATHEXT,
   NODE_ENV: 'test',
   DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+  REDIS_URL: 'redis://localhost:6379/0',
   S3_ENDPOINT: 'http://localhost:9000',
   S3_ACCESS_KEY: 'minioadmin',
   S3_SECRET_KEY: 'minioadmin',
