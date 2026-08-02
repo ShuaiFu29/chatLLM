@@ -643,6 +643,23 @@ test('RAG evaluation keeps dense history and benchmark content behind modals', (
   assert.match(ragEvaluationPageSource, /ragEval\.benchmarkSummary/);
 });
 
+test('knowledge graph renders only backend evidence facts and exposes extraction quality', () => {
+  assert.doesNotMatch(
+    graphExplorerPageSource,
+    /for \(let leftIndex = 0; leftIndex < entities\.length/,
+    'the browser must not manufacture pairwise co-occurrence edges from chunk entities',
+  );
+  assert.match(graphExplorerPageSource, /fact_id/);
+  assert.match(graphExplorerPageSource, /extraction_lane/);
+  assert.match(graphExplorerPageSource, /graph_extraction/);
+  assert.match(graphExplorerPageSource, /source_locator/);
+  assert.match(graphExplorerPageSource, /openEvidence/);
+  assert.match(graphExplorerPageSource, /graph_entity_details/);
+  assert.match(graphExplorerPageSource, /from_entity_id/);
+  assert.match(graphExplorerPageSource, /referencedChunkIds/);
+  assert.match(graphExplorerPageSource, /detailsById/);
+});
+
 test('conversation list supports pinning, archiving, and archived filtering in localized UI', () => {
   const chatStoreSource = readFileSync(path.join(clientDir, 'src/stores/useChatStore.ts'), 'utf8');
 
@@ -1107,7 +1124,7 @@ test('knowledge graph result limit controls visible node budget with clear copy'
   assert.match(graphExplorerPageSource, /getMaxEntityNodes/);
   assert.match(graphExplorerPageSource, /getMaxEntityNodes\(resultLimit\)/);
   assert.match(graphExplorerPageSource, /buildGraphViewData\(\s*results,\s*\{/);
-  assert.match(graphExplorerPageSource, /,\s*limit\s*\)/);
+  assert.match(graphExplorerPageSource, /,\s*limit,\s*isCompactGraph,\s*\)/);
   assert.match(graphExplorerPageSource, /graphExplorer\.chunkLimit/);
   assert.match(graphExplorerPageSource, /graphExplorer\.chunkLimitHint/);
   assert.equal(

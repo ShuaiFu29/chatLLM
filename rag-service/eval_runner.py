@@ -311,6 +311,12 @@ def _aggregate_advanced_metrics(results: list[dict]) -> dict:
             "case_count": graph_count,
             "average_recall_at_k": _average_applicable(results, ("graph_retrieval", "recall_at_k")),
             "average_precision_at_k": _average_applicable(results, ("graph_retrieval", "precision_at_k")),
+            "average_endpoint_only_recall_at_k": _average_applicable(
+                results, ("graph_retrieval", "endpoint_only", "recall_at_k"),
+            ),
+            "average_endpoint_only_precision_at_k": _average_applicable(
+                results, ("graph_retrieval", "endpoint_only", "precision_at_k"),
+            ),
         },
         "answerability": {
             "applicable": answerability_count > 0,

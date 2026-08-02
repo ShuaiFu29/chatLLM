@@ -424,6 +424,7 @@ export default function LoginPage() {
 
             <button
               type="submit"
+              data-testid="auth-submit"
               disabled={isSubmitting}
               className="flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-primary px-4 text-sm font-semibold text-white shadow-lg shadow-primary/15 transition-colors hover:bg-primary-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-bg-sidebar disabled:cursor-not-allowed disabled:opacity-60"
             >

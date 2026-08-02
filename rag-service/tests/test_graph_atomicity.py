@@ -53,7 +53,7 @@ class JsonResponse:
 
 
 class AtomicNeo4jTransport:
-    """Models Neo4j's explicit transaction endpoints and legacy auto-commit."""
+    """Models idempotent auto-commit batches plus compensating Chunk cleanup."""
 
     def __init__(self):
         self.committed_chunk_ids = []
@@ -68,43 +68,32 @@ class AtomicNeo4jTransport:
             result.extend(chunk.get("chunk_id") for chunk in parameters.get("chunks", []))
         return [chunk_id for chunk_id in result if chunk_id]
 
+    @staticmethod
+    def _cleanup_chunk_ids(payload):
+        result = []
+        for statement in payload.get("statements", []):
+            parameters = statement.get("parameters") or {}
+            result.extend(parameters.get("chunk_ids", []))
+        return [chunk_id for chunk_id in result if chunk_id]
+
     def __call__(self, request, timeout):
         del timeout
         method = request.get_method()
         path = urlparse(request.full_url).path
         payload = json.loads(request.data.decode("utf-8")) if request.data else {"statements": []}
         requested_chunks = self._chunk_ids(payload)
+        cleanup_chunks = self._cleanup_chunk_ids(payload)
         self.requests.append((method, path, requested_chunks))
 
         if path.endswith("/tx/commit"):
             if "chunk-2" in requested_chunks:
                 return JsonResponse({"results": [], "errors": [{"message": "later batch failed"}]})
+            if cleanup_chunks:
+                self.committed_chunk_ids = [
+                    chunk_id for chunk_id in self.committed_chunk_ids
+                    if chunk_id not in cleanup_chunks
+                ]
             self.committed_chunk_ids.extend(requested_chunks)
-            return JsonResponse({"results": [], "errors": []})
-
-        if method == "POST" and path.endswith("/tx"):
-            self.pending_chunk_ids.extend(requested_chunks)
-            return JsonResponse({
-                "commit": "http://localhost:7474/db/neo4j/tx/42/commit",
-                "results": [],
-                "errors": [],
-            })
-
-        if method == "POST" and path.endswith("/tx/42"):
-            if "chunk-2" in requested_chunks:
-                self.pending_chunk_ids = []
-                return JsonResponse({"results": [], "errors": [{"message": "later batch failed"}]})
-            self.pending_chunk_ids.extend(requested_chunks)
-            return JsonResponse({"results": [], "errors": []})
-
-        if method == "POST" and path.endswith("/tx/42/commit"):
-            self.pending_chunk_ids.extend(requested_chunks)
-            self.committed_chunk_ids.extend(self.pending_chunk_ids)
-            self.pending_chunk_ids = []
-            return JsonResponse({"results": [], "errors": []})
-
-        if method == "DELETE" and path.endswith("/tx/42"):
-            self.pending_chunk_ids = []
             return JsonResponse({"results": [], "errors": []})
 
         raise AssertionError(f"Unexpected Neo4j request: {method} {path}")
@@ -131,7 +120,7 @@ class FakeGraphFileTransaction:
 
 
 class GraphAtomicityTests(unittest.TestCase):
-    def test_file_graph_transactions_are_serialized_within_one_rag_process(self):
+    def test_file_graph_coordinators_do_not_serialize_independent_ingestions(self):
         first = graph_store.GraphFileTransaction()
         second_entered = threading.Event()
 
@@ -144,9 +133,8 @@ class GraphAtomicityTests(unittest.TestCase):
             first.__enter__()
             worker = threading.Thread(target=enter_second, daemon=True)
             worker.start()
-            self.assertFalse(second_entered.wait(0.05))
-            first.__exit__(None, None, None)
             self.assertTrue(second_entered.wait(1))
+            first.__exit__(None, None, None)
             worker.join(timeout=1)
 
         self.assertFalse(worker.is_alive())
@@ -177,6 +165,38 @@ class GraphAtomicityTests(unittest.TestCase):
 
         self.assertEqual(transport.committed_chunk_ids, [])
         self.assertEqual(transport.pending_chunk_ids, [])
+
+    def test_transient_neo4j_error_is_retried_with_finite_backoff(self):
+        transient = graph_store.Neo4jQueryError(
+            "relationship group deadlock",
+            "Neo.TransientError.Transaction.DeadlockDetected",
+        )
+        with patch.object(graph_store.settings, "neo4j_enabled", True), patch(
+            "graph_store._neo4j_request",
+            side_effect=[transient, {"results": [], "errors": []}],
+        ) as request, patch("graph_store.random.uniform", return_value=0), patch(
+            "graph_store.time.sleep"
+        ) as sleep:
+            self.assertEqual(graph_store._run_cypher("RETURN 1"), [])
+
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once_with(graph_store.NEO4J_TRANSIENT_RETRY_BASE_SECONDS)
+
+    def test_transient_neo4j_retry_stops_at_the_configured_attempt_limit(self):
+        transient = graph_store.Neo4jQueryError(
+            "relationship group deadlock",
+            "Neo.TransientError.Transaction.DeadlockDetected",
+        )
+        with patch.object(graph_store.settings, "neo4j_enabled", True), patch(
+            "graph_store._neo4j_request",
+            side_effect=transient,
+        ) as request, patch("graph_store.random.uniform", return_value=0), patch(
+            "graph_store.time.sleep"
+        ) as sleep, self.assertRaises(graph_store.Neo4jQueryError):
+            graph_store._run_cypher("RETURN 1")
+
+        self.assertEqual(request.call_count, graph_store.NEO4J_TRANSIENT_RETRY_ATTEMPTS)
+        self.assertEqual(sleep.call_count, graph_store.NEO4J_TRANSIENT_RETRY_ATTEMPTS - 1)
 
     def test_enabled_graph_failure_propagates_out_of_ingestion(self):
         with patch.object(ingestion.settings, "neo4j_enabled", True), patch(
@@ -218,7 +238,7 @@ class GraphAtomicityTests(unittest.TestCase):
         self.assertEqual(stats["graph_status"], "skipped")
         self.assertEqual(stats["graph_batches"], 0)
 
-    def test_ingestion_uses_one_graph_transaction_across_all_file_batches(self):
+    def test_ingestion_uses_one_graph_publication_coordinator_across_file_batches(self):
         rows = chunk_rows(2)
         transaction = FakeGraphFileTransaction()
 
@@ -363,7 +383,7 @@ class GraphAtomicityTests(unittest.TestCase):
         self.assertIn("owner_scope_key", statements)
 
     @unittest.skipUnless(os.environ.get("TEST_NEO4J_URL"), "Neo4j integration is not configured")
-    def test_real_neo4j_rolls_back_late_failure_and_cleans_only_orphans(self):
+    def test_real_neo4j_compensates_late_failure_and_cleans_only_orphans(self):
         unique = uuid4().hex
         user_id = f"audit-user-{unique}"
         scope_id = f"audit-space-{unique}"

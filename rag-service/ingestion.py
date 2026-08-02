@@ -459,6 +459,18 @@ def index_chunk_batch(
     }
 
 
+def graph_extraction_checkpoint(graph_transaction) -> dict:
+    """Return optional graph quality telemetry without constraining test/adapter transactions."""
+    result = getattr(graph_transaction, "result", None)
+    if not isinstance(result, dict):
+        return {}
+    stats = result.get("extraction_stats")
+    return {
+        "status": result.get("extraction_status"),
+        **(stats if isinstance(stats, dict) else {}),
+    }
+
+
 def reset_file_indexes(file_id: str):
     delete_file_vectors(file_id)
     delete_file_keywords(file_id)
@@ -649,6 +661,7 @@ def process_streaming_file(
         "next_chunk_index": next_chunk_index,
         "indexed_chunks": processed_count,
         "graph_status": graph_status,
+        "graph_extraction": graph_extraction_checkpoint(graph_transaction),
         "complete": True,
     }
     assert_ingestion_lease(file_id, attempt_id, lease_token)
@@ -994,6 +1007,7 @@ def process_converted_file(
                     "indexed_chunks": processed_count,
                     "total_chunks": total_chunks,
                     "graph_status": graph_status,
+                    "graph_extraction": graph_extraction_checkpoint(graph_transaction),
                     "complete": True,
                 },
                 detected_mime_type=_DOCUMENT_MIME_TYPES[document_kind],
@@ -1196,7 +1210,11 @@ def process_file(file_id: str, attempt_id, lease_token):
 
         graph_batches = graph_transaction.committed_batches
         graph_status = graph_transaction.status
-        last_checkpoint = {**last_checkpoint, "graph_status": graph_status}
+        last_checkpoint = {
+            **last_checkpoint,
+            "graph_status": graph_status,
+            "graph_extraction": graph_extraction_checkpoint(graph_transaction),
+        }
 
         assert_ingestion_lease(file_id, attempt_id, lease_token)
         bump_project_knowledge_version(user_id, project_space_id or None, "file_ingested")

@@ -40,7 +40,13 @@ export interface RagEvalEvaluationSpec extends Record<string, unknown> {
   expected_chunk_ids?: string[];
   expected_evidence?: string[];
   expected_answerable?: boolean | null;
-  expected_graph_relations?: Array<{ source: string; relation: string; target: string }>;
+  expected_graph_relations?: Array<{
+    source: string;
+    relation: string;
+    target: string;
+    polarity?: 'affirmative' | 'negative';
+    modality?: 'asserted' | 'conditional' | 'planned_or_obligatory' | 'historical';
+  }>;
   human_scores?: Partial<Record<'correctness' | 'completeness' | 'faithfulness', number>>;
 }
 

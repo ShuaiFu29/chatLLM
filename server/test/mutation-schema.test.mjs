@@ -433,7 +433,13 @@ test('RAG eval case schema accepts bounded advanced Gold labels and rejects inva
       expected_chunk_ids: ['chunk-1'],
       expected_evidence: ['The worker retries the job.'],
       expected_answerable: true,
-      expected_graph_relations: [{ source: 'Worker', relation: 'USES', target: 'Queue' }],
+      expected_graph_relations: [{
+        source: 'Worker',
+        relation: 'USES',
+        target: 'Queue',
+        polarity: 'negative',
+        modality: 'planned_or_obligatory',
+      }],
       human_scores: { correctness: 0.9, completeness: 0.8, faithfulness: 1 },
     },
   }));
@@ -445,6 +451,14 @@ test('RAG eval case schema accepts bounded advanced Gold labels and rejects inva
   assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
     question: 'Q',
     evaluation_spec: { expected_graph_relations: [{ source: 'Worker', relation: 'USES' }] },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
+    question: 'Q',
+    evaluation_spec: {
+      expected_graph_relations: [{
+        source: 'Worker', relation: 'USES', target: 'Queue', polarity: 'unknown',
+      }],
+    },
   }));
   assert.throws(() => parseBody(mutationSchemas.ragEvalCaseCreate.body, {
     question: 'Q',

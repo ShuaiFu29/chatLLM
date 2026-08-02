@@ -12,6 +12,7 @@ export interface KnowledgeFile {
   error_message?: string;
   project_space_id?: string | null;
   document_kind?: string;
+  conversion_warning_count?: number;
 }
 
 interface FetchOptions {

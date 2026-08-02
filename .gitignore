@@ -5,6 +5,8 @@ node_modules
 
 # Testing
 coverage
+client/test-results/
+client/playwright-report/
 
 # Production
 dist

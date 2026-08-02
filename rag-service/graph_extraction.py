@@ -39,6 +39,52 @@ ONTOLOGY_REGISTRY = {
             "RELATED_TO",
         }),
     },
+    "core-v2": {
+        "entity_types": frozenset({
+            "Service",
+            "Component",
+            "API",
+            "Database",
+            "Queue",
+            "Policy",
+            "Version",
+            "Organization",
+            "Person",
+            "Role",
+            "Contract",
+            "Product",
+            "Location",
+            "Date",
+            "Money",
+            "Process",
+            "Requirement",
+            "Concept",
+            "Unknown",
+        }),
+        "relation_types": frozenset({
+            "DEPENDS_ON",
+            "CONFLICTS_WITH",
+            "CONNECTS_TO",
+            "IMPACTS",
+            "SUPPORTS",
+            "REPLACES",
+            "USES",
+            "PART_OF",
+            "PRODUCES",
+            "CONSUMES",
+            "CONFIGURES",
+            "IMPLEMENTS",
+            "RESPONSIBLE_FOR",
+            "PROVIDES",
+            "PAYS",
+            "BELONGS_TO",
+            "LOCATED_IN",
+            "SIGNED_BY",
+            "APPLIES_TO",
+            "IS_A",
+            "RELATED_TO",
+        }),
+    },
 }
 
 _REQUIRED_ROOT_FIELDS = {"entities", "mentions", "relations", "coreferences"}
@@ -46,6 +92,61 @@ _PRONOUNS = {
     "它", "其", "该服务", "该组件", "该系统", "前者", "后者", "这", "这些",
     "it", "its", "this service", "this component", "the former", "the latter",
 }
+
+_RELATION_CUES = {
+    "DEPENDS_ON": ("依赖", "取决于", "依靠", "前提", "depends on", "requires", "prerequisite"),
+    "CONFLICTS_WITH": ("冲突", "矛盾", "不一致", "contradict", "conflict", "inconsistent"),
+    "CONNECTS_TO": ("连接", "接入", "关联到", "转发", "路由", "发送到", "connect", "link", "forward", "route", "send"),
+    "IMPACTS": ("影响", "作用于", "导致", "造成", "impact", "affect", "cause"),
+    "SUPPORTS": ("支持", "证明", "佐证", "依据", "support", "prove", "evidence"),
+    "REPLACES": ("替代", "取代", "废止", "replac", "deprecat", "supersed"),
+    "USES": ("使用", "采用", "利用", "use", "adopt", "utilize"),
+    "PART_OF": ("属于", "组成", "隶属", "一部分", "part of", "belongs to"),
+    "PRODUCES": ("生成", "产出", "生产", "produce", "generate", "emit"),
+    "CONSUMES": ("消费", "读取", "订阅", "consume", "read", "subscribe"),
+    "CONFIGURES": ("配置", "设定", "configure", "set up"),
+    "IMPLEMENTS": ("实现", "落地", "implement", "realize"),
+    "RESPONSIBLE_FOR": ("负责", "职责", "承担", "经办", "responsible for", "owns"),
+    "PROVIDES": ("提供", "交付", "供应", "provide", "deliver", "supply"),
+    "PAYS": ("支付", "付款", "结算", "pay", "settle"),
+    "BELONGS_TO": ("属于", "隶属", "归属", "belongs to", "member of"),
+    "LOCATED_IN": ("位于", "坐落", "所在地", "located in", "based in"),
+    "SIGNED_BY": ("签署", "签订", "盖章", "signed by", "executed by"),
+    "APPLIES_TO": ("适用于", "面向", "针对", "applies to"),
+    "IS_A": ("是", "指", "定义为", "属于", "is a", "means", "defined as"),
+}
+
+_NEGATION_RE = re.compile(
+    r"(?:并?不|未曾?|没有|无须|无需|不得|禁止|并非|"
+    r"\b(?:not|never|no\s+longer|doesn['’]?t|do\s+not)\b)",
+    re.I,
+)
+_CONDITIONAL_RE = re.compile(
+    r"(?:如果|若|当.+?时|除非|在.+?情况下|"
+    r"\b(?:if|when|unless|provided\s+that)\b)",
+    re.I,
+)
+_PLANNED_RE = re.compile(
+    r"(?:计划|拟|将要|预计|(?<!等)待|尚未|应当|应该|须|必须|"
+    r"\b(?:will|shall|should|must|planned|proposed)\b)",
+    re.I,
+)
+_HISTORICAL_RE = re.compile(
+    r"(?:曾经?|过去|此前|原先|旧版|历史上|"
+    r"\b(?:previously|formerly|used\s+to)\b)",
+    re.I,
+)
+
+_NON_RELATIONAL_LABEL_TOKENS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in", "is",
+    "of", "on", "or", "that", "the", "to", "with", "以及", "并", "与", "于", "及", "向",
+    "和", "在", "对", "或", "是", "有", "的",
+})
+_NON_RELATIONAL_LABELS = frozenset({
+    "associated", "associated with", "co occurrence", "co-occurrence", "cooccurrence",
+    "listed", "listed together", "mentioned", "mentioned together", "related", "related to",
+    "together", "关联", "共现", "列出", "同时出现", "提及", "相关",
+})
 
 
 class GraphExtractionError(ValueError):
@@ -164,13 +265,17 @@ def _system_prompt(schema: dict[str, frozenset[str]]) -> str:
         "Extract a conservative evidence graph from the supplied adjacent Markdown chunks. "
         "Return one JSON object with exactly entities, mentions, relations, and coreferences arrays. "
         "Every mention/coreference needs chunk_id and evidence_span copied verbatim from that chunk. "
-        "Every entity needs name, type, type_label, and aliases. Type must be a controlled broad class; "
+        "Every entity needs name, type, type_label, aliases, and a short entity_key. References in mentions, "
+        "relations, and coreferences should use entity_key. entity_key is required to distinguish different "
+        "real-world entities that share the same surface name. Type must be a controlled broad class; "
         "type_label preserves a concise domain class from the source. Every relation needs source, target, "
         "type, label, and a non-empty evidence array of "
         "{chunk_id, span}; copy every span verbatim. The label is a short predicate preserving the "
         "source's domain wording. Map it to the closest controlled relation type, or RELATED_TO when "
         "no narrower type applies. Resolve pronouns through coreferences, never make a pronoun an entity. "
-        "Do not infer facts that the spans do not support. Use only entity types "
+        "Do not turn mere co-occurrence into a relation. Do not infer causal, responsibility, dependency, "
+        "or identity facts that the cited wording does not state. Preserve negated, planned, conditional, "
+        "and historical statements as written; never convert them into present affirmative facts. Use only entity types "
         f"{sorted(schema['entity_types'])} and relation types {sorted(schema['relation_types'])}."
     )
 
@@ -292,6 +397,61 @@ def _name_is_supported(name: str, aliases: list[str], evidence: list[str], coref
     return any(contains_phrase(mention) for mention in coreference_mentions)
 
 
+def _relation_is_semantically_supported(relation_type: str, relation_label: str, evidence_spans: list[str]) -> bool:
+    """Require a textual predicate cue, not merely two endpoint strings.
+
+    This is intentionally conservative. The model may map domain wording to a
+    controlled type, but it cannot create an edge solely because both entities
+    occur in the same span.
+    """
+    evidence = normalize_entity_name("\n".join(evidence_spans))
+
+    def contains_cue(cue: str) -> bool:
+        normalized_cue = normalize_entity_name(cue)
+        if not normalized_cue:
+            return False
+        if re.fullmatch(r"[a-z0-9 ]+", normalized_cue):
+            parts = normalized_cue.split()
+            if len(parts) == 1 and parts[0] in {"replac", "deprecat", "supersed"}:
+                phrase = rf"{re.escape(parts[0])}[a-z]*"
+            elif len(parts) == 1 and len(parts[0]) >= 4:
+                phrase = rf"{re.escape(parts[0])}(?:s|es|ed|ing|ion|ions)?"
+            else:
+                phrase = r"\s+".join(re.escape(part) for part in parts)
+            return bool(re.search(rf"(?<![a-z0-9_]){phrase}(?![a-z0-9_])", evidence))
+        return normalized_cue in evidence
+
+    cues = _RELATION_CUES.get(relation_type, ())
+    if any(contains_cue(cue) for cue in cues):
+        return True
+    label = normalize_entity_name(relation_label)
+    if relation_type != "RELATED_TO" and label == normalize_entity_name(relation_type):
+        return False
+    if not label or label in _NON_RELATIONAL_LABELS:
+        return False
+    label_tokens = [
+        token for token in re.split(r"[\s_\-/]+", label)
+        if len(token) >= 2
+        and token not in _NON_RELATIONAL_LABEL_TOKENS
+        and token not in {"related", "relation", "关系", "关联"}
+    ]
+    return bool(label_tokens) and all(contains_cue(token) for token in label_tokens)
+
+
+def infer_relation_qualifiers(evidence_spans: list[str]) -> tuple[str, str]:
+    evidence = "\n".join(evidence_spans)
+    polarity = "negative" if _NEGATION_RE.search(evidence) else "affirmative"
+    if _CONDITIONAL_RE.search(evidence):
+        modality = "conditional"
+    elif _PLANNED_RE.search(evidence):
+        modality = "planned_or_obligatory"
+    elif _HISTORICAL_RE.search(evidence):
+        modality = "historical"
+    else:
+        modality = "asserted"
+    return polarity, modality
+
+
 def validate_graph_extraction(
     payload: dict,
     window: dict,
@@ -322,7 +482,7 @@ def validate_graph_extraction(
         if (
             not isinstance(item, dict)
             or not {"name", "type", "aliases"}.issubset(item)
-            or set(item) - {"name", "type", "type_label", "aliases"}
+            or set(item) - {"name", "type", "type_label", "aliases", "entity_key"}
         ):
             raise GraphExtractionError("Graph extractor entity is malformed")
         name = re.sub(r"\s+", " ", str(item.get("name") or "")).strip()
@@ -330,6 +490,7 @@ def validate_graph_extraction(
         entity_type = str(item.get("type") or "")
         entity_type_label = re.sub(r"\s+", " ", str(item.get("type_label") or entity_type)).strip()
         aliases_raw = item.get("aliases")
+        entity_key = re.sub(r"\s+", " ", str(item.get("entity_key") or name)).strip()
         if (
             not name
             or len(name) > 80
@@ -339,6 +500,8 @@ def validate_graph_extraction(
             or len(entity_type_label) > 80
             or not isinstance(aliases_raw, list)
             or len(aliases_raw) > 12
+            or not entity_key
+            or len(entity_key) > 120
         ):
             raise GraphExtractionError("Graph extractor entity violates the ontology")
         aliases = []
@@ -350,9 +513,12 @@ def validate_graph_extraction(
                 raise GraphExtractionError("Graph extractor entity alias is invalid")
             if alias not in aliases:
                 aliases.append(alias)
-        if normalized_name in entities_by_name:
-            raise GraphExtractionError("Graph extractor returned duplicate canonical entities")
+        normalized_entity_key = normalize_entity_name(entity_key)
+        if normalized_entity_key in entities_by_name:
+            raise GraphExtractionError("Graph extractor returned duplicate entity keys")
         entity = {
+            "entity_key": entity_key,
+            "normalized_entity_key": normalized_entity_key,
             "name": name,
             "normalized_name": normalized_name,
             "aliases": aliases,
@@ -364,9 +530,10 @@ def validate_graph_extraction(
             "ontology_version": ontology_version,
         }
         entities.append(entity)
-        entities_by_name[normalized_name] = entity
+        entities_by_name[normalized_entity_key] = entity
         for alias in aliases:
-            alias_to_entity.setdefault(normalize_entity_name(alias), set()).add(normalized_name)
+            alias_to_entity.setdefault(normalize_entity_name(alias), set()).add(normalized_entity_key)
+        alias_to_entity.setdefault(normalized_name, set()).add(normalized_entity_key)
 
     def resolve_entity(value: object) -> dict:
         normalized = normalize_entity_name(str(value or ""))
@@ -391,11 +558,12 @@ def validate_graph_extraction(
         mentions.append({
             "entity": entity["name"],
             "entity_normalized": entity["normalized_name"],
+            "entity_key_normalized": entity["normalized_entity_key"],
             "surface": surface,
             "chunk_id": chunk_id,
             "evidence_span": span,
         })
-        mentioned_entities.add(entity["normalized_name"])
+        mentioned_entities.add(entity["normalized_entity_key"])
 
     coreferences: list[dict] = []
     coreference_mentions: dict[str, set[str]] = {}
@@ -413,10 +581,11 @@ def validate_graph_extraction(
             "mention": mention,
             "entity": entity["name"],
             "entity_normalized": entity["normalized_name"],
+            "entity_key_normalized": entity["normalized_entity_key"],
             "chunk_id": chunk_id,
             "evidence_span": span,
         })
-        coreference_mentions.setdefault(entity["normalized_name"], set()).add(mention)
+        coreference_mentions.setdefault(entity["normalized_entity_key"], set()).add(mention)
 
     if set(entities_by_name) - mentioned_entities:
         raise GraphExtractionError("Every extracted entity must have a verbatim mention")
@@ -433,7 +602,7 @@ def validate_graph_extraction(
         target = resolve_entity(item.get("target"))
         relation_type = str(item.get("type") or "").strip().upper()
         relation_label = re.sub(r"\s+", " ", str(item.get("label") or relation_type)).strip()
-        if source["normalized_name"] == target["normalized_name"] or relation_type not in schema["relation_types"]:
+        if source["normalized_entity_key"] == target["normalized_entity_key"] or relation_type not in schema["relation_types"]:
             raise GraphExtractionError("Graph extractor relation violates the ontology")
         if not relation_label or len(relation_label) > 80:
             raise GraphExtractionError("Graph extractor relation label is invalid")
@@ -451,14 +620,17 @@ def validate_graph_extraction(
             source["name"],
             source["aliases"],
             evidence_spans,
-            coreference_mentions.get(source["normalized_name"], set()),
+            coreference_mentions.get(source["normalized_entity_key"], set()),
         ) or not _name_is_supported(
             target["name"],
             target["aliases"],
             evidence_spans,
-            coreference_mentions.get(target["normalized_name"], set()),
+            coreference_mentions.get(target["normalized_entity_key"], set()),
         ):
             raise GraphExtractionError("Graph extractor relation endpoints are not grounded in its evidence")
+        if not _relation_is_semantically_supported(relation_type, relation_label, evidence_spans):
+            raise GraphExtractionError("Graph extractor relation predicate is not supported by its evidence")
+        polarity, modality = infer_relation_qualifiers(evidence_spans)
         relations.append({
             "type": relation_type,
             "relation_label": relation_label,
@@ -467,6 +639,8 @@ def validate_graph_extraction(
             "to": target["name"],
             "from_normalized": source["normalized_name"],
             "to_normalized": target["normalized_name"],
+            "from_entity_key_normalized": source["normalized_entity_key"],
+            "to_entity_key_normalized": target["normalized_entity_key"],
             "evidence": evidence[0]["span"],
             "evidence_items": evidence,
             "evidence_chunk_ids": list(dict.fromkeys(item["chunk_id"] for item in evidence)),
@@ -475,12 +649,16 @@ def validate_graph_extraction(
             "extraction_method": "llm_json",
             "extractor_version": extractor_version,
             "ontology_version": ontology_version,
+            "polarity": polarity,
+            "modality": modality,
+            "validation_status": "evidence_supported",
         })
 
     canonical_payload = {
         "entities": [
             {
                 "name": item["name"],
+                "entity_key": item["entity_key"],
                 "type": item["entity_type"],
                 "type_label": item["entity_type_label"],
                 "aliases": item["aliases"][1:],
@@ -489,7 +667,10 @@ def validate_graph_extraction(
         ],
         "mentions": [
             {
-                "entity": item["entity"],
+                "entity": next(
+                    entity["entity_key"] for entity in entities
+                    if entity["normalized_entity_key"] == item["entity_key_normalized"]
+                ),
                 "surface": item["surface"],
                 "chunk_id": item["chunk_id"],
                 "evidence_span": item["evidence_span"],
@@ -498,8 +679,14 @@ def validate_graph_extraction(
         ],
         "relations": [
             {
-                "source": item["from"],
-                "target": item["to"],
+                "source": next(
+                    entity["entity_key"] for entity in entities
+                    if entity["normalized_entity_key"] == item["from_entity_key_normalized"]
+                ),
+                "target": next(
+                    entity["entity_key"] for entity in entities
+                    if entity["normalized_entity_key"] == item["to_entity_key_normalized"]
+                ),
                 "type": item["type"],
                 "label": item["relation_label"],
                 "evidence": item["evidence_items"],
@@ -509,7 +696,10 @@ def validate_graph_extraction(
         "coreferences": [
             {
                 "mention": item["mention"],
-                "entity": item["entity"],
+                "entity": next(
+                    entity["entity_key"] for entity in entities
+                    if entity["normalized_entity_key"] == item["entity_key_normalized"]
+                ),
                 "chunk_id": item["chunk_id"],
                 "evidence_span": item["evidence_span"],
             }

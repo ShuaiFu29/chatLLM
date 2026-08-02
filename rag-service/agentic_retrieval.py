@@ -269,7 +269,16 @@ def _build_inventory_documents(files: list[dict]) -> list[dict]:
 
 def _classify_question(query: str) -> dict:
     normalized = "".join(query.lower().split())
-    relationship_terms = ("关联", "依赖", "影响", "链路", "连接", "冲突", "替代", "协作", "配合", "隶属")
+    # Keep this query vocabulary aligned with the controlled graph ontology.
+    # A direct one-hop predicate question is a graph use case even when it is
+    # phrased as a yes/no comparison (for example “A 使用 B 吗？”).
+    relationship_terms = (
+        "关联", "依赖", "影响", "链路", "连接", "接入", "转发", "路由到", "冲突", "替代",
+        "协作", "配合", "隶属", "属于", "归属", "使用", "采用", "利用", "负责", "职责",
+        "承担", "经办", "提供", "交付", "供应", "支付", "付款", "结算", "签署", "签订",
+        "盖章", "位于", "坐落", "适用于", "面向", "针对", "生成", "产出", "消费", "读取",
+        "订阅", "配置", "实现", "组成",
+    )
     comparison_terms = ("对比", "区别", "差异", "区分", "是否", "能否", "还是")
     relationship_match = (
         any(term in normalized for term in relationship_terms)
@@ -286,6 +295,16 @@ def _classify_question(query: str) -> dict:
             query,
             re.IGNORECASE,
         ))
+        or bool(re.search(
+            r"\b(?:use[sd]?|adopt(?:s|ed|ing)?|utilize[sd]?|responsible\s+for|owns?|"
+            r"provide[sd]?|deliver(?:s|ed)?|suppl(?:y|ies|ied)|pay[sd]?|paid|settle[sd]?|"
+            r"belong(?:s|ed)?\s+to|member\s+of|located\s+in|based\s+in|signed\s+by|"
+            r"executed\s+by|appl(?:y|ies|ied)\s+to|generate[sd]?|emit[st]?|read[st]?|"
+            r"subscribe[sd]?\s+to|configure[sd]?|implement(?:s|ed)?)\b",
+            query,
+            re.IGNORECASE,
+        ))
+        or bool(re.search(r"支持(?!哪些|什么).+(?:吗|么|？|\?)$", normalized))
     )
     comparison_match = any(term in normalized for term in comparison_terms) or bool(re.search(
         r"\b(?:compare[ds]?|comparing|difference|differences|distinguish(?:es|ed|ing)?)\b",

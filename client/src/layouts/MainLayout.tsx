@@ -370,6 +370,7 @@ export default function MainLayout() {
         ) : (
           <button
             type="button"
+            data-testid={`conversation-${conv.id}`}
             className="min-w-0 flex-1 cursor-pointer text-left"
             onClick={() => handleSelectConversation(conv.id)}
           >
@@ -938,6 +939,7 @@ export default function MainLayout() {
             </div>
             <button
               type="button"
+              data-testid="conversation-browser-trigger"
               onClick={() => setIsConversationBrowserOpen(true)}
               className="group flex w-full items-center gap-3 rounded-xl border border-border bg-bg-surface px-3 py-3 text-left shadow-sm transition-colors hover:border-primary/40"
             >

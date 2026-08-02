@@ -226,13 +226,30 @@ def evaluate_gold_evidence_quality(expected_evidence: list[str], documents: list
     }
 
 
-def _normalize_graph_expectation(value: object) -> tuple[str, str, str] | None:
+_GRAPH_POLARITIES = {"affirmative", "negative"}
+_GRAPH_MODALITIES = {"asserted", "conditional", "planned_or_obligatory", "historical"}
+
+
+def _normalize_graph_qualifier(value: object, default: str, allowed: set[str]) -> str | None:
+    if value in (None, ""):
+        return default
+    normalized = _normalize_evidence(value).replace(" ", "_")
+    return normalized if normalized in allowed else None
+
+
+def _normalize_graph_expectation(value: object) -> tuple[str, str, str, str, str] | None:
     if not isinstance(value, dict):
         return None
     source = _normalize_evidence(value.get("source"))
     relation = _normalize_evidence(value.get("relation"))
     target = _normalize_evidence(value.get("target"))
-    return (source, relation, target) if source and relation and target else None
+    polarity = _normalize_graph_qualifier(value.get("polarity"), "affirmative", _GRAPH_POLARITIES)
+    modality = _normalize_graph_qualifier(value.get("modality"), "asserted", _GRAPH_MODALITIES)
+    return (
+        (source, relation, target, polarity, modality)
+        if source and relation and target and polarity and modality
+        else None
+    )
 
 
 def _document_graph_relations(document: dict) -> list[dict]:
@@ -241,24 +258,45 @@ def _document_graph_relations(document: dict) -> list[dict]:
     return [relation for relation in relations if isinstance(relation, dict)]
 
 
-def _normalized_graph_relation_key(relation: dict) -> tuple[str, str, str] | None:
+def _normalized_graph_relation_key(relation: dict) -> tuple[str, str, str, str, str] | None:
     source = _normalize_evidence(relation.get("from") or relation.get("source"))
     predicate = _normalize_evidence(
         relation.get("type") or relation.get("label") or relation.get("relation_label")
     )
     target = _normalize_evidence(relation.get("to") or relation.get("target"))
-    return (source, predicate, target) if source and predicate and target else None
+    polarity = _normalize_graph_qualifier(relation.get("polarity"), "affirmative", _GRAPH_POLARITIES)
+    modality = _normalize_graph_qualifier(relation.get("modality"), "asserted", _GRAPH_MODALITIES)
+    return (
+        (source, predicate, target, polarity, modality)
+        if source and predicate and target and polarity and modality
+        else None
+    )
 
 
-def _relation_matches(expected: tuple[str, str, str], relation: dict) -> bool:
-    source, predicate, target = expected
+def _relation_matches(
+    expected: tuple[str, str, str, str, str],
+    relation: dict,
+    *,
+    qualified: bool = True,
+) -> bool:
+    source, predicate, target, polarity, modality = expected
     relation_source = _normalize_evidence(relation.get("from") or relation.get("source"))
     relation_target = _normalize_evidence(relation.get("to") or relation.get("target"))
     relation_predicates = {
         normalized for value in (relation.get("type"), relation.get("label"), relation.get("relation_label"))
         if (normalized := _normalize_evidence(value))
     }
-    return source == relation_source and target == relation_target and predicate in relation_predicates
+    if source != relation_source or target != relation_target or predicate not in relation_predicates:
+        return False
+    if not qualified:
+        return True
+    relation_polarity = _normalize_graph_qualifier(
+        relation.get("polarity"), "affirmative", _GRAPH_POLARITIES,
+    )
+    relation_modality = _normalize_graph_qualifier(
+        relation.get("modality"), "asserted", _GRAPH_MODALITIES,
+    )
+    return polarity == relation_polarity and modality == relation_modality
 
 
 def evaluate_gold_graph_quality(expected_relations: list[dict], documents: list[dict], k: int = 5) -> dict:
@@ -276,46 +314,84 @@ def evaluate_gold_graph_quality(expected_relations: list[dict], documents: list[
             "precision_at_k": 0.0,
             "matched_relations": [],
             "missing_relations": [],
+            "endpoint_only": {
+                "applicable": False,
+                "reason": "no_gold_graph_relations",
+                "recall_at_k": 0.0,
+                "mrr_at_k": 0.0,
+                "precision_at_k": 0.0,
+            },
         }
     ranked_relations = [_document_graph_relations(document) for document in documents[:k]]
-    retrieved_by_key: dict[tuple[str, str, str], dict] = {}
-    for relations in ranked_relations:
-        for relation in relations:
-            normalized_key = _normalized_graph_relation_key(relation)
-            if normalized_key is not None:
-                retrieved_by_key.setdefault(normalized_key, relation)
-    retrieved_relations = list(retrieved_by_key.values())
-    matched = [
-        relation for relation in expected
-        if any(_relation_matches(relation, retrieved) for retrieved in retrieved_relations)
-    ]
-    matched_retrieved = [
-        relation for relation in retrieved_relations
-        if any(_relation_matches(expected_relation, relation) for expected_relation in expected)
-    ]
-    first_rank = next(
-        (
-            rank
-            for rank, relations in enumerate(ranked_relations, start=1)
-            if any(_relation_matches(expected_relation, relation) for expected_relation in expected for relation in relations)
-        ),
-        None,
-    )
+
+    def calculate(*, qualified: bool) -> dict:
+        retrieved_by_key: dict[tuple[str, ...], dict] = {}
+        for relations in ranked_relations:
+            for relation in relations:
+                normalized_key = _normalized_graph_relation_key(relation)
+                if normalized_key is None:
+                    continue
+                dedupe_key = normalized_key if qualified else normalized_key[:3]
+                retrieved_by_key.setdefault(dedupe_key, relation)
+        retrieved_relations = list(retrieved_by_key.values())
+        matched = [
+            relation for relation in expected
+            if any(_relation_matches(relation, retrieved, qualified=qualified) for retrieved in retrieved_relations)
+        ]
+        matched_retrieved = [
+            relation for relation in retrieved_relations
+            if any(_relation_matches(expected_relation, relation, qualified=qualified) for expected_relation in expected)
+        ]
+        first_rank = next(
+            (
+                rank
+                for rank, relations in enumerate(ranked_relations, start=1)
+                if any(
+                    _relation_matches(expected_relation, relation, qualified=qualified)
+                    for expected_relation in expected
+                    for relation in relations
+                )
+            ),
+            None,
+        )
+        return {
+            "recall_at_k": _clamp_score(len(matched) / len(expected)),
+            "mrr_at_k": _clamp_score(1.0 / first_rank) if first_rank else 0.0,
+            "precision_at_k": (
+                _clamp_score(len(matched_retrieved) / len(retrieved_relations))
+                if retrieved_relations else 0.0
+            ),
+            "matched": matched,
+        }
+
+    exact = calculate(qualified=True)
+    endpoint_only = calculate(qualified=False)
     serialize = lambda relation: {
-        "source": relation[0], "relation": relation[1], "target": relation[2]
+        "source": relation[0],
+        "relation": relation[1],
+        "target": relation[2],
+        "polarity": relation[3],
+        "modality": relation[4],
     }
     return {
         "applicable": True,
         "reason": "",
         "k": k,
-        "recall_at_k": _clamp_score(len(matched) / len(expected)),
-        "mrr_at_k": _clamp_score(1.0 / first_rank) if first_rank else 0.0,
-        "precision_at_k": (
-            _clamp_score(len(matched_retrieved) / len(retrieved_relations))
-            if retrieved_relations else 0.0
-        ),
-        "matched_relations": [serialize(relation) for relation in matched],
-        "missing_relations": [serialize(relation) for relation in expected if relation not in matched],
+        "matching_mode": "exact_qualified",
+        "recall_at_k": exact["recall_at_k"],
+        "mrr_at_k": exact["mrr_at_k"],
+        "precision_at_k": exact["precision_at_k"],
+        "matched_relations": [serialize(relation) for relation in exact["matched"]],
+        "missing_relations": [
+            serialize(relation) for relation in expected if relation not in exact["matched"]
+        ],
+        "endpoint_only": {
+            "applicable": True,
+            "reason": "diagnostic_only_qualifiers_ignored",
+            "recall_at_k": endpoint_only["recall_at_k"],
+            "mrr_at_k": endpoint_only["mrr_at_k"],
+            "precision_at_k": endpoint_only["precision_at_k"],
+        },
     }
 
 

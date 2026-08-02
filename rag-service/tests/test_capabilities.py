@@ -62,11 +62,11 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(report["features"]["query_rewrite"]["mode"], "deterministic_multi_turn")
         self.assertEqual(report["features"]["reranker"]["status"], "disabled")
         self.assertEqual(report["features"]["reranker"]["version"], "local-evidence-v2")
-        self.assertEqual(report["features"]["graph_extraction"]["status"], "disabled")
-        self.assertEqual(report["features"]["graph_extraction"]["mode"], "rules_fallback")
+        self.assertEqual(report["features"]["graph_extraction"]["status"], "degraded")
+        self.assertEqual(report["features"]["graph_extraction"]["mode"], "rules_only")
         self.assertTrue(report["features"]["markdown_index"]["reindex_required"])
 
-    def test_intentionally_disabled_optional_features_do_not_degrade_healthy_core(self):
+    def test_rules_only_graph_is_visible_as_degraded_even_when_other_optional_features_are_disabled(self):
         markdown_index = {
             "status": "ok",
             "current_chunk_strategy_version": db.CHUNK_STRATEGY_VERSION,
@@ -86,17 +86,55 @@ class CapabilityTests(unittest.TestCase):
         ):
             report = build_capability_report(markdown_index)
 
-        self.assertEqual(report["status"], "ok")
+        self.assertEqual(report["status"], "degraded")
         self.assertTrue(all(
             report["features"][feature]["status"] == "disabled"
             for feature in (
                 "query_rewrite",
                 "reranker",
-                "graph_extraction",
                 "retrieval_cache",
                 "answer_judge",
             )
         ))
+        self.assertEqual(report["features"]["graph_extraction"]["status"], "degraded")
+
+    def test_graph_llm_capability_requires_observed_runtime_quality(self):
+        with (
+            patch.object(settings, "neo4j_enabled", True),
+            patch.object(settings, "graph_extraction_enabled", True),
+            patch.object(settings, "query_rewrite_enabled", False),
+            patch.object(settings, "reranker_enabled", False),
+            patch.object(settings, "redis_cache_enabled", False),
+            patch.object(settings, "redis_cache_disabled_reason", ""),
+            patch.object(settings, "rag_judge_enabled", False),
+        ):
+            unverified = build_capability_report(graph_store_status="ok")
+            healthy = build_capability_report(
+                graph_store_status="ok",
+                graph_runtime_quality={
+                    "status": "ok",
+                    "attempted": 10,
+                    "succeeded": 9,
+                    "fallbacks": 1,
+                },
+            )
+            degraded = build_capability_report(
+                graph_store_status="ok",
+                graph_runtime_quality={
+                    "status": "degraded",
+                    "attempted": 10,
+                    "succeeded": 0,
+                    "fallbacks": 10,
+                },
+            )
+
+        self.assertEqual(unverified["features"]["graph_extraction"]["status"], "degraded")
+        self.assertEqual(healthy["features"]["graph_extraction"]["status"], "enabled")
+        self.assertEqual(degraded["features"]["graph_extraction"]["status"], "degraded")
+        self.assertEqual(
+            degraded["features"]["graph_extraction"]["runtime_quality"]["fallbacks"],
+            10,
+        )
 
     def test_markdown_index_status_counts_only_materialized_stale_chunks(self):
         cursor = _Cursor({

@@ -50,6 +50,8 @@ interface RagEvalEvaluationSpec {
     source: string;
     relation: string;
     target: string;
+    polarity?: 'affirmative' | 'negative';
+    modality?: 'asserted' | 'conditional' | 'planned_or_obligatory' | 'historical';
   }>;
   human_scores?: Partial<Record<'correctness' | 'completeness' | 'faithfulness', number>>;
 }
@@ -390,8 +392,18 @@ const splitLines = (value: string) => value
 
 const parseGraphRelations = (value: string) => splitLines(value).map((line) => {
   const parts = line.split('|').map((part) => part.trim());
-  if (parts.length !== 3 || parts.some((part) => !part)) return null;
-  return { source: parts[0], relation: parts[1], target: parts[2] };
+  if (![3, 5].includes(parts.length) || parts.some((part) => !part)) return null;
+  const polarity = parts[3] || 'affirmative';
+  const modality = parts[4] || 'asserted';
+  if (!['affirmative', 'negative'].includes(polarity)) return null;
+  if (!['asserted', 'conditional', 'planned_or_obligatory', 'historical'].includes(modality)) return null;
+  return {
+    source: parts[0],
+    relation: parts[1],
+    target: parts[2],
+    polarity: polarity as 'affirmative' | 'negative',
+    modality: modality as 'asserted' | 'conditional' | 'planned_or_obligatory' | 'historical',
+  };
 });
 
 const parseOptionalScore = (value: string) => {

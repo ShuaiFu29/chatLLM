@@ -243,6 +243,7 @@ const ChatMessage = memo(({
                       return source.file_id ? (
                         <button
                           key={`${source.chunk_id || source.filename}-${idx}`}
+                          data-testid={`source-${msg.id}-${idx}`}
                           onClick={() => setSelectedSourceDocument({
                             id: source.file_id!,
                             filename: source.filename,

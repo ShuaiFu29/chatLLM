@@ -62,6 +62,7 @@ class RetrievalAuthorityDatabaseTests(unittest.TestCase):
         self.assertEqual(params, ([CHUNK_A, CHUNK_B], "user-1", "user-1", "space-1", "space-1"))
         self.assertIn("target_chunk.user_id::text = %s", statement)
         self.assertIn("target_file.user_id::text = %s", statement)
+        self.assertIn("target_file.status = 'completed'", statement)
         self.assertIn(
             "target_chunk.conversion_generation_id = target_file.active_conversion_generation_id",
             statement,
@@ -88,6 +89,7 @@ class RetrievalAuthorityDatabaseTests(unittest.TestCase):
 
         statement, params = cursor.execute.call_args.args
         self.assertIn("target_file.active_conversion_generation_id", statement)
+        self.assertIn("target_file.status = 'completed'", statement)
         self.assertIn("active_generation.status in ('completed', 'completed_with_warnings')", statement)
         self.assertIn("target_file.document_kind = 'markdown'", statement)
         self.assertIn("target_chunk.source_unit_ids", statement)
@@ -116,6 +118,7 @@ class RetrievalAuthorityDatabaseTests(unittest.TestCase):
             )
 
         statement, params = cursor.execute.call_args.args
+        self.assertIn("target_file.status = 'completed'", statement)
         self.assertIn("active_generation.status in ('completed', 'completed_with_warnings')", statement)
         self.assertIn("target_file.document_kind = 'markdown'", statement)
         self.assertIn("target_chunk.source_locator", statement)
@@ -241,6 +244,7 @@ class ExternalCandidateShapeTests(unittest.TestCase):
             hits = vector_store.search_vectors("user-1", [0.1, 0.2], 5, 0.1, "space-1")
 
         self.assertEqual(client.kwargs["output_fields"], ["chunk_id"])
+        self.assertEqual(client.kwargs["consistency_level"], "Strong")
         self.assertEqual(hits, [{"chunk_id": CHUNK_A, "similarity": 0.8}])
 
     def test_elasticsearch_search_returns_only_chunk_id_and_lexical_score(self):

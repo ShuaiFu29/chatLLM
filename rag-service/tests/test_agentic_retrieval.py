@@ -866,6 +866,24 @@ class AgenticRetrievalTests(unittest.TestCase):
         self.assertEqual(usage["type"], "relationship")
         self.assertIn("graph", usage["routes"])
 
+    def test_direct_single_hop_ontology_questions_route_to_graph(self):
+        queries = (
+            "订单服务使用 Redis 吗？",
+            "张伟负责付款审批吗？",
+            "供应商向客户提供服务吗？",
+            "甲方向乙方支付服务费了吗？",
+            "合同由张伟签署吗？",
+            "Which team is responsible for approvals?",
+            "Does Supplier provide support to Customer?",
+            "Who paid the service fee?",
+        )
+
+        for query in queries:
+            with self.subTest(query=query):
+                intent = _classify_question(query)
+                self.assertEqual(intent["type"], "relationship")
+                self.assertEqual(intent["routes"], ["vector", "bm25", "graph"])
+
     def test_agentic_retrieve_retries_when_initial_candidates_do_not_support_query(self):
         calls = []
 

@@ -198,6 +198,8 @@ const ragEvalGraphRelationExpectation = z.object({
   source: requiredText(200),
   relation: requiredText(120),
   target: requiredText(200),
+  polarity: z.enum(['affirmative', 'negative']).default('affirmative'),
+  modality: z.enum(['asserted', 'conditional', 'planned_or_obligatory', 'historical']).default('asserted'),
 }).strict();
 
 const ragEvalHumanScores = z.object({

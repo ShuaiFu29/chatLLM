@@ -1,5 +1,6 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useId } from 'react';
 import { X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 interface ModalProps {
   isOpen: boolean;
@@ -21,6 +22,9 @@ const maxWidthClass = {
 };
 
 export default function Modal({ isOpen, onClose, title, children, footer, maxWidth = 'md' }: ModalProps) {
+  const { t } = useTranslation();
+  const titleId = useId();
+
   useEffect(() => {
     const handleEscape = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
@@ -45,13 +49,18 @@ export default function Modal({ isOpen, onClose, title, children, footer, maxWid
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className={`bg-bg-sidebar border border-border rounded-2xl shadow-2xl w-full ${maxWidthClass[maxWidth]} max-h-[90vh] overflow-hidden transform transition-all duration-300 animate-in zoom-in-95 slide-in-from-bottom-2 flex flex-col`}
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex shrink-0 items-center justify-between px-6 py-4 border-b border-border/50">
-          <h3 className="text-lg font-semibold text-text-main">{title}</h3>
+          <h3 id={titleId} className="text-lg font-semibold text-text-main">{title}</h3>
           <button
+            type="button"
             onClick={onClose}
+            aria-label={t('common.close')}
             className="p-1.5 text-text-muted hover:text-text-main hover:bg-bg-surface rounded-full transition-colors"
           >
             <X className="w-4 h-4" />

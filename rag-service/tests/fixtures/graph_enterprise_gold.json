@@ -1,0 +1,43 @@
+[
+  {
+    "id": "compound-technical",
+    "text": "订单服务依赖Redis并连接到Kafka。",
+    "relations": [
+      {"type": "DEPENDS_ON", "from": "订单服务", "to": "Redis", "polarity": "affirmative", "modality": "asserted"},
+      {"type": "CONNECTS_TO", "from": "订单服务", "to": "Kafka", "polarity": "affirmative", "modality": "asserted"}
+    ]
+  },
+  {
+    "id": "role-responsibilities",
+    "text": "甲方负责项目验收，乙方负责系统交付。张伟负责客户资料审核。",
+    "relations": [
+      {"type": "RESPONSIBLE_FOR", "from": "甲方", "to": "项目验收", "polarity": "affirmative", "modality": "asserted"},
+      {"type": "RESPONSIBLE_FOR", "from": "乙方", "to": "系统交付", "polarity": "affirmative", "modality": "asserted"},
+      {"type": "RESPONSIBLE_FOR", "from": "张伟", "to": "客户资料审核", "polarity": "affirmative", "modality": "asserted"}
+    ]
+  },
+  {
+    "id": "negation-and-plan",
+    "text": "订单服务不依赖Redis。订单服务计划依赖PostgreSQL。",
+    "relations": [
+      {"type": "DEPENDS_ON", "from": "订单服务", "to": "Redis", "polarity": "negative", "modality": "asserted"},
+      {"type": "DEPENDS_ON", "from": "订单服务", "to": "PostgreSQL", "polarity": "affirmative", "modality": "planned_or_obligatory"}
+    ]
+  },
+  {
+    "id": "contract-payment",
+    "text": "甲方应当支付服务费。乙方向甲方提供运维报告。",
+    "relations": [
+      {"type": "PAYS", "from": "甲方", "to": "服务费", "polarity": "affirmative", "modality": "planned_or_obligatory"},
+      {"type": "PROVIDES", "from": "乙方", "to": "运维报告", "polarity": "affirmative", "modality": "asserted"}
+    ]
+  },
+  {
+    "id": "ownership-and-implementation",
+    "text": "风控模块属于信贷平台。审批服务实现额度校验。",
+    "relations": [
+      {"type": "BELONGS_TO", "from": "风控模块", "to": "信贷平台", "polarity": "affirmative", "modality": "asserted"},
+      {"type": "IMPLEMENTS", "from": "审批服务", "to": "额度校验", "polarity": "affirmative", "modality": "asserted"}
+    ]
+  }
+]

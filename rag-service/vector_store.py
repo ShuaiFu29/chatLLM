@@ -193,6 +193,11 @@ def search_vectors(
         limit=limit,
         filter=" and ".join(filters),
         output_fields=output_fields,
+        # A file is query-authoritative as soon as its PostgreSQL publication
+        # state becomes completed. Strong consistency prevents Milvus bounded
+        # staleness from creating a short window where that published file is
+        # incorrectly invisible to retrieval.
+        consistency_level="Strong",
         search_params={"metric_type": settings.milvus_metric_type, "params": {"ef": settings.milvus_search_ef}},
     )
 

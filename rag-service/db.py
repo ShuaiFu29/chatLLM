@@ -19,6 +19,7 @@ MIXED_CHUNK_STRATEGY_VERSION = "markdown-mixed:v1-v4-reindex-required"
 _ACTIVE_RETRIEVAL_CHUNK_PREDICATE = """
   target_chunk.user_id::text = %s
   and target_file.user_id::text = %s
+  and target_file.status = 'completed'
   and (%s::text is null or target_file.project_space_id::text = %s)
   and (
     (

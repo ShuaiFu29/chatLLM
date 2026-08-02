@@ -18,6 +18,8 @@ def _feature(status: str, mode: str, version: str, reason: str = "") -> dict:
 def build_capability_report(
     markdown_index: dict | None = None,
     cache_redis_status: str | None = None,
+    graph_store_status: str | None = None,
+    graph_runtime_quality: dict | None = None,
 ) -> dict:
     query_rewrite = (
         _feature("enabled", "semantic_llm_with_validated_fallback", QUERY_REWRITER_VERSION)
@@ -42,18 +44,40 @@ def build_capability_report(
 
     if not settings.neo4j_enabled:
         graph = _feature("disabled", "disabled", settings.graph_ontology_version, "NEO4J_ENABLED is false")
-    elif settings.graph_extraction_enabled:
+    elif graph_store_status not in (None, "ok"):
         graph = _feature(
-            "enabled",
-            "llm_primary_with_rule_fallback",
-            f"{settings.graph_extractor_version}:{settings.graph_ontology_version}",
+            "degraded",
+            "graph_store_unavailable",
+            settings.graph_ontology_version,
+            "Neo4j is configured but its readiness probe is not healthy",
         )
+    elif settings.graph_extraction_enabled:
+        runtime_status = (graph_runtime_quality or {}).get("status")
+        if runtime_status == "ok":
+            graph = _feature(
+                "enabled",
+                "llm_primary_with_rule_fallback",
+                f"{settings.graph_extractor_version}:{settings.graph_ontology_version}",
+            )
+        else:
+            graph = _feature(
+                "degraded",
+                "llm_configured_runtime_unverified" if runtime_status in (None, "unknown") else "llm_runtime_degraded",
+                f"{settings.graph_extractor_version}:{settings.graph_ontology_version}",
+                (
+                    "Graph LLM is configured but no successful extraction window was observed in the runtime quality window"
+                    if runtime_status in (None, "unknown")
+                    else "Recent Graph LLM success/fallback ratios are below the production quality threshold"
+                ),
+            )
+        if graph_runtime_quality:
+            graph["runtime_quality"] = graph_runtime_quality
     else:
         graph = _feature(
-            "disabled",
-            "rules_fallback",
+            "degraded",
+            "rules_only",
             settings.graph_ontology_version,
-            "GRAPH_EXTRACTION_ENABLED is false; conservative rule relations remain active",
+            "GRAPH_EXTRACTION_ENABLED is false; deterministic rules cover only explicit predicates and are not production-complete",
         )
 
     if settings.redis_cache_enabled and cache_redis_status == "ok":

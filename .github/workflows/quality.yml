@@ -52,3 +52,9 @@ jobs:
 
       - name: Build production bundles
         run: npm run build
+
+      - name: Install Chromium for browser smoke tests
+        run: npm --prefix client exec -- playwright install --with-deps chromium
+
+      - name: Run critical browser flows
+        run: npm --prefix client run test:e2e

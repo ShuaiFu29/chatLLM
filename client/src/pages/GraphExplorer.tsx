@@ -7,6 +7,27 @@ import DocumentViewerModal, { type DocumentReference } from '../components/Docum
 import Skeleton from '../components/Skeleton';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import type { SourceLocator } from '../lib/sourceLocator';
+
+interface GraphExtractionSummary {
+  status?: string;
+  attempted?: number;
+  succeeded?: number;
+  cache_hits?: number;
+  fallbacks?: number;
+  extractor_version?: string;
+  ontology_version?: string;
+}
+
+interface GraphEntityDetail {
+  entity_id?: string | null;
+  name?: string | null;
+  normalized_name?: string | null;
+  entity_type?: string | null;
+  entity_type_label?: string | null;
+  aliases?: string[];
+  scope_key?: string | null;
+}
 
 interface GraphMetadata {
   filename?: string | null;
@@ -15,15 +36,34 @@ interface GraphMetadata {
   chunk_index?: number | string | null;
   retrieval_mode?: string;
   graph_entities?: string[];
+  graph_entity_details?: GraphEntityDetail[];
   graph_relations?: GraphRelation[];
+  graph_extraction?: GraphExtractionSummary;
+  document_kind?: string | null;
+  conversion_generation_id?: string | null;
+  source_unit_ids?: string[];
+  source_locator?: SourceLocator;
 }
 
 interface GraphRelation {
   type?: string | null;
+  fact_id?: string | null;
+  label?: string | null;
   from?: string | null;
   to?: string | null;
+  from_entity_id?: string | null;
+  to_entity_id?: string | null;
+  from_entity_type?: string | null;
+  to_entity_type?: string | null;
   confidence?: number | string | null;
   evidence?: string | null;
+  polarity?: string | null;
+  modality?: string | null;
+  validation_status?: string | null;
+  extraction_lane?: string | null;
+  extraction_method?: string | null;
+  evidence_chunk_ids?: Array<string | null>;
+  evidence_refs?: Array<{ chunk_id?: string | null; span?: string | null }>;
 }
 
 interface GraphResult {
@@ -46,16 +86,23 @@ interface GraphSearchResponse {
 type GraphNodeType = 'knowledge' | 'tag';
 
 interface GraphSourceRef {
+  chunkId?: string | null;
   fileId?: string | null;
   filename: string;
   content: string;
   chunkIndex?: number | string | null;
+  documentKind?: string | null;
+  sourceLocator?: SourceLocator;
 }
 
 interface GraphNode {
   id: string;
+  entityId?: string;
   label: string;
   type: GraphNodeType;
+  ontologyType?: string;
+  typeLabel?: string;
+  aliases?: string[];
   x: number;
   y: number;
   count?: number;
@@ -68,12 +115,17 @@ interface GraphEdge {
   from: string;
   to: string;
   label: string;
-  type: 'related' | 'semantic';
+  type: 'semantic';
   count: number;
   sources: GraphSourceRef[];
   showLabel?: boolean;
   confidence?: number;
   evidence?: string;
+  factId?: string;
+  polarity?: string;
+  modality?: string;
+  extractionLane?: string;
+  extractionMethod?: string;
 }
 
 interface GraphViewData {
@@ -82,6 +134,11 @@ interface GraphViewData {
 }
 
 interface EntityStat {
+  label: string;
+  entityId?: string;
+  ontologyType?: string;
+  typeLabel?: string;
+  aliases: string[];
   count: number;
   sources: GraphSourceRef[];
   sourceKeys: Set<string>;
@@ -96,6 +153,12 @@ interface EdgeStat {
   relationType?: string;
   confidence?: number;
   evidence?: string;
+  factId?: string;
+  relationLabel?: string;
+  polarity?: string;
+  modality?: string;
+  extractionLane?: string;
+  extractionMethod?: string;
 }
 
 interface GraphLabels {
@@ -108,10 +171,11 @@ const GRAPH_WIDTH = 1080;
 const GRAPH_HEIGHT = 500;
 const GRAPH_CENTER = { x: GRAPH_WIDTH / 2, y: GRAPH_HEIGHT / 2 };
 const ENTITY_RING = { x: 370, y: 165 };
+const COMPACT_ENTITY_RING = { x: 190, y: 165 };
 const MIN_ENTITY_NODES = 10;
 const MAX_ENTITY_NODES = 30;
-const MAX_EXTRA_ENTITY_EDGES = 4;
 const MAX_ENTITIES_PER_CHUNK = 10;
+const MAX_VISIBLE_FACTS = 60;
 
 const nodeStyles: Record<GraphNodeType, { fill: string; soft: string; stroke: string; text: string }> = {
   knowledge: { fill: '#10b981', soft: '#ecfdf5', stroke: '#86efac', text: '#047857' },
@@ -217,10 +281,13 @@ const relaxGraphNodes = (nodes: GraphNode[]) => {
 const buildSourceRef = (result: GraphResult, fallback: string): GraphSourceRef => {
   const metadata = result.metadata;
   return {
+    chunkId: result.id || result.chunk_id || metadata?.chunk_id || null,
     fileId: metadata?.file_id || result.file_id || null,
     filename: getResultSourceName(result, fallback),
     content: result.content || '',
     chunkIndex: metadata?.chunk_index ?? null,
+    documentKind: metadata?.document_kind ?? null,
+    sourceLocator: metadata?.source_locator,
   };
 };
 
@@ -248,52 +315,14 @@ const normalizeRelationType = (value?: string | null) => String(value || 'RELATE
 
 const getRelationLabel = (relationType: string | undefined, labels: GraphLabels) => {
   const normalized = normalizeRelationType(relationType);
-  return labels.relationTypes[normalized] || labels.related;
-};
-
-const selectReadableEdges = (candidates: EdgeStat[], entityNames: string[]) => {
-  const parent = new Map(entityNames.map((entity) => [entity, entity]));
-  const find = (entity: string): string => {
-    const current = parent.get(entity) || entity;
-    if (current === entity) return current;
-    const root = find(current);
-    parent.set(entity, root);
-    return root;
-  };
-  const union = (left: string, right: string) => {
-    const leftRoot = find(left);
-    const rightRoot = find(right);
-    if (leftRoot === rightRoot) return false;
-    parent.set(rightRoot, leftRoot);
-    return true;
-  };
-
-  const sorted = [...candidates].sort((a, b) => b.count - a.count || a.left.localeCompare(b.left, 'zh-Hans-CN'));
-  const selected: EdgeStat[] = [];
-  const selectedKeys = new Set<string>();
-
-  for (const edge of sorted) {
-    if (!union(edge.left, edge.right)) continue;
-    selected.push(edge);
-    selectedKeys.add(`${edge.left}::${edge.right}`);
-    if (selected.length >= Math.max(0, entityNames.length - 1)) break;
-  }
-
-  for (const edge of sorted) {
-    if (selected.length >= entityNames.length - 1 + MAX_EXTRA_ENTITY_EDGES) break;
-    const edgeKey = `${edge.left}::${edge.right}`;
-    if (selectedKeys.has(edgeKey) || edge.count <= 1) continue;
-    selected.push(edge);
-    selectedKeys.add(edgeKey);
-  }
-
-  return selected;
+  return labels.relationTypes[normalized] || normalized.replace(/_/g, ' ').toLowerCase();
 };
 
 const buildGraphViewData = (
   results: GraphResult[],
   labels: GraphLabels,
-  resultLimit: number
+  resultLimit: number,
+  compact = false,
 ): GraphViewData => {
   const edges: GraphEdge[] = [];
 
@@ -303,63 +332,114 @@ const buildGraphViewData = (
   const edgeStats = new Map<string, EdgeStat>();
 
   visibleResults.forEach((result) => {
+    const metadata = result.metadata;
     const semanticRelations = (result.metadata?.graph_relations || []).filter((relation) => (
       relation?.from && relation?.to
     ));
-    const relationEntities = semanticRelations.flatMap((relation) => [String(relation.from), String(relation.to)]);
-    const entities = uniqueEntities([...(result.metadata?.graph_entities || []), ...relationEntities]);
-    if (entities.length === 0) return;
-
     const source = buildSourceRef(result, labels.unknownSource);
     const sourceKey = buildSourceKey(source);
-
-    for (const entity of entities) {
-      const stat = entityStats.get(entity) || { count: 0, sources: [], sourceKeys: new Set<string>() };
-      stat.count += 1;
-      if (!stat.sourceKeys.has(sourceKey)) {
-        stat.sourceKeys.add(sourceKey);
-        stat.sources.push(source);
-      }
-      entityStats.set(entity, stat);
+    const legacyScope = String(metadata?.file_id || result.file_id || source.filename || 'unknown');
+    const details = metadata?.graph_entity_details || [];
+    const detailsById = new Map(
+      details
+        .filter((detail) => String(detail.entity_id || '').trim())
+        .map((detail) => [String(detail.entity_id), detail]),
+    );
+    const detailsByName = new Map<string, GraphEntityDetail[]>();
+    for (const detail of details) {
+      const nameKey = String(detail.normalized_name || detail.name || '').trim().toLowerCase();
+      if (!nameKey) continue;
+      detailsByName.set(nameKey, [...(detailsByName.get(nameKey) || []), detail]);
     }
+    const encounteredEntities = new Map<string, {
+      label: string;
+      entityId?: string;
+      ontologyType?: string;
+      typeLabel?: string;
+      aliases: string[];
+    }>();
+    const resolveEntity = (
+      nameValue: string | null | undefined,
+      idValue?: string | null,
+      typeValue?: string | null,
+    ) => {
+      const label = String(nameValue || '').trim();
+      const explicitId = String(idValue || '').trim();
+      const nameKey = label.toLowerCase();
+      const nameMatches = detailsByName.get(nameKey) || [];
+      const detail = detailsById.get(explicitId) || (nameMatches.length === 1 ? nameMatches[0] : undefined);
+      const entityId = explicitId || String(detail?.entity_id || '').trim();
+      const key = entityId || `legacy:${legacyScope}:${nameKey}`;
+      return {
+        key,
+        label: String(detail?.name || label).trim(),
+        entityId: entityId || undefined,
+        ontologyType: String(detail?.entity_type || typeValue || '').trim() || undefined,
+        typeLabel: String(detail?.entity_type_label || '').trim() || undefined,
+        aliases: (detail?.aliases || []).map(String).filter(Boolean),
+      };
+    };
+    const rememberEntity = (entity: ReturnType<typeof resolveEntity>) => {
+      if (!entity.key || !entity.label) return;
+      encounteredEntities.set(entity.key, entity);
+    };
 
-    for (let leftIndex = 0; leftIndex < entities.length; leftIndex += 1) {
-      for (let rightIndex = leftIndex + 1; rightIndex < entities.length; rightIndex += 1) {
-        const pair = [entities[leftIndex], entities[rightIndex]].sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'));
-        const edgeKey = `${pair[0]}::${pair[1]}`;
-        const stat = edgeStats.get(edgeKey) || {
-          left: pair[0],
-          right: pair[1],
-          count: 0,
-          sources: [],
-          sourceKeys: new Set<string>(),
-        };
-
-        stat.count += 1;
-        if (!stat.sourceKeys.has(sourceKey)) {
-          stat.sourceKeys.add(sourceKey);
-          stat.sources.push(source);
-        }
-        edgeStats.set(edgeKey, stat);
+    for (const detail of details) {
+      rememberEntity(resolveEntity(detail.name, detail.entity_id, detail.entity_type));
+    }
+    for (const name of uniqueEntities(metadata?.graph_entities || [])) {
+      const nameMatches = detailsByName.get(name.toLowerCase()) || [];
+      if (nameMatches.length > 1) {
+        nameMatches.forEach((detail) => rememberEntity(
+          resolveEntity(detail.name, detail.entity_id, detail.entity_type),
+        ));
+      } else {
+        rememberEntity(resolveEntity(name));
       }
     }
 
     for (const relation of semanticRelations) {
+      const referencedChunkIds = new Set(
+        [
+          ...(relation.evidence_refs || []).map((reference) => reference.chunk_id),
+          ...(relation.evidence_chunk_ids || []),
+        ]
+          .map((chunkId) => String(chunkId || '').trim())
+          .filter(Boolean),
+      );
+      if (
+        referencedChunkIds.size > 0
+        && (!source.chunkId || !referencedChunkIds.has(String(source.chunkId)))
+      ) {
+        continue;
+      }
       const left = String(relation.from || '').trim();
       const right = String(relation.to || '').trim();
-      if (!left || !right || left === right) continue;
+      if (!left || !right) continue;
+      const leftEntity = resolveEntity(left, relation.from_entity_id, relation.from_entity_type);
+      const rightEntity = resolveEntity(right, relation.to_entity_id, relation.to_entity_type);
+      if (leftEntity.key === rightEntity.key) continue;
+      rememberEntity(leftEntity);
+      rememberEntity(rightEntity);
       const relationType = normalizeRelationType(relation.type);
-      const edgeKey = `${left}::${right}::${relationType}`;
+      const relationLabel = String(relation.label || '').trim();
+      const edgeKey = String(relation.fact_id || `${leftEntity.key}::${rightEntity.key}::${relationType}::${relationLabel}::${relation.polarity || ''}::${relation.modality || ''}`);
       const confidence = Number(relation.confidence || 0);
       const stat = edgeStats.get(edgeKey) || {
-        left,
-        right,
+        left: leftEntity.key,
+        right: rightEntity.key,
         count: 0,
         sources: [],
         sourceKeys: new Set<string>(),
         relationType,
+        relationLabel,
+        factId: String(relation.fact_id || ''),
         confidence: Number.isFinite(confidence) ? confidence : 0,
         evidence: String(relation.evidence || ''),
+        polarity: String(relation.polarity || 'affirmative'),
+        modality: String(relation.modality || 'asserted'),
+        extractionLane: String(relation.extraction_lane || 'legacy'),
+        extractionMethod: String(relation.extraction_method || 'legacy'),
       };
 
       stat.count += 2;
@@ -376,6 +456,26 @@ const buildGraphViewData = (
       }
       edgeStats.set(edgeKey, stat);
     }
+
+    for (const [entityKey, entity] of encounteredEntities) {
+      const stat = entityStats.get(entityKey) || {
+        label: entity.label,
+        entityId: entity.entityId,
+        ontologyType: entity.ontologyType,
+        typeLabel: entity.typeLabel,
+        aliases: [],
+        count: 0,
+        sources: [],
+        sourceKeys: new Set<string>(),
+      };
+      stat.count += 1;
+      stat.aliases = Array.from(new Set([...stat.aliases, ...entity.aliases]));
+      if (!stat.sourceKeys.has(sourceKey)) {
+        stat.sourceKeys.add(sourceKey);
+        stat.sources.push(source);
+      }
+      entityStats.set(entityKey, stat);
+    }
   });
 
   const topEntities = Array.from(entityStats.entries())
@@ -389,12 +489,19 @@ const buildGraphViewData = (
     const isCenter = entity === strongestEntity;
     const point = isCenter
       ? GRAPH_CENTER
-      : getRingPoint(getEvenAngle(index - 1, Math.max(topEntities.length - 1, 1)), ENTITY_RING);
+      : getRingPoint(
+        getEvenAngle(index - 1, Math.max(topEntities.length - 1, 1)),
+        compact ? COMPACT_ENTITY_RING : ENTITY_RING,
+      );
 
     return {
       id: nodeIds.get(entity)!,
-      label: entity,
-      type: stat.count >= 3 ? 'knowledge' : 'tag',
+      entityId: stat.entityId,
+      label: stat.label,
+      type: stat.ontologyType ? 'knowledge' : 'tag',
+      ontologyType: stat.ontologyType,
+      typeLabel: stat.typeLabel,
+      aliases: stat.aliases,
       x: point.x,
       y: point.y,
       count: stat.count,
@@ -403,30 +510,31 @@ const buildGraphViewData = (
     };
   });
 
-  const readableEdges = selectReadableEdges(
-    Array.from(edgeStats.values())
+  const readableEdges = Array.from(edgeStats.values())
     .filter((edge) => visibleEntityNames.has(edge.left) && visibleEntityNames.has(edge.right))
-    .sort((a, b) => b.count - a.count || a.left.localeCompare(b.left, 'zh-Hans-CN')),
-    topEntities.map(([entity]) => entity)
-  );
+    .sort((a, b) => b.count - a.count || a.left.localeCompare(b.left, 'zh-Hans-CN'))
+    .slice(0, MAX_VISIBLE_FACTS);
 
   readableEdges.forEach((edge) => {
       const leftNodeId = nodeIds.get(edge.left);
       const rightNodeId = nodeIds.get(edge.right);
       if (!leftNodeId || !rightNodeId) return;
       edges.push({
-        id: `edge-${leftNodeId}-${rightNodeId}`,
+        id: `edge-${edge.factId || `${leftNodeId}-${rightNodeId}-${normalizeRelationType(edge.relationType)}`}`,
         from: leftNodeId,
         to: rightNodeId,
-        label: edge.relationType
-          ? `${getRelationLabel(edge.relationType, labels)}${edge.confidence ? ` ${Math.round(edge.confidence * 100)}%` : ''}`
-          : `${labels.related}${edge.count > 1 ? ` ${edge.count}` : ''}`,
-        type: edge.relationType ? 'semantic' : 'related',
+        label: edge.relationLabel || getRelationLabel(edge.relationType, labels),
+        type: 'semantic',
         count: edge.count,
         sources: edge.sources,
         confidence: edge.confidence,
         evidence: edge.evidence,
-        showLabel: Boolean(edge.relationType),
+        factId: edge.factId,
+        polarity: edge.polarity,
+        modality: edge.modality,
+        extractionLane: edge.extractionLane,
+        extractionMethod: edge.extractionMethod,
+        showLabel: true,
       });
     });
 
@@ -446,10 +554,20 @@ export default function GraphExplorerPage() {
   const [hasSearched, setHasSearched] = useState(false);
   const [activeQuery, setActiveQuery] = useState(initialQuery);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<DocumentReference | null>(null);
   const [zoom, setZoom] = useState(1);
   const [isSearching, setIsSearching] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [isCompactGraph, setIsCompactGraph] = useState(() => window.matchMedia('(max-width: 767px)').matches);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(max-width: 767px)');
+    const updateCompactGraph = () => setIsCompactGraph(mediaQuery.matches);
+    updateCompactGraph();
+    mediaQuery.addEventListener('change', updateCompactGraph);
+    return () => mediaQuery.removeEventListener('change', updateCompactGraph);
+  }, []);
 
   useEffect(() => {
     void fetchProjectSpaces();
@@ -542,16 +660,33 @@ export default function GraphExplorerPage() {
         CONFLICTS_WITH: t('graphExplorer.relationTypes.conflictsWith'),
         SUPPORTS: t('graphExplorer.relationTypes.supports'),
         REPLACES: t('graphExplorer.relationTypes.replaces'),
+        CONNECTS_TO: t('graphExplorer.relationTypes.connectsTo'),
+        IMPACTS: t('graphExplorer.relationTypes.impacts'),
+        USES: t('graphExplorer.relationTypes.uses'),
+        PART_OF: t('graphExplorer.relationTypes.partOf'),
+        RESPONSIBLE_FOR: t('graphExplorer.relationTypes.responsibleFor'),
+        PROVIDES: t('graphExplorer.relationTypes.provides'),
+        PAYS: t('graphExplorer.relationTypes.pays'),
+        BELONGS_TO: t('graphExplorer.relationTypes.belongsTo'),
+        IMPLEMENTS: t('graphExplorer.relationTypes.implements'),
         RELATED: t('graphExplorer.relationRelated'),
       },
     },
-    limit
-  ), [limit, results, t]);
+    limit,
+    isCompactGraph,
+  ), [isCompactGraph, limit, results, t]);
 
   const selectedNode = useMemo(
     () => graphData.nodes.find((node) => node.id === selectedNodeId) || null,
     [graphData.nodes, selectedNodeId]
   );
+  const selectedEdge = useMemo(
+    () => graphData.edges.find((edge) => edge.id === selectedEdgeId) || null,
+    [graphData.edges, selectedEdgeId]
+  );
+  const extractionStatuses = useMemo(() => Array.from(new Set(
+    results.map((result) => result.metadata?.graph_extraction?.status).filter(Boolean) as string[]
+  )), [results]);
   const graphNodeById = useMemo(
     () => new Map(graphData.nodes.map((node) => [node.id, node])),
     [graphData.nodes]
@@ -570,13 +705,10 @@ export default function GraphExplorerPage() {
   const resetGraphView = useCallback(() => {
     setZoom(1);
     setSelectedNodeId(null);
+    setSelectedEdgeId(null);
   }, []);
 
-  const openNodeSource = useCallback((node: GraphNode) => {
-    setSelectedNodeId(node.id);
-
-    const source = node.sources.find((item) => item.fileId && item.content.trim())
-      || node.sources.find((item) => item.fileId);
+  const openSource = useCallback((source: GraphSourceRef | undefined, citationContent: string) => {
     if (!source?.fileId) return;
 
     const parsedChunkIndex = typeof source.chunkIndex === 'number'
@@ -586,10 +718,20 @@ export default function GraphExplorerPage() {
     setPreviewDocument({
       id: source.fileId,
       filename: source.filename,
-      citationContent: source.content || node.label,
+      citationContent: source.content || citationContent,
       chunkIndex: Number.isFinite(parsedChunkIndex) ? parsedChunkIndex : undefined,
+      document_kind: source.documentKind || undefined,
+      source_locator: source.sourceLocator,
     });
   }, []);
+
+  const openNodeSource = useCallback((node: GraphNode) => {
+    setSelectedNodeId(node.id);
+    setSelectedEdgeId(null);
+    const source = node.sources.find((item) => item.fileId && item.content.trim())
+      || node.sources.find((item) => item.fileId);
+    openSource(source, node.label);
+  }, [openSource]);
 
   return (
     <div className="flex h-full flex-col bg-bg-base text-text-main transition-colors duration-300">
@@ -701,6 +843,11 @@ export default function GraphExplorerPage() {
                 </div>
                 <p className="text-xs text-gray-400">{t('graphExplorer.graphHint')}</p>
               </div>
+              {extractionStatuses.length > 0 && (
+                <div data-testid="graph-extraction-status" className={`border-b px-4 py-2 text-xs ${extractionStatuses.some((status) => status.includes('fallback') || status === 'rules_only') ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-800'}`}>
+                  {t('graphExplorer.extractionStatusLabel')}: {extractionStatuses.map((status) => t(`graphExplorer.extractionStatus.${status}`)).join(' / ')}
+                </div>
+              )}
 
               <div className="relative overflow-hidden bg-white">
                 {isSearching && (
@@ -718,19 +865,22 @@ export default function GraphExplorerPage() {
                 ) : (
                   <div
                     className="relative min-h-[500px] overflow-hidden"
-                    onClick={() => setSelectedNodeId(null)}
+                    onClick={() => {
+                      setSelectedNodeId(null);
+                      setSelectedEdgeId(null);
+                    }}
                   >
                     <svg
                       width={GRAPH_WIDTH}
                       height={GRAPH_HEIGHT}
-                      viewBox={`0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`}
-                      className="mx-auto block h-auto min-w-[820px] max-w-full"
+                      viewBox={isCompactGraph ? `300 0 480 ${GRAPH_HEIGHT}` : `0 0 ${GRAPH_WIDTH} ${GRAPH_HEIGHT}`}
+                      className="mx-auto block h-[380px] w-full md:h-auto"
                       role="img"
                       aria-label={t('graphExplorer.graphCanvasTitle')}
                     >
                       <defs>
-                        <marker id="graph-arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
-                          <path d="M 0 0 L 10 5 L 0 10 z" fill="#a78bfa" />
+                        <marker id="graph-arrow-semantic" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+                          <path d="M 0 0 L 10 5 L 0 10 z" fill="#0ea5e9" />
                         </marker>
                         <filter id="node-shadow" x="-30%" y="-30%" width="160%" height="160%">
                           <feDropShadow dx="0" dy="8" stdDeviation="8" floodColor="#0f172a" floodOpacity="0.10" />
@@ -743,22 +893,35 @@ export default function GraphExplorerPage() {
                           const to = graphNodeById.get(edge.to);
                           if (!from || !to) return null;
                           const isConnected = !selectedNodeId || edge.from === selectedNodeId || edge.to === selectedNodeId;
+                          const isSelectedEdge = selectedEdgeId === edge.id;
                           const midX = (from.x + to.x) / 2;
                               const midY = (from.y + to.y) / 2;
                               const shouldShowLabel = edge.showLabel || edge.from === selectedNodeId || edge.to === selectedNodeId;
                               const labelWidth = Math.max(34, edge.label.length * 12 + 16);
-                              const edgeColor = edge.type === 'semantic' ? '#0ea5e9' : '#a78bfa';
+                              const edgeColor = edge.polarity === 'negative' ? '#ef4444' : edge.modality && edge.modality !== 'asserted' ? '#d97706' : '#0ea5e9';
 
                               return (
-                                <g key={edge.id} opacity={isConnected ? 0.72 : 0.1}>
+                                <g
+                                  key={edge.id}
+                                  data-testid={edge.factId ? `graph-fact-${edge.factId}` : undefined}
+                                  opacity={isSelectedEdge ? 1 : isConnected ? 0.72 : 0.1}
+                                  className="cursor-pointer"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setSelectedNodeId(null);
+                                    setSelectedEdgeId(edge.id);
+                                  }}
+                                >
+                              <title>{[edge.label, edge.evidence].filter(Boolean).join(' — ')}</title>
                               <line
                                 x1={from.x}
                                 y1={from.y}
                                     x2={to.x}
                                     y2={to.y}
                                     stroke={edgeColor}
-                                    strokeWidth={Math.min(2.4, 1 + edge.count * 0.24)}
-                                    markerEnd="url(#graph-arrow-purple)"
+                                    strokeWidth={isSelectedEdge ? 3 : Math.min(2.4, 1 + edge.count * 0.24)}
+                                    strokeDasharray={edge.polarity === 'negative' || (edge.modality && edge.modality !== 'asserted') ? '6 4' : undefined}
+                                    markerEnd="url(#graph-arrow-semantic)"
                                   />
                               {shouldShowLabel && (
                                 <>
@@ -769,9 +932,9 @@ export default function GraphExplorerPage() {
                                         height={18}
                                         rx={9}
                                         fill="#ffffff"
-                                        stroke={edge.type === 'semantic' ? '#bae6fd' : '#e5e7eb'}
+                                        stroke="#bae6fd"
                                       />
-                                      <text x={midX} y={midY + 4} textAnchor="middle" className={edge.type === 'semantic' ? 'fill-sky-700 text-[10px] font-medium' : 'fill-gray-500 text-[10px]'}>
+                                      <text x={midX} y={midY + 4} textAnchor="middle" className="fill-sky-700 text-[10px] font-medium">
                                         {edge.label}
                                       </text>
                                 </>
@@ -868,7 +1031,7 @@ export default function GraphExplorerPage() {
                     <div className="absolute bottom-3 left-4 flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg border border-gray-100 bg-white/90 px-3 py-2 text-[11px] text-gray-500 shadow-sm">
                       <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-emerald-500" />{t('graphExplorer.legendKnowledge')}</span>
                       <span className="inline-flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-sm bg-violet-500" />{t('graphExplorer.legendTags')}</span>
-                      <span className="inline-flex items-center gap-1.5"><span className="h-px w-5 bg-violet-300" />{t('graphExplorer.relationRelated')}</span>
+                      <span className="inline-flex items-center gap-1.5"><span className="h-px w-5 bg-sky-500" />{t('graphExplorer.legendEvidenceRelations')}</span>
                       <span>{t('graphExplorer.nodeClickHint')}</span>
                     </div>
 
@@ -920,10 +1083,33 @@ export default function GraphExplorerPage() {
                       </button>
                     </div>
 
-                    {selectedNode && (
+                    {selectedEdge ? (
+                      <div className="absolute right-4 top-4 max-w-sm rounded-xl border border-sky-100 bg-white/95 p-3 text-xs text-gray-600 shadow-lg">
+                        <p className="font-semibold text-gray-950">{selectedEdge.label}</p>
+                        <p className="mt-1 text-gray-500">{t('graphExplorer.factQualifiers', { polarity: selectedEdge.polarity || 'affirmative', modality: selectedEdge.modality || 'asserted' })}</p>
+                        {selectedEdge.evidence && <p className="mt-2 border-l-2 border-sky-200 pl-2 leading-5 text-gray-700">{selectedEdge.evidence}</p>}
+                        <p className="mt-2 text-gray-400">{selectedEdge.extractionLane || 'legacy'} · {selectedEdge.extractionMethod || 'legacy'}</p>
+                        {selectedEdge.sources.some((source) => source.fileId) && (
+                          <button
+                            className="mt-2 rounded-md bg-sky-50 px-2 py-1 font-medium text-sky-700 hover:bg-sky-100"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openSource(selectedEdge.sources.find((source) => source.fileId), selectedEdge.evidence || selectedEdge.label);
+                            }}
+                          >
+                            {t('graphExplorer.openEvidence')}
+                          </button>
+                        )}
+                      </div>
+                    ) : selectedNode && (
                       <div className="absolute right-4 top-4 max-w-xs rounded-xl border border-gray-100 bg-white/95 p-3 text-xs text-gray-600 shadow-lg">
                         <p className="font-semibold text-gray-950">{selectedNode.label}</p>
-                        <p className="mt-1">{t(`graphExplorer.nodeType.${selectedNode.type}`)}</p>
+                        <p className="mt-1">
+                          {selectedNode.typeLabel || selectedNode.ontologyType || t(`graphExplorer.nodeType.${selectedNode.type}`)}
+                        </p>
+                        {(selectedNode.aliases?.length || 0) > 0 && (
+                          <p className="mt-1 text-gray-500">{selectedNode.aliases?.join(' · ')}</p>
+                        )}
                         <p className="mt-1 text-gray-400">{t('graphExplorer.sourceCount', { count: selectedNode.sources.length })}</p>
                       </div>
                     )}

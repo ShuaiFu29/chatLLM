@@ -322,6 +322,7 @@ export default function KnowledgeBase() {
           <div className="flex gap-2 w-full md:w-auto">
             <input
               type="file"
+              data-testid="knowledge-file-input"
               multiple
               ref={fileInputRef}
               onChange={handleFileUpload}
@@ -400,7 +401,7 @@ export default function KnowledgeBase() {
               </thead>
               <tbody className="divide-y divide-border">
                 {files.map((file) => (
-                  <tr key={file.id} className="hover:bg-bg-surface/50 transition-colors">
+                  <tr key={file.id} data-testid={`knowledge-file-${file.id}`} className="hover:bg-bg-surface/50 transition-colors">
                     <td className="px-6 py-4 align-middle">
                       <div className="flex min-w-0 items-center gap-3">
                         <div className="shrink-0 p-2 bg-primary/10 rounded-lg text-primary">
@@ -408,6 +409,12 @@ export default function KnowledgeBase() {
                         </div>
                         <div className="min-w-0">
                           <span className="font-medium text-text-main block break-words leading-snug">{file.filename.trim()}</span>
+                          {(file.conversion_warning_count || 0) > 0 && (
+                            <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-500" title={t('knowledge.conversionWarningHint')}>
+                              <AlertCircle className="h-3 w-3" />
+                              {t('knowledge.conversionWarnings', { count: file.conversion_warning_count })}
+                            </span>
+                          )}
                           {file.error_message && <span className="text-xs text-red-400 block mt-1 break-words leading-relaxed">{file.error_message}</span>}
                         </div>
                       </div>
@@ -497,7 +504,7 @@ export default function KnowledgeBase() {
             </div>
           ) : (
             files.map((file) => (
-              <div key={file.id} className="bg-bg-sidebar p-4 rounded-xl border border-border shadow-sm flex flex-col gap-3">
+              <div key={file.id} data-testid={`knowledge-file-card-${file.id}`} className="bg-bg-sidebar p-4 rounded-xl border border-border shadow-sm flex flex-col gap-3">
                 <div className="flex justify-between items-start gap-2">
                   <div className="flex min-w-0 items-center gap-3 overflow-hidden">
                     <div className="p-2 bg-primary/10 rounded-lg text-primary shrink-0">
@@ -506,6 +513,11 @@ export default function KnowledgeBase() {
                     <div className="min-w-0">
                       <span className="font-medium text-text-main block truncate">{file.filename.trim()}</span>
                       <span className="text-xs text-text-muted">{new Date(file.created_at).toLocaleDateString()}</span>
+                      {(file.conversion_warning_count || 0) > 0 && (
+                        <span className="mt-1 block text-xs text-amber-500" title={t('knowledge.conversionWarningHint')}>
+                          {t('knowledge.conversionWarnings', { count: file.conversion_warning_count })}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-1">

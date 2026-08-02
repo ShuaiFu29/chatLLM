@@ -8,6 +8,7 @@ from graph_extraction import (
     build_chunk_windows,
     extraction_cache_key,
     graph_extraction_fingerprint,
+    infer_relation_qualifiers,
     validate_graph_extraction,
     window_content_hash,
 )
@@ -57,6 +58,41 @@ def grounded_payload():
 
 
 class GraphExtractionTests(unittest.TestCase):
+    def test_related_to_rejects_conjunctions_and_cooccurrence_labels(self):
+        evidence = ["Gateway and Worker are listed together."]
+
+        self.assertFalse(graph_extraction._relation_is_semantically_supported(
+            "RELATED_TO", "and", evidence,
+        ))
+        self.assertFalse(graph_extraction._relation_is_semantically_supported(
+            "RELATED_TO", "listed together", evidence,
+        ))
+        self.assertFalse(graph_extraction._relation_is_semantically_supported(
+            "DEPENDS_ON", "and", evidence,
+        ))
+
+    def test_english_qualifiers_require_whole_words(self):
+        for evidence in (
+            "Gateway differs from Worker.",
+            "Gateway has a notable impact on Worker.",
+            "The notification references Worker.",
+            "A whenable adapter is described.",
+        ):
+            with self.subTest(evidence=evidence):
+                self.assertEqual(
+                    infer_relation_qualifiers([evidence]),
+                    ("affirmative", "asserted"),
+                )
+
+        self.assertEqual(
+            infer_relation_qualifiers(["Gateway does not use Worker."]),
+            ("negative", "asserted"),
+        )
+        self.assertEqual(
+            infer_relation_qualifiers(["Gateway uses Worker if Queue is unavailable."]),
+            ("affirmative", "conditional"),
+        )
+
     def test_cache_fingerprint_changes_with_actual_graph_model(self):
         with patch.object(graph_extraction.settings, "graph_extraction_model", "model-a"):
             first = graph_extraction_fingerprint()
@@ -151,6 +187,68 @@ class GraphExtractionTests(unittest.TestCase):
                 ontology_version="core-v1",
             )
 
+    def test_validation_rejects_relation_inferred_from_cooccurrence_only(self):
+        rows = [{"id": "chunk-a", "chunk_index": 0, "content": "Gateway and Worker are listed together."}]
+        window = build_chunk_windows(rows, radius=1)[0]
+        payload = {
+            "entities": [
+                {"name": "Gateway", "type": "Service", "aliases": []},
+                {"name": "Worker", "type": "Service", "aliases": []},
+            ],
+            "mentions": [
+                {"entity": "Gateway", "surface": "Gateway", "chunk_id": "target", "evidence_span": rows[0]["content"]},
+                {"entity": "Worker", "surface": "Worker", "chunk_id": "target", "evidence_span": rows[0]["content"]},
+            ],
+            "relations": [{
+                "source": "Gateway",
+                "target": "Worker",
+                "type": "DEPENDS_ON",
+                "evidence": [{"chunk_id": "target", "span": rows[0]["content"]}],
+            }],
+            "coreferences": [],
+        }
+
+        with self.assertRaisesRegex(GraphExtractionError, "predicate is not supported"):
+            validate_graph_extraction(
+                payload,
+                window,
+                extractor_version="llm-json-v2",
+                ontology_version="core-v2",
+            )
+
+    def test_entity_keys_disambiguate_identical_surface_names(self):
+        content = "两项均名为星云：星云公司提供星云产品。"
+        rows = [{"id": "chunk-a", "chunk_index": 0, "content": content}]
+        payload = {
+            "entities": [
+                {"entity_key": "nebula-company", "name": "星云", "type": "Organization", "type_label": "公司", "aliases": []},
+                {"entity_key": "nebula-product", "name": "星云", "type": "Product", "type_label": "产品", "aliases": []},
+            ],
+            "mentions": [
+                {"entity": "nebula-company", "surface": "星云", "chunk_id": "target", "evidence_span": "星云公司提供星云产品。"},
+                {"entity": "nebula-product", "surface": "星云", "chunk_id": "target", "evidence_span": "星云公司提供星云产品。"},
+            ],
+            "relations": [{
+                "source": "nebula-company",
+                "target": "nebula-product",
+                "type": "PROVIDES",
+                "label": "提供",
+                "evidence": [{"chunk_id": "target", "span": "星云公司提供星云产品。"}],
+            }],
+            "coreferences": [],
+        }
+        facts = extract_graph_facts(
+            {"id": "file-a", "user_id": "user-a", "project_space_id": "space-a", "filename": "产品.md"},
+            rows,
+            extraction_provider=lambda _window: payload,
+        )
+
+        nebula_entities = [entity for entity in facts["entities"] if entity["name"] == "星云"]
+        self.assertEqual(len(nebula_entities), 2)
+        self.assertEqual(len({entity["entity_id"] for entity in nebula_entities}), 2)
+        relation = next(item for item in facts["relationships"] if item.get("type") == "PROVIDES")
+        self.assertNotEqual(relation["from_entity_id"], relation["to_entity_id"])
+
     def test_invalid_model_output_falls_back_and_valid_cache_is_reused_after_rebuild(self):
         file_data = {
             "id": "file-1",
@@ -193,8 +291,8 @@ class GraphExtractionTests(unittest.TestCase):
         record = first["extractions"][0]
         expected_key = extraction_cache_key(
             record["content_hash"],
-            "llm-json-v1",
-            "core-v1",
+            graph_extraction.settings.graph_extractor_version,
+            graph_extraction.settings.graph_ontology_version,
             record["provider_fingerprint"],
         )
         self.assertEqual(record["cache_key"], expected_key)
@@ -214,7 +312,7 @@ class GraphExtractionTests(unittest.TestCase):
         self.assertEqual(relation["evidence_chunk_ids"], ["new-id"])
         self.assertEqual(
             set(relation["extractors"]),
-            {"llm_json:llm-json-v1"},
+            {f"llm_json:{graph_extraction.settings.graph_extractor_version}"},
         )
 
     def test_cross_chunk_llm_evidence_owns_adjacent_chunk_while_uncovered_failure_falls_back(self):
@@ -293,9 +391,9 @@ class GraphExtractionTests(unittest.TestCase):
         )
 
         self.assertEqual(adjacent["extraction_lane"], "primary")
-        self.assertEqual(adjacent["extractors"], ["llm_json:llm-json-v1"])
+        self.assertEqual(adjacent["extractors"], [f"llm_json:{graph_extraction.settings.graph_extractor_version}"])
         self.assertEqual(uncovered["extraction_lane"], "fallback")
-        self.assertEqual(uncovered["extractors"], ["regex_rule:regex-v2"])
+        self.assertEqual(uncovered["extractors"], ["regex_rule:regex-v3"])
 
 
 if __name__ == "__main__":

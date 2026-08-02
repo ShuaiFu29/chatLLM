@@ -34,6 +34,52 @@ class AdvancedEvaluationTests(unittest.TestCase):
         self.assertEqual(quality["precision_at_k"], 0.5)
         self.assertEqual(quality["mrr_at_k"], 1)
 
+    def test_graph_quality_requires_matching_polarity_and_modality(self):
+        documents = [{
+            "metadata": {
+                "graph_relations": [{
+                    "from": "Gateway",
+                    "type": "USES",
+                    "to": "Worker",
+                    "polarity": "negative",
+                    "modality": "planned_or_obligatory",
+                }],
+            },
+        }]
+
+        quality = evaluate_gold_graph_quality(
+            [{
+                "source": "Gateway",
+                "relation": "USES",
+                "target": "Worker",
+                "polarity": "affirmative",
+                "modality": "asserted",
+            }],
+            documents,
+            k=1,
+        )
+
+        self.assertEqual(quality["matching_mode"], "exact_qualified")
+        self.assertEqual(quality["recall_at_k"], 0)
+        self.assertEqual(quality["precision_at_k"], 0)
+        self.assertEqual(quality["mrr_at_k"], 0)
+        self.assertEqual(quality["endpoint_only"]["recall_at_k"], 1)
+        self.assertEqual(quality["endpoint_only"]["precision_at_k"], 1)
+        self.assertEqual(quality["endpoint_only"]["mrr_at_k"], 1)
+
+    def test_graph_quality_defaults_missing_qualifiers_to_affirmative_asserted(self):
+        quality = evaluate_gold_graph_quality(
+            [{"source": "Worker", "relation": "USES", "target": "Queue"}],
+            [{"metadata": {"graph_relations": [{
+                "from": "Worker", "type": "USES", "to": "Queue",
+            }]}}],
+            k=1,
+        )
+
+        self.assertEqual(quality["recall_at_k"], 1)
+        self.assertEqual(quality["matched_relations"][0]["polarity"], "affirmative")
+        self.assertEqual(quality["matched_relations"][0]["modality"], "asserted")
+
     def test_chunk_evidence_graph_answerability_calibration_and_usage_are_separate_metrics(self):
         document = {
             "id": "parent:file-1:section-a",

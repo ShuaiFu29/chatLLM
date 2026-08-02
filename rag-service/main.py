@@ -173,6 +173,10 @@ class EvalGraphRelationExpectation(StrictRequestModel):
     source: str = Field(..., min_length=1, max_length=200)
     relation: str = Field(..., min_length=1, max_length=120)
     target: str = Field(..., min_length=1, max_length=200)
+    polarity: Literal["affirmative", "negative"] = "affirmative"
+    modality: Literal[
+        "asserted", "conditional", "planned_or_obligatory", "historical"
+    ] = "asserted"
 
     @field_validator("source", "relation", "target")
     @classmethod
@@ -276,6 +280,7 @@ def ready_health_check():
         return get_markdown_index_status()
 
     markdown_index = None
+    graph_runtime_quality = None
     check_functions = {
         "postgres": check_postgres,
         "milvus": check_vector_store_ready,
@@ -296,6 +301,8 @@ def ready_health_check():
             checks[name] = result if name == "cache_redis" else "ok"
             if name == "postgres":
                 markdown_index = result
+            elif name == "neo4j" and isinstance(result, dict):
+                graph_runtime_quality = result.get("runtime_quality")
         except Exception:
             checks[name] = "error"
     for future in pending:
@@ -305,7 +312,12 @@ def ready_health_check():
     # ignores cancellation while its own network timeout is still running.
     executor.shutdown(wait=False, cancel_futures=True)
 
-    capabilities = build_capability_report(markdown_index, checks["cache_redis"])
+    capabilities = build_capability_report(
+        markdown_index,
+        checks["cache_redis"],
+        checks["neo4j"],
+        graph_runtime_quality,
+    )
     ready = all(
         checks[name] == "ok"
         for name in ("postgres", "milvus", "elasticsearch", "neo4j")

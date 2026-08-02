@@ -93,6 +93,7 @@ const ChatInput = memo(({
 
           <div className="relative flex-1">
             <textarea
+              data-testid="chat-input"
               ref={textareaRef}
               value={input}
               onChange={(e) => setInput(e.target.value)}
@@ -139,6 +140,7 @@ const ChatInput = memo(({
           ) : (
             <button
               type="submit"
+              data-testid="chat-send"
               disabled={!input.trim()}
               className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-transparent bg-primary text-white transition-all hover:bg-primary-hover disabled:cursor-not-allowed disabled:bg-bg-surface disabled:text-text-muted md:h-11 md:w-11"
               aria-label={t('chat.sendMessage')}

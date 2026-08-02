@@ -131,6 +131,7 @@ async function main() {
   let ragProcess;
   let stdout = '';
   let stderr = '';
+  let smokeStage = 'initialize';
 
   async function cleanup() {
     try {
@@ -197,10 +198,14 @@ async function main() {
     ragProcess.stdout.on('data', (chunk) => { stdout += chunk.toString(); });
     ragProcess.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
 
+    smokeStage = 'readiness';
     await waitForJson(`${ragUrl}/health/ready`, 60000, { headers: ragHeaders });
 
+    smokeStage = 'database_connect';
     await db.connect();
+    smokeStage = 'object_storage_prepare';
     await ensureBucket(s3, bucket);
+    smokeStage = 'object_upload';
     await s3.send(new PutObjectCommand({
       Bucket: bucket,
       Key: objectKey,
@@ -209,6 +214,7 @@ async function main() {
     }));
     const smokeHash = crypto.createHash('sha256').update(smokeDocument).digest('hex');
 
+    smokeStage = 'database_seed';
     await db.query('begin');
     await db.query(
       `insert into users (id, github_id, username, avatar_url, display_name)
@@ -221,8 +227,16 @@ async function main() {
       [projectSpaceId, userId]
     );
     await db.query(
-      `insert into files (id, user_id, project_space_id, filename, file_hash, file_size, file_type, object_key, status, progress, max_attempts)
-       values ($1, $2, $3, 'rag-smoke.md', $4, $5, 'text/markdown', $6, 'processing', 0, 3)`,
+      `insert into files (
+         id, user_id, project_space_id, filename, file_hash, file_size,
+         file_type, document_kind, object_key,
+         status, progress, max_attempts
+       )
+       values (
+         $1, $2, $3, 'rag-smoke.md', $4, $5,
+         'text/markdown', 'markdown', $6,
+         'processing', 0, 3
+       )`,
       [fileId, userId, projectSpaceId, smokeHash, smokeDocument.length, objectKey]
     );
     await db.query(
@@ -235,6 +249,7 @@ async function main() {
     );
     await db.query('commit');
 
+    smokeStage = 'ingest';
     const ingestResponse = await fetch(`${ragUrl}/ingest-sync`, {
       method: 'POST',
       headers: ragHeaders,
@@ -242,9 +257,11 @@ async function main() {
     });
     const ingestBody = await ingestResponse.text();
     if (!ingestResponse.ok) {
+      smokeStage = `ingest_http_${ingestResponse.status}`;
       throw new Error(`ingest failed: ${ingestResponse.status} ${ingestBody}`);
     }
 
+    smokeStage = 'ingestion_completion';
     let ingestionRow = null;
     let chunkCount = 0;
     for (let attempt = 0; attempt < 90; attempt += 1) {
@@ -267,6 +284,28 @@ async function main() {
       throw new Error(`ingest did not complete, last status=${ingestionRow?.status}, progress=${ingestionRow?.progress}`);
     }
 
+    // /ingest-sync exercises the RAG service directly. In production the
+    // server reconciles the completed ingestion job and publishes the file;
+    // mirror that contract here so retrieval's completed-file authority gate
+    // is tested instead of bypassed.
+    smokeStage = 'file_publication';
+    const publicationResult = await db.query(
+      `update files
+       set status = 'completed',
+           progress = 100,
+           error_message = null,
+           next_attempt_at = null,
+           updated_at = now()
+       where id = $1
+         and status = 'processing'
+       returning id`,
+      [fileId]
+    );
+    if (publicationResult.rowCount !== 1) {
+      throw new Error('smoke file publication did not transition exactly one row');
+    }
+
+    smokeStage = 'retrieve';
     const retrieveResponse = await fetch(`${ragUrl}/retrieve`, {
       method: 'POST',
       headers: ragHeaders,
@@ -278,11 +317,47 @@ async function main() {
         threshold: 0,
       }),
     });
+    smokeStage = 'retrieve_response';
     const retrieveBody = await retrieveResponse.json();
     if (!retrieveResponse.ok) {
+      smokeStage = `retrieve_http_${retrieveResponse.status}`;
       throw new Error(`retrieve failed: ${retrieveResponse.status} ${JSON.stringify(retrieveBody)}`);
     }
+    smokeStage = 'retrieve_assertion';
     if (!Array.isArray(retrieveBody.results) || retrieveBody.results.length === 0) {
+      smokeStage = 'retrieve_empty';
+      let authority = { unavailable: true };
+      try {
+        const authorityResult = await db.query(
+          `select
+             target_file.status as file_status,
+             target_file.document_kind,
+             active_generation.status as generation_status,
+             count(target_chunk.id)::int as chunk_count,
+             count(target_chunk.id) filter (
+               where target_chunk.conversion_generation_id = target_file.active_conversion_generation_id
+             )::int as active_generation_chunk_count,
+             count(target_chunk.id) filter (
+               where target_chunk.conversion_generation_id is null
+             )::int as legacy_chunk_count
+           from files target_file
+           left join file_conversion_generations active_generation
+             on active_generation.id = target_file.active_conversion_generation_id
+            and active_generation.file_id = target_file.id
+           left join file_chunks target_chunk on target_chunk.file_id = target_file.id
+           where target_file.id = $1
+           group by target_file.status, target_file.document_kind, active_generation.status`,
+          [fileId]
+        );
+        authority = authorityResult.rows[0] || { missing_file: true };
+      } catch {
+        authority = { unavailable: true };
+      }
+      console.error('[rag-smoke] empty retrieval diagnostics:', {
+        channel_status: retrieveBody?.channel_status || {},
+        degraded: Boolean(retrieveBody?.degraded),
+        authority,
+      });
       throw new Error(`retrieve returned no results: ${JSON.stringify(retrieveBody)}`);
     }
 
@@ -298,7 +373,7 @@ async function main() {
       firstResultPreview: retrieveBody.results[0].content.slice(0, 120),
     }, null, 2));
   } catch (error) {
-    console.error('[rag-smoke] failed:', toSafeError(error));
+    console.error('[rag-smoke] failed:', { stage: smokeStage, ...toSafeError(error) });
     if (stdout.trim() || stderr.trim()) {
       console.error('[rag-smoke] RAG process emitted diagnostics:', {
         stdout_bytes: Buffer.byteLength(stdout),

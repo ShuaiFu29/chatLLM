@@ -75,6 +75,7 @@ class Settings:
     graph_extractor_version: str
     graph_ontology_version: str
     graph_context_window_chunks: int
+    graph_extraction_cache_ttl_days: int
     graph_search_max_hops: int
     graph_search_max_branch_factor: int
     graph_search_max_paths: int
@@ -214,9 +215,9 @@ def load_settings() -> Settings:
             "are required when GRAPH_EXTRACTION_ENABLED=true"
         )
 
-    graph_ontology_version = os.environ.get("GRAPH_ONTOLOGY_VERSION", "core-v1").strip() or "core-v1"
-    if graph_ontology_version != "core-v1":
-        raise ValueError("GRAPH_ONTOLOGY_VERSION must be core-v1")
+    graph_ontology_version = os.environ.get("GRAPH_ONTOLOGY_VERSION", "core-v2").strip() or "core-v2"
+    if graph_ontology_version not in {"core-v1", "core-v2"}:
+        raise ValueError("GRAPH_ONTOLOGY_VERSION must be core-v1 or core-v2")
 
     reranker_enabled = _bool("RERANKER_ENABLED", False)
     reranker_api_key = os.environ.get("RERANKER_API_KEY", "").strip()
@@ -276,9 +277,10 @@ def load_settings() -> Settings:
         graph_extraction_base_url=graph_extraction_base_url,
         graph_extraction_model=graph_extraction_model,
         graph_extraction_timeout_ms=_positive_int("GRAPH_EXTRACTION_TIMEOUT_MS", "15000"),
-        graph_extractor_version=os.environ.get("GRAPH_EXTRACTOR_VERSION", "llm-json-v1").strip() or "llm-json-v1",
+        graph_extractor_version=os.environ.get("GRAPH_EXTRACTOR_VERSION", "llm-json-v2").strip() or "llm-json-v2",
         graph_ontology_version=graph_ontology_version,
         graph_context_window_chunks=_bounded_positive_int("GRAPH_CONTEXT_WINDOW_CHUNKS", "1", 2),
+        graph_extraction_cache_ttl_days=_bounded_positive_int("GRAPH_EXTRACTION_CACHE_TTL_DAYS", "30", 365),
         graph_search_max_hops=_bounded_positive_int("GRAPH_SEARCH_MAX_HOPS", "3", 3),
         graph_search_max_branch_factor=_bounded_positive_int("GRAPH_SEARCH_MAX_BRANCH_FACTOR", "8", 32),
         graph_search_max_paths=_bounded_positive_int("GRAPH_SEARCH_MAX_PATHS", "24", 100),
