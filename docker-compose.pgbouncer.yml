@@ -1,0 +1,30 @@
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p0
+    container_name: chatllm-pgbouncer
+    profiles: ["pgbouncer"]
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_NAME: "${POSTGRES_DB:?POSTGRES_DB is required}"
+      DB_USER: "${POSTGRES_USER:?POSTGRES_USER is required}"
+      DB_PASSWORD: "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}"
+      AUTH_TYPE: scram-sha-256
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "${PGBOUNCER_MAX_CLIENT_CONN:-200}"
+      DEFAULT_POOL_SIZE: "${PGBOUNCER_DEFAULT_POOL_SIZE:-20}"
+      RESERVE_POOL_SIZE: "${PGBOUNCER_RESERVE_POOL_SIZE:-5}"
+      SERVER_RESET_QUERY: DISCARD ALL
+    ports:
+      - "${INFRA_BIND_HOST:-127.0.0.1}:${PGBOUNCER_PORT:-6432}:5432"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U $${DB_USER} -d $${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+

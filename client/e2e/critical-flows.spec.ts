@@ -28,6 +28,39 @@ test('chat sends a message and renders the SSE answer', async ({ page }) => {
   await expect(page.getByText('The streamed E2E answer is complete.')).toBeVisible();
 });
 
+test('published Agent can be inspected and selected for a chat', async ({ page }) => {
+  await enableAuthenticatedSession(page);
+  await page.goto('/agents');
+
+  await page.getByRole('button', { name: /E2E Research Agent/ }).click();
+  await expect(page.getByRole('heading', { name: 'E2E Research Agent' })).toBeVisible();
+  await expect(page.getByLabel(/名称|Name/i)).toHaveValue('E2E Research Agent');
+  await expect(page.getByRole('checkbox', { name: /Agentic RAG/ })).toBeChecked();
+
+  await page.goto('/');
+  await page.getByRole('button', { name: /设置|Settings/i }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByRole('combobox').first().selectOption({ label: '🧭 E2E Research Agent' });
+
+  await expect(dialog.getByText(/Agent 管理模型|Agent manages the model/i)).toBeVisible();
+  await expect(dialog.getByRole('combobox').nth(1)).toBeDisabled();
+  await expect(dialog.getByRole('slider')).toBeDisabled();
+  await expect(dialog.getByRole('textbox', { name: /乐于助人的 AI 助手|helpful AI assistant/i })).toBeDisabled();
+});
+
+test('Agent run history shows persisted steps and can cancel a waiting Run', async ({ page }) => {
+  await enableAuthenticatedSession(page);
+  await page.goto('/agents');
+
+  await page.getByRole('button', { name: /运行记录|Run History/i }).click();
+  await expect(page.getByText(/等待审批|Waiting for approval/i)).toBeVisible();
+  await page.getByRole('button', { name: /等待审批|Waiting for approval/i }).click();
+  await expect(page.getByText('agentic_rag')).toBeVisible();
+
+  await page.getByRole('button', { name: /取消 Run|Cancel Run/i }).click();
+  await expect(page.getByText('Run cancelled', { exact: true }).or(page.getByText('Run 已取消', { exact: true })).first()).toBeVisible();
+});
+
 test('knowledge upload reports completion and refreshes the file list', async ({ page }) => {
   await enableAuthenticatedSession(page);
   await page.goto('/knowledge');

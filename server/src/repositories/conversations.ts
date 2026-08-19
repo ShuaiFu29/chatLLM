@@ -18,6 +18,7 @@ export interface ConversationRow {
   is_favorite: boolean;
   tags: string[];
   note: string;
+  agent_id?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -44,6 +45,7 @@ const columns = `
   is_favorite,
   tags,
   note,
+  agent_id,
   created_at,
   updated_at
 `;
@@ -74,12 +76,17 @@ export const listConversations = async (userId: string, options: ConversationLis
   return rows;
 };
 
-export const createConversationForUser = async (userId: string, title = 'New Chat', projectSpaceId?: string | null) => {
+export const createConversationForUser = async (
+  userId: string,
+  title = 'New Chat',
+  projectSpaceId?: string | null,
+  agentId?: string | null,
+) => {
   const { rows } = await query<ConversationRow>(
-    `insert into conversations (user_id, project_space_id, title)
-     values ($1, $2, $3)
+    `insert into conversations (user_id, project_space_id, title, agent_id)
+     values ($1, $2, $3, $4)
      returning ${columns}`,
-    [userId, projectSpaceId || null, title]
+    [userId, projectSpaceId || null, title, agentId || null]
   );
   return rows[0];
 };
@@ -137,9 +144,10 @@ export const createConversationBranchForUser = async (input: {
          branched_from_message_id,
          branch_name,
          tags,
-         note
+         note,
+         agent_id
        )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        returning ${columns}`,
       [
         input.userId,
@@ -154,6 +162,7 @@ export const createConversationBranchForUser = async (input: {
         branchTitle,
         sourceConversation.tags || [],
         sourceConversation.note || '',
+        sourceConversation.agent_id || null,
       ]
     );
 
@@ -186,7 +195,7 @@ export const findConversationForUser = async (conversationId: string, userId: st
 export const updateConversationForUser = async (
   conversationId: string,
   userId: string,
-  updates: Partial<Pick<ConversationRow, 'title' | 'model' | 'temperature' | 'system_prompt' | 'enable_rag' | 'project_space_id' | 'is_pinned' | 'archived_at' | 'is_favorite' | 'tags' | 'note'>>
+  updates: Partial<Pick<ConversationRow, 'title' | 'model' | 'temperature' | 'system_prompt' | 'enable_rag' | 'project_space_id' | 'is_pinned' | 'archived_at' | 'is_favorite' | 'tags' | 'note' | 'agent_id'>>
 ) => {
   const fields: string[] = ['updated_at = now()'];
   const values: unknown[] = [];

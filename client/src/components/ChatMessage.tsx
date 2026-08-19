@@ -6,6 +6,8 @@ import DocumentViewerModal, { type DocumentReference } from './DocumentViewerMod
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 import { getAvatarUrl } from '../lib/avatar';
 import { getSourceLocatorLabel } from '../lib/sourceLocator';
+import AgentRunTimeline from '../features/agents/AgentRunTimeline';
+import { buildPersistedAgentEvents } from '../features/agents/agentRunEvents';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
@@ -46,6 +48,22 @@ const ChatMessage = memo(({
   const traceSteps = traceSummary?.trace_steps || [];
   const plannedQueries = traceSummary?.planned_queries || [];
   const ragRunId = msg.ragRunId || msg.rag_run_id;
+  const agentRunId = msg.agentRunId || msg.agent_run_id;
+  const agentEvents = msg.agentEvents?.length
+    ? msg.agentEvents
+    : agentRunId
+      ? buildPersistedAgentEvents({
+          runId: agentRunId,
+          status: msg.agent_run_status,
+          steps: msg.agent_steps,
+          approvals: msg.agent_approvals,
+          grounding: msg.agent_grounding,
+        })
+      : [];
+  const agentGrounding = msg.agent_grounding
+    || [...agentEvents].reverse().find((event) => event.type === 'run.completed')?.grounding;
+  const agentRunActive = ['queued', 'running', 'waiting_approval'].includes(msg.agent_run_status || '')
+    || (isSending && isLast);
   const cacheStatus = traceSummary?.cache?.status;
 
   const formatScore = (score?: number) => `${Math.round((score || 0) * 100)}%`;
@@ -104,6 +122,10 @@ const ChatMessage = memo(({
               )}
 
               {/* Content */}
+              {agentRunId && agentEvents.length > 0 && (
+                <AgentRunTimeline runId={agentRunId} events={agentEvents} active={agentRunActive} />
+              )}
+
               {(msg.content || !isSending) && (
                 <div className="text-sm md:text-base min-h-[24px]">
                   <Suspense fallback={
@@ -118,6 +140,17 @@ const ChatMessage = memo(({
                         : msg.content
                     } />
                   </Suspense>
+                </div>
+              )}
+
+              {agentGrounding && (
+                <div className="mt-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-xs text-text-muted">
+                  {t('agents.groundingStatus', {
+                    status: t(`agents.groundingStatuses.${agentGrounding.status}`, {
+                      defaultValue: agentGrounding.status,
+                    }),
+                    score: Math.round(Number(agentGrounding.score || 0) * 100),
+                  })}
                 </div>
               )}
 

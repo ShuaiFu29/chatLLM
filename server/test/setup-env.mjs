@@ -7,3 +7,6 @@ process.env.S3_SECRET_KEY ||= 'test-secret-key';
 process.env.JWT_SECRET ||= 'test-jwt-secret-with-more-than-32-characters';
 process.env.DEEPSEEK_API_KEY ||= 'test-chat-provider-key';
 process.env.RAG_SERVICE_TOKEN ||= 'test-rag-service-token-at-least-32-characters';
+process.env.AGENT_MCP_ALLOWED_HOSTS ||= '127.0.0.1';
+process.env.AGENT_HTTP_ALLOWED_HOSTS ||= '127.0.0.1';
+process.env.AGENT_TOOL_ENCRYPTION_KEY ||= 'ab'.repeat(32);

@@ -1,6 +1,6 @@
-# ChatLLM - AI 聊天与 Agentic RAG 知识工作台
+# ChatLLM - 用户可配置 Agent 与 Agentic RAG 知识工作台
 
-ChatLLM 是一个前后端分离的 AI 聊天与 Agentic RAG 知识工作台。用户可以通过 GitHub OAuth 登录，把会话、Markdown 文档、项目空间、检索引用、RAG 质量评测和使用追踪组织在同一个工作台里。
+ChatLLM 是一个前后端分离的用户可配置 Agent 与 Agentic RAG 知识工作台。用户可以创建、发布和使用自己的 Agent，为其选择模型、指令、记忆、输出格式、预算、审批策略和工具；现有 Agentic RAG 是可选工具之一，不是 Agent 平台的外壳。
 
 当前架构已经移除 Supabase，改为本地 Docker Compose 栈：
 
@@ -30,6 +30,9 @@ flowchart LR
   Rag -->|BM25 search| ES["Elasticsearch"]
   Rag -->|Entity graph| Neo4j["Neo4j"]
   Server -->|Streaming chat completion| LLM["DeepSeek / Kimi / Qwen compatible APIs"]
+  Server -->|Agent Run / Steps / approvals| AgentRuntime["Agent Tool-Calling Runtime"]
+  AgentRuntime -->|Optional knowledge tool| Rag
+  AgentRuntime -->|Allowlisted requests| RemoteTools["Custom HTTP / Remote MCP"]
 ```
 
 ## 目录结构
@@ -59,7 +62,7 @@ chatLLM/
 - TypeScript
 - PostgreSQL via `pg`
 - Redis 7（BullMQ 投递与原子限流；共享实例使用 `noeviction`）
-- BullMQ（Markdown 摄取、RAG 测评、资源清理三类唤醒队列）
+- BullMQ（文档摄取、RAG 测评、资源清理三类唤醒队列）
 - MinIO/S3 via AWS SDK v3
 - JWT + HttpOnly cookies
 - GitHub OAuth
@@ -83,6 +86,8 @@ chatLLM/
 
 RAG 缓存保存的是检索证据，不缓存最终生成答案。只有证据验证通过、完全相同的独立检索问题才允许跳过后端检索；Key 同时绑定用户、项目空间、知识和索引版本、检索路由、TopK、阈值、Embedding/Chunk 配置以及 Reranker 版本。会话证据仍按 `conversation_id` 隔离，只作为新检索的候选证据；词项相似 Query 不再直接复用。相同 Key 并发 miss 使用短时单飞合并，等待超时或 Cache Redis 故障时自动回源，不影响回答。
 
+Agent 平台的配置、运行与安全边界见 [docs/agent-platform.md](docs/agent-platform.md)。
+
 Elasticsearch 使用 `chatllm_chunks_v2` 索引和 `markdown-fields-v2` schema，同时检索文件名、Markdown 标题路径与正文；各文本字段同时保留 standard 与 CJK 分词，文件名和标题获得更高的首轮召回权重。向量输入同样包含文件名、标题路径和正文，避免真实资料只在目录结构或文件名中出现关键概念时无法召回。
 
 ## 本地启动
@@ -95,6 +100,15 @@ npm run dev
 ```
 
 这个命令会自动检查配置和本地端口占用，启动 Docker 基础设施，并同时启动 NestJS/Fastify 后端、Python RAG 服务和 React 前端。
+
+默认 `npm run dev:infra` 仍启动完整基础设施，行为与原来一致。只调试登录、会话、上传或对象存储而暂时不运行混合检索时，可以节省本机资源：
+
+```bash
+npm run dev:infra:minimal  # Redis、Cache Redis、PostgreSQL、MinIO
+npm run dev:infra:full     # 再包含 Elasticsearch、Neo4j、Milvus、Attu
+```
+
+`minimal` 不是完整 RAG 运行模式；RAG readiness 在缺少向量、BM25 或图数据库时会按设计失败。`npm run dev` 和 CI 仍使用完整模式。
 
 如果 `npm run dev` 提示 `Port check failed`，说明后端、前端或 RAG 端口已经被其他项目或旧进程占用。先关闭占用 `3000` / `5173` / `8000` 的进程，再重新启动。也可以单独执行：
 
@@ -164,6 +178,10 @@ S3_BUCKET=documents
 S3_REGION=us-east-1
 RAG_SERVICE_URL=http://localhost:8000
 RAG_SERVICE_TOKEN=
+AGENT_TOOL_ENCRYPTION_KEY=
+# AGENT_HTTP_ALLOWED_HOSTS=api.example.com
+# AGENT_MCP_ALLOWED_HOSTS=mcp.example.com
+AGENT_HTTP_MAX_RESPONSE_BYTES=262144
 RAG_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5173
 RAG_CLEANUP_TIMEOUT_MS=10000
 FILE_QUEUE_INGEST_TIMEOUT_MS=300000
@@ -194,6 +212,16 @@ EMBEDDING_DIMENSION=1024
 
 `EMBEDDING_PROVIDER=local` 只建议用于本地 smoke / 开发验证。生产或真实语义检索仍应使用千问百炼等供应商的兼容 embedding 接口。
 
+### PostgreSQL 与 PgBouncer
+
+Node 后端和 Python RAG 服务自身都有有界连接池。单机可直接连接 PostgreSQL；多副本生产环境建议在数据库前使用 PgBouncer 的 `transaction` 模式，避免每个进程的本地池叠加耗尽 PostgreSQL 连接。仓库提供可选覆盖文件，默认开发启动不会启用它：
+
+```bash
+npm run dev:infra:pgbouncer
+```
+
+启用后，把 `server/.env` 和 `rag-service/.env` 的 `DATABASE_URL` 端口改为 `6432`。建议从 `DB_POOL_MAX=5`、`RAG_DB_POOL_MAX=5` 起步，再依据副本数、队列并发和 `chatllm_database_pool_*` 指标调整；PgBouncer 的服务池上限由根 `.env` 中的 `PGBOUNCER_*` 控制。应用查询只使用事务级锁和事务内客户端，兼容 transaction pooling；需要会话级 PostgreSQL 状态的临时运维脚本应直接连接 `5432`。PgBouncer 端口同样应只绑定内网或回环地址，不能暴露到公网。
+
 ### 多格式文档索引重建
 
 Markdown、TXT、文本型 PDF、DOCX、PPTX、XLSX 与 CSV 都通过本地转换管线生成统一 Markdown 和来源映射，再进入现有索引链路。升级已有环境后，应先重建尚未生成 active Conversion Generation 的文档；命令默认只预览这些缺失项：
@@ -209,11 +237,11 @@ npm --prefix server run reindex:documents -- --force --confirm-all --limit 100
 
 可选语义 Query Rewrite 默认关闭。确定性模式已支持连续省略追问、条件/比较/序号追问并最多回溯三个用户问题；只有同时配置 `QUERY_REWRITE_ENABLED=true`、API key、base URL 与 model 才会调用兼容模型。模型必须返回严格 JSON，新增或丢失精确 ID、裸数字、版本、文件名、引号短语或否定约束时会安全退回确定性改写。RRF 后的本地 `local-evidence-v2` 会综合正文、标题路径、精确标记、短语邻近度、答案承载和同源重复抑制；它不冒充 Cross-encoder，完整配置 `/rerank` Provider 后才执行语义精排。评测用例可进一步标注 Chunk ID、逐字证据、可回答性、Graph 三元组和人工三维评分；未标注或未配置能力一律显示 `N/A`。系统聚合 P50/P95 延迟与回答/Judge Token，用于容量分析；未配置供应商价格时不计算或伪造货币成本。
 
-RAG 回答默认 fail-closed：检索已触发但没有任何可用证据时，服务返回确定性的“证据不足”拒答并跳过答案模型；没有来源的事实性回答不会获得 Grounding 成功分。Elasticsearch 故障不再伪装成“0 条结果”，BM25 会明确标记降级并回退 PostgreSQL；若所有规划查询都不可用，链路返回检索错误并停止生成。大文件会先流式写入临时 staging，完整校验字节数、SHA-256、UTF-8 与 Markdown 分块成功后才替换旧索引，损坏对象不会清空当前可服务知识。
+RAG 回答默认 fail-closed：检索已触发但没有任何可用证据时，服务返回确定性的“证据不足”拒答并跳过答案模型；没有来源的事实性回答不会获得 Grounding 成功分。Elasticsearch 故障不再伪装成“0 条结果”，BM25 会明确标记降级并回退 PostgreSQL；若所有规划查询都不可用，链路返回检索错误并停止生成。大文件会先流式写入临时 staging，完整校验字节数、SHA-256、格式转换与分块成功后才替换旧索引，损坏对象不会清空当前可服务知识。
 
 评测运行会冻结 `execution_snapshot`（数据集、检索参数、生成模型、超时、知识与各索引版本），并绑定创建时最近一次 completed/partial 运行作为 paired baseline。报告提供逐 Case 配对差值、确定性 bootstrap 95% 置信区间和 tags/category/difficulty 切片；每个 Case 独立超时并可取消，下游单 Case 卡住不会拖垮整批。`RAG_EVAL_MAX_CASES_PER_DATASET` 与 `RAG_EVAL_MAX_CASES_PER_RUN` 默认均为 500、最大 5000，后者不能高于前者。
 
-Graph LLM 抽取默认关闭。启用时必须显式配置 `GRAPH_EXTRACTION_ENABLED=true` 及兼容 API 的 key、base URL 和 model，推荐成套使用 `GRAPH_EXTRACTION_*`，避免隐式复用 Judge 配置造成供应商错配。当前只支持 `GRAPH_ONTOLOGY_VERSION=core-v1`。系统保留来源中的开放实体类型标签和关系谓词，但存储与遍历仍映射到受控安全大类；未配置或单个 Chunk 抽取失败时使用降权的规则 fallback，因此这不是自动生成无限本体的知识图谱。
+Graph LLM 抽取默认关闭；此时 readiness 明确报告 `degraded/rules_only`，只适合开发与应急降级，不是企业生产配置。生产启用时必须显式配置 `GRAPH_EXTRACTION_ENABLED=true` 及兼容 API 的 key、base URL 和 model，推荐成套使用 `GRAPH_EXTRACTION_*`，避免隐式复用 Judge 配置造成供应商错配。新索引使用 `GRAPH_ONTOLOGY_VERSION=core-v2` 和 `GRAPH_EXTRACTOR_VERSION=llm-json-v2`；`core-v1` 仅用于迁移兼容。系统保留开放实体类型标签和关系谓词，同时映射到受控大类。每个实体使用文档作用域的稳定 `entity_id`，每条证据事实使用独立 `fact_id`，并保留 polarity、modality、抽取通道与逐条 evidence refs；模型输出必须通过谓词语义门禁，单个窗口失败时才使用降权规则 fallback。缓存 key 绑定 Provider fingerprint，带文档引用和 TTL，删除来源会撤销引用并清理无主缓存。升级后必须全量重摄取旧文档，旧图谱不会自动获得新身份与证据语义。
 
 `npm run check:config` 会对所有显式启用的高级能力执行成套配置校验：Query Rewrite、Reranker、Graph 抽取、LLM Judge 缺少任一 provider 字段都会失败；`REDIS_CACHE_ENABLED=true` 时必须提供与队列 `REDIS_URL` 分离的 `CACHE_REDIS_URL`。没有真实凭证时应保持这些开关关闭，不能用占位值“硬启用”。启用前后应在同一数据集上各运行一次评测，使用自动绑定的 paired baseline 判断收益，并结合 95% CI 与切片结果检查回归。
 
@@ -226,6 +254,14 @@ Graph LLM 抽取默认关闭。启用时必须显式配置 `GRAPH_EXTRACTION_ENA
 - RAG 健康检查：`http://localhost:8000/health`
 - MinIO Console：`http://localhost:9001`
 - Attu / Milvus 管理界面：`http://localhost:3001`
+
+### 生产反向代理、TLS 与安全头
+
+生产环境只应公开反向代理的 `443`：代理负责托管前端静态文件并把同源 `/api` 转发到 NestJS；RAG 的 `8000` 端口以及 PostgreSQL、Redis、MinIO、Elasticsearch、Neo4j、Milvus、PgBouncer 都应留在私网。TLS 在代理层终止并强制 HTTP 跳转 HTTPS，确认全站 HTTPS 稳定后再由代理发送 `Strict-Transport-Security`。不要在可被明文访问的开发服务上盲目启用 HSTS。
+
+代理必须覆盖或追加正确的 `X-Forwarded-For`、`X-Forwarded-Proto` 和 `Host`，后端的 `TRUST_PROXY_HOPS` 只填写实际可信代理跳数；直连或本地开发保持 `0`，不能为了“让协议识别生效”设成任意大值。`NODE_ENV=production` 时认证 Cookie 会启用 `Secure`，因此 OAuth 回调地址、`FRONTEND_URL`、`BACKEND_URL` 和 CORS Origin 必须全部使用最终 HTTPS 域名。
+
+API 已发送 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 与 `Permissions-Policy`。反向代理仍负责前端 HTML 的严格 `Content-Security-Policy`、HSTS，以及隐藏代理版本信息；CSP 应按实际模型供应商、图片和连接域名建立白名单。SSE 路径必须关闭代理缓冲并使用足够长的读取超时；上传请求限制应与应用的 `MAX_DOCUMENT_BYTES` / 分片策略一致，不能由代理静默放宽成无限请求体。
 
 Docker 首次创建空 PostgreSQL 数据库时会使用 `server/migrations/0001_init.sql` 初始化基础表结构。NestJS 后端启动时会自动执行 `server/migrations` 目录里尚未应用的 SQL 迁移，因此已有本地数据库也会补齐后续表结构。
 
@@ -245,7 +281,7 @@ $env:OPS_METRICS_TOKEN = '<METRICS_TOKEN 的值>'
 npm run check:ops
 ```
 
-`check:ops` 会校验 readiness 响应结构和各依赖状态，而不只是判断 HTTP 200；报告会直接显示 Redis、Milvus、Elasticsearch、Neo4j、可选模型模式和陈旧 Markdown 数。需要验证真实 Markdown 的对象存储、PostgreSQL、Milvus、Elasticsearch、Neo4j 写入、检索与清理时，再运行 `npm run rag:smoke`。
+`check:ops` 会校验 readiness 响应结构和各依赖状态，而不只是判断 HTTP 200；报告会直接显示 Redis、Milvus、Elasticsearch、Neo4j、可选模型模式和陈旧索引数。需要验证真实文档的对象存储、PostgreSQL、Milvus、Elasticsearch、Neo4j 写入、检索与清理时，再运行 `npm run rag:smoke`。
 
 容量配置可单独检查；企业配置可用严格模式把警告作为失败处理：
 
@@ -284,11 +320,18 @@ npm run dev
 - JWT access token + refresh token rotation
 - Project Spaces：按项目组织会话、文件和 RAG 检索上下文
 - ChatGPT 风格流式对话
+- Agent 中心：创建、版本化编辑、复制、发布、停用和删除用户 Agent
+- 会话可在普通聊天与已发布 Agent 之间切换；普通聊天和原 RAG 行为保持兼容
+- Agent 支持模型、指令、记忆模式、JSON/Markdown 输出、迭代/时间/Token 预算和工具权限配置
+- Agent 多轮 Tool Calling，Run/Step/Token 持久化，聊天内 SSE 工具时间线可在刷新后恢复
+- 内置知识、工作区、会话和实用工具；Agentic RAG 仅作为可选内置工具
+- 自定义 HTTP 与远程 MCP 工具，凭据采用 AES-256-GCM 加密，远端访问受部署白名单约束
+- 写操作和高风险工具支持持久审批，Run 在用户批准或拒绝后继续
 - 大历史会话按 cursor 分页加载，避免一次性拉取全部消息
 - 会话创建、重命名、删除
 - 会话可移动到不同 Project Space
 - 消息搜索
-- Markdown 文件分片上传、直传 MinIO、断点续传和完整性校验
+- Markdown、TXT、文本型 PDF、DOCX、PPTX、XLSX、CSV 的分片上传、直传 MinIO、断点续传、转换与完整性校验
 - 文件处理失败后可重试
 - Usage 页面可查看文档处理队列、失败原因和重试状态
 - MinIO 文档存储
@@ -304,7 +347,7 @@ npm run dev
 
 ## 产品边界
 
-ChatLLM 的定位是面向用户的 AI 对话入口和知识工作台：核心能力是对话体验、项目空间、Markdown 知识库、Agentic RAG 检索、引用溯源、知识图谱、质量评测、使用追踪和个人画像。它不承担通用工作流编排平台的职责，复杂工具流、节点编排和跨应用自动化更适合放在独立的 `agent-flow` 项目中。
+ChatLLM 的 Agent 是“围绕对话运行的多轮工具调用 Agent”：用户可配置能力、模型和权限，运行时由模型在预算内自主选择工具。它不是任意 DAG/BPMN 编排器，也不提供无人值守定时任务、长达数小时的后台工作流或任意本地代码执行。Agentic RAG、知识图谱和文档能力都是可选工具，普通聊天仍可独立使用。
 
 ## 数据说明
 

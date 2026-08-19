@@ -86,6 +86,24 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("postgres://chatllm:chatllm@localhost:5432/chatllm", result.stdout)
 
+    def test_config_rejects_ambiguous_boolean_values(self):
+        result = import_config({
+            "DATABASE_URL": "postgres://chatllm:chatllm@localhost:5432/chatllm",
+            "S3_ENDPOINT": "http://localhost:9000",
+            "S3_ACCESS_KEY": "minioadmin",
+            "S3_SECRET_KEY": "minioadmin",
+            "MILVUS_URI": "http://localhost:19530",
+            "MILVUS_COLLECTION": "document_chunks",
+            "EMBEDDING_API_KEY": "embedding-key",
+            "EMBEDDING_BASE_URL": "https://example.invalid/v1",
+            "EMBEDDING_MODEL": "text-embedding-v4",
+            "EMBEDDING_DIMENSION": "1024",
+            "ELASTICSEARCH_ENABLED": "off",
+        })
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertRegex(result.stderr, r"ELASTICSEARCH_ENABLED must be either true or false")
+
     def test_config_rejects_short_rag_service_tokens(self):
         result = import_config({
             "DATABASE_URL": "postgres://chatllm:chatllm@localhost:5432/chatllm",

@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
+import { abortAgentRunsForProjectSpaceInProcess } from '../modules/agents/agent-run-control';
 
 export type CleanupResourceType =
   | 'file'
@@ -407,6 +408,77 @@ export const enqueueFileCleanup = async (
   });
 };
 
+const PROJECT_SPACE_AGENT_CANCEL_REASON = 'Project space cleanup cancelled the Agent run';
+
+const cancelProjectSpaceAgentRunsWithClient = async (
+  client: PoolClient,
+  projectSpaceId: string,
+  userId: string,
+) => {
+  const { rows: activeRuns } = await client.query<{
+    id: string;
+    conversation_id: string;
+    assistant_message_id?: string | null;
+  }>(
+    `update agent_runs
+     set status = 'cancelled', completed_at = now(),
+         error_code = 'agent_run_cancelled',
+         error_message = $2
+     where user_id = $1
+       and conversation_id in (
+         select id from conversations where project_space_id = $3::uuid
+       )
+       and status in ('queued', 'running', 'waiting_approval')
+     returning id, conversation_id, assistant_message_id`,
+    [userId, PROJECT_SPACE_AGENT_CANCEL_REASON, projectSpaceId],
+  );
+  abortAgentRunsForProjectSpaceInProcess(projectSpaceId, userId, PROJECT_SPACE_AGENT_CANCEL_REASON);
+  if (activeRuns.length === 0) return;
+
+  const runIds = activeRuns.map((run) => run.id);
+  await client.query(
+    `update agent_approvals
+     set status = 'expired', decided_at = now(), reason = $2
+     where run_id = any($1::uuid[]) and status = 'pending'`,
+    [runIds, PROJECT_SPACE_AGENT_CANCEL_REASON],
+  );
+  for (const run of activeRuns) {
+    if (run.assistant_message_id) {
+      await client.query(
+        `update messages
+         set content = $2
+         where id = $1 and conversation_id = $3 and role = 'assistant'
+           and content = ''`,
+        [run.assistant_message_id, `${PROJECT_SPACE_AGENT_CANCEL_REASON}.`, run.conversation_id],
+      );
+      continue;
+    }
+    const { rows: messageRows } = await client.query<{ id: string }>(
+      `insert into messages (conversation_id, role, content, sources)
+       values ($1, 'assistant', $2, '[]'::jsonb)
+       returning id`,
+      [run.conversation_id, `${PROJECT_SPACE_AGENT_CANCEL_REASON}.`],
+    );
+    if (messageRows[0]) {
+      await client.query(
+        `update agent_runs set assistant_message_id = $2
+         where id = $1 and assistant_message_id is null`,
+        [run.id, messageRows[0].id],
+      );
+    }
+  }
+  await client.query(
+    `update agent_steps
+     set status = 'cancelled',
+         output = case
+           when output is null then jsonb_build_object('reason', $2)
+           else output || jsonb_build_object('reason', $2)
+         end
+     where run_id = any($1::uuid[]) and status in ('pending', 'running')`,
+    [runIds, PROJECT_SPACE_AGENT_CANCEL_REASON],
+  );
+};
+
 export const enqueueProjectSpaceCleanup = async (
   projectSpaceId: string,
   userId: string,
@@ -441,6 +513,7 @@ export const enqueueProjectSpaceCleanup = async (
        where id = $1 and user_id = $2 and is_default = false`,
       [projectSpaceId, userId]
     );
+    await cancelProjectSpaceAgentRunsWithClient(client, projectSpaceId, userId);
     const parent = await insertCleanupJobWithClient(client, {
       resourceType: 'project_space',
       resourceId: projectSpaceId,
@@ -865,6 +938,43 @@ export const finalizeProjectSpaceCleanup = async (
       throw new CleanupLeaseLostError();
     }
     await requireCompletedChildren(client, job.id);
+
+    if (job.owner_user_id) {
+      await cancelProjectSpaceAgentRunsWithClient(client, job.resource_id, job.owner_user_id);
+    }
+
+    const { rows: projectTools } = await client.query<{ id: string }>(
+      `select id from agent_tools where project_space_id = $1::uuid for update`,
+      [claim.resource_id],
+    );
+    if (projectTools.length > 0) {
+      const toolKeys = projectTools.map((tool) => `custom:${tool.id}`);
+      await client.query(
+        `update agent_versions version
+         set tool_bindings = coalesce(
+           (
+             select jsonb_agg(binding order by ordinality)
+             from jsonb_array_elements(version.tool_bindings) with ordinality as item(binding, ordinality)
+             where binding ->> 'key' <> all($1::text[])
+           ),
+           '[]'::jsonb
+         )
+         where exists (
+           select 1
+           from jsonb_array_elements(version.tool_bindings) binding
+           where binding ->> 'key' = any($1::text[])
+         )`,
+        [toolKeys],
+      );
+    }
+    await client.query(
+      `delete from agents where project_space_id = $1::uuid`,
+      [claim.resource_id],
+    );
+    await client.query(
+      `delete from agent_tools where project_space_id = $1::uuid`,
+      [claim.resource_id],
+    );
     await client.query(
       `delete from conversations
        where project_space_id = $1::uuid`,

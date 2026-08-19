@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { type Conversation } from '../stores/useChatStore';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 import SelectField from './SelectField';
+import type { Agent } from '../features/agents/types';
 
 interface ChatHeaderProps {
   conversation?: Conversation;
@@ -14,6 +15,7 @@ interface ChatHeaderProps {
   compareTargetId?: string;
   onCompareTargetChange?: (id: string) => void;
   onCompare?: () => void;
+  agent?: Agent;
 }
 
 export default function ChatHeader({
@@ -26,9 +28,10 @@ export default function ChatHeader({
   compareTargetId = '',
   onCompareTargetChange,
   onCompare,
+  agent,
 }: ChatHeaderProps) {
   const { t } = useTranslation();
-  const { projectSpaces } = useProjectSpaceStore();
+  const projectSpaces = useProjectSpaceStore((state) => state.projectSpaces);
   const projectSpace = projectSpaces.find((space) => space.id === conversation?.project_space_id);
 
   return (
@@ -38,11 +41,13 @@ export default function ChatHeader({
           {conversation?.title || t('sidebar.newChat')}
         </h2>
         <span className={`text-[10px] md:text-xs px-2 py-0.5 rounded-full border whitespace-nowrap ${
-          conversation?.model === 'deepseek-reasoner'
+          agent
+            ? 'bg-amber-500/10 text-amber-300 border-amber-500/20'
+            : conversation?.model === 'deepseek-reasoner'
             ? 'bg-purple-500/10 text-purple-500 border-purple-500/20'
             : 'bg-primary/10 text-primary border-primary/20'
         }`}>
-          {conversation?.model === 'deepseek-reasoner' ? 'DeepSeek-R1' : 'DeepSeek-V3'}
+          {agent ? `${agent.avatar || '🤖'} ${agent.name}` : (conversation?.model || t('chat.defaultModel'))}
         </span>
         {projectSpace && (
           <span className="hidden sm:inline text-[10px] md:text-xs px-2 py-0.5 rounded-full border border-border text-text-muted whitespace-nowrap">

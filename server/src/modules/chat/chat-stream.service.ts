@@ -26,6 +26,7 @@ import {
 } from '../../repositories/conversations';
 import {
   insertMessage,
+  findLatestUserMessageForConversation,
   listRecentMessages,
 } from '../../repositories/messages';
 import { insertRagRunForMessage } from '../../repositories/ragRuns';
@@ -39,11 +40,13 @@ import {
   streamGroundedAnswer,
 } from '../../services/answerGeneration';
 import { User } from '../../types';
+import { AgentRunService } from '../agents/agent-run.service';
 
 export interface ChatStreamRequest {
   user: User;
   conversationId: string;
   content: unknown;
+  continueGeneration?: boolean;
   connection: IncomingMessage;
   requestId?: string;
 }
@@ -68,6 +71,7 @@ const generateConversationTitle = async (conversationId: string, firstMessage: s
       ],
       max_tokens: 20,
       temperature: 0.7,
+      signal: AbortSignal.timeout(30_000),
     });
 
     const title = response.choices[0]?.message?.content?.trim();
@@ -76,6 +80,12 @@ const generateConversationTitle = async (conversationId: string, firstMessage: s
     console.warn('[Chat] Failed to generate title:', toSafeError(error));
   }
 };
+
+// A connected browser request can stay open indefinitely. Keep a separate
+// model-call deadline so an upstream provider that stops sending bytes cannot
+// hold a chat stream slot forever. Agent runs have their own configured
+// deadline and do not use this regular-chat timeout.
+const CHAT_MODEL_TIMEOUT_MS = 120_000;
 
 const isChatRequestClosed = (request: ChatStreamRequest) => (
   request.connection.aborted
@@ -96,7 +106,10 @@ const publicError = (statusCode: number, error: string, cause?: unknown) => (
   )
 );
 
-const createChatStream = async (request: ChatStreamRequest) => {
+const createChatStream = async (
+  request: ChatStreamRequest,
+  agentRunService: AgentRunService,
+) => {
   const { user, conversationId } = request;
   const normalizedContent = normalizeChatMessageContent(request.content);
 
@@ -125,7 +138,10 @@ const createChatStream = async (request: ChatStreamRequest) => {
 
   let userMessage;
   try {
-    userMessage = await insertMessage(conversationId, 'user', content);
+    const previousUserMessage = request.continueGeneration
+      ? await findLatestUserMessageForConversation(conversationId)
+      : null;
+    userMessage = previousUserMessage || await insertMessage(conversationId, 'user', content);
   } catch (error) {
     chatSlot.release(true);
     throw publicError(500, 'Failed to generate response', error);
@@ -134,7 +150,7 @@ const createChatStream = async (request: ChatStreamRequest) => {
   refreshPersonaInsightsForUser(user.id).catch((error) => {
     console.warn('[Chat] Failed to refresh persona insights:', toSafeError(error, request.requestId));
   });
-  if (conversation.title === 'New Chat') {
+  if (!request.continueGeneration && conversation.title === 'New Chat') {
     void generateConversationTitle(conversationId, content);
   }
   touchConversation(conversationId, user.id).catch((error) => {
@@ -146,11 +162,22 @@ const createChatStream = async (request: ChatStreamRequest) => {
   const streamAbortController = new AbortController();
   const responseStream = new PassThrough();
   const sse = new SseWriter(responseStream);
+  let chatSlotReleased = false;
+  const releaseChatSlot = (failed = false) => {
+    if (chatSlotReleased) return;
+    chatSlotReleased = true;
+    chatSlot.release(failed);
+  };
   let upstreamAborted = false;
   const abortUpstreamStream = () => {
     if (upstreamAborted || streamAbortController.signal.aborted) return;
     upstreamAborted = true;
     streamAbortController.abort();
+    // Agent execution is intentionally detached from the request stream. A
+    // disconnected browser should release the HTTP stream slot immediately;
+    // the Agent run keeps its own DB/in-process lifecycle and can be cancelled
+    // explicitly through /agent-runs/:id/cancel.
+    if (conversation.agent_id) releaseChatSlot(false);
   };
 
   request.connection.once('aborted', abortUpstreamStream);
@@ -164,6 +191,33 @@ const createChatStream = async (request: ChatStreamRequest) => {
 
     if (!sse.open()) return;
     streamStarted = true;
+
+    await sse.send({ userMessageId: userMessage.id });
+
+    if (conversation.agent_id) {
+      const agentExecutionController = new AbortController();
+      await agentRunService.execute({
+        userId: user.id,
+        agentId: conversation.agent_id,
+        conversationId,
+        projectSpaceId: conversation.project_space_id,
+        userMessageId: userMessage.id,
+        question: content,
+        signal: agentExecutionController.signal,
+        requestId: request.requestId,
+        emit: async (event) => {
+          if (sse.isClosed) return false;
+          try {
+            return await sse.send(event);
+          } catch {
+            return false;
+          }
+        },
+      });
+      await sse.done();
+      sse.close();
+      return;
+    }
 
     const temperature = conversation.temperature !== undefined && conversation.temperature !== null
       ? conversation.temperature
@@ -237,8 +291,6 @@ const createChatStream = async (request: ChatStreamRequest) => {
 
     let fullContent = '';
 
-    await sse.send({ userMessageId: userMessage.id });
-
     if (shouldRunRag && insufficientEvidence && !contextText.trim()) {
       fullContent = buildInsufficientEvidenceAnswer(content);
       // This local policy response deliberately bypasses the answer model when no evidence exists.
@@ -260,7 +312,10 @@ const createChatStream = async (request: ChatStreamRequest) => {
         resolvedModel,
         messages,
         temperature,
-        signal: streamAbortController.signal,
+        signal: AbortSignal.any([
+          streamAbortController.signal,
+          AbortSignal.timeout(CHAT_MODEL_TIMEOUT_MS),
+        ]),
       });
 
       for await (const chunk of stream) {
@@ -346,20 +401,38 @@ const createChatStream = async (request: ChatStreamRequest) => {
     await sse.done();
     sse.close();
   } catch (error) {
+    if (error instanceof Error && error.message === 'AGENT_RUN_CANCELLED_BEFORE_START') {
+      // The explicit conversation stop won the creation race. There is no Run
+      // to fail and no generic chat error to show; the user's stop is the
+      // terminal outcome for this message.
+      sse.close();
+      return;
+    }
     failed = !streamAbortController.signal.aborted;
     if (streamAbortController.signal.aborted) {
       sse.close();
       return;
     }
     console.error('[Chat] Failed to generate response:', toSafeError(error, request.requestId));
+    const agentRunLimit = error instanceof Error && error.message === 'AGENT_ACTIVE_RUN_LIMIT';
     if (streamStarted && !sse.isClosed) {
-      await sse.send({
-        error: {
-          code: 'chat_stream_failed',
-          message: 'Failed to generate response',
-          retryable: true,
-        },
-      });
+      if (agentRunLimit) {
+        await sse.send({
+          error: {
+            code: 'agent_run_limit',
+            message: 'Too many active Agent runs. Try again after one finishes.',
+            retryable: true,
+          },
+        });
+      } else {
+        await sse.send({
+          error: {
+            code: 'chat_stream_failed',
+            message: 'Failed to generate response',
+            retryable: true,
+          },
+        });
+      }
       sse.close();
     } else if (
       error instanceof ModelProviderConfigurationError
@@ -371,7 +444,7 @@ const createChatStream = async (request: ChatStreamRequest) => {
   } finally {
     request.connection.off('aborted', abortUpstreamStream);
     responseStream.off('close', abortUpstreamStream);
-    chatSlot.release(failed);
+    releaseChatSlot(failed);
   }
   })();
 
@@ -382,7 +455,9 @@ const createChatStream = async (request: ChatStreamRequest) => {
 
 @Injectable()
 export class ChatStreamService {
+  constructor(private readonly agentRunService: AgentRunService) {}
+
   sendMessage(request: ChatStreamRequest) {
-    return createChatStream(request);
+    return createChatStream(request, this.agentRunService);
   }
 }

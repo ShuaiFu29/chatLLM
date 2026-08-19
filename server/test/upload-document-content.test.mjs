@@ -17,6 +17,10 @@ const serviceSource = readFileSync(
   path.join(serverRoot, 'src/modules/upload/upload.service.ts'),
   'utf8',
 );
+const documentReaderSource = readFileSync(
+  path.join(serverRoot, 'src/modules/upload/upload-document-reader.ts'),
+  'utf8',
+);
 const repositorySource = readFileSync(
   path.join(serverRoot, 'src/repositories/files.ts'),
   'utf8',
@@ -339,8 +343,9 @@ test('storage filename helpers prevent header injection and produce a Markdown f
 
 test('repository and service sources never treat a raw object as converted Markdown', () => {
   assert.match(repositorySource, /markdown_object_key/);
-  assert.match(serviceSource, /dependencies\.openObject\(content\.markdown_object_key\)/);
-  assert.match(serviceSource, /text\/markdown; charset=utf-8/);
-  assert.match(serviceSource, /X-Content-Type-Options/);
-  assert.match(serviceSource, /markdownEtag\(content\.markdown_hash\)/);
+  assert.match(serviceSource, /readDerivedDocumentContent/);
+  assert.match(documentReaderSource, /dependencies\.openObject\(content\.markdown_object_key\)/);
+  assert.match(documentReaderSource, /text\/markdown; charset=utf-8/);
+  assert.match(documentReaderSource, /X-Content-Type-Options/);
+  assert.match(documentReaderSource, /markdownEtag\(content\.markdown_hash\)/);
 });

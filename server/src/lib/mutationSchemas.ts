@@ -69,6 +69,10 @@ const observationIdParams = strictObject({ observationId: uuid });
 const suggestionIdParams = strictObject({ suggestionId: uuid });
 const projectSpaceIdParams = strictObject({ projectSpaceId: uuid });
 const templateIdParams = strictObject({ templateId: uuid });
+const agentIdParams = strictObject({ agentId: uuid });
+const agentToolIdParams = strictObject({ toolId: uuid });
+const agentRunIdParams = strictObject({ runId: uuid });
+const agentRunApprovalParams = strictObject({ runId: uuid, approvalId: uuid });
 const datasetIdParams = strictObject({ datasetId: uuid });
 const runIdParams = strictObject({ runId: uuid });
 const caseIdParams = strictObject({ caseId: uuid });
@@ -90,6 +94,7 @@ const chatCreateConversationBody = strictBody({
   title: optionalText(200),
   project_space_id: optionalProjectSpaceId,
   projectSpaceId: optionalProjectSpaceId,
+  agent_id: z.union([uuid, z.literal(''), z.null()]).optional(),
 }, { aliases: projectSpaceAliases });
 
 const chatBranchConversationBody = strictBody({
@@ -110,6 +115,7 @@ const chatUpdateConversationBody = strictBody({
   note: optionalText(2000),
   project_space_id: optionalProjectSpaceId,
   projectSpaceId: optionalProjectSpaceId,
+  agent_id: z.union([uuid, z.literal(''), z.null()]).optional(),
 }, { aliases: projectSpaceAliases, requireAtLeastOne: true });
 
 const personaUpdateProfileBody = strictBody({
@@ -178,6 +184,129 @@ const promptTemplateUpdateBody = strictBody({
     ['is_default', 'isDefault'],
   ],
   requireAtLeastOne: true,
+});
+
+const agentToolBinding = strictObject({
+  key: requiredText(160),
+  enabled: z.boolean().default(true),
+  configuration: z.record(z.string(), z.unknown()).optional(),
+});
+
+const agentToolBindings = z.array(agentToolBinding).max(24).superRefine((bindings, context) => {
+  const seen = new Set<string>();
+  bindings.forEach((binding, index) => {
+    if (seen.has(binding.key)) {
+      context.addIssue({
+        code: 'custom',
+        path: [index, 'key'],
+        message: 'Tool bindings must be unique',
+      });
+    }
+    seen.add(binding.key);
+  });
+});
+
+const agentConfigurationShape = {
+  instructions: requiredText(16000),
+  model: optionalRequiredText(120),
+  temperature: finiteNumber.min(0).max(2).optional(),
+  max_iterations: z.number().int().min(1).max(20).optional(),
+  max_duration_ms: z.number().int().min(1000).max(900000).optional(),
+  max_output_tokens: z.number().int().min(128).max(100000).optional(),
+  memory_mode: z.enum(['none', 'conversation', 'user', 'project']).optional(),
+  response_format: z.enum(['markdown', 'json']).optional(),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
+  approval_policy: z.enum(['never', 'writes', 'always']).optional(),
+  tool_bindings: agentToolBindings.optional(),
+  welcome_message: optionalText(2000),
+  suggested_prompts: z.array(requiredText(500)).max(12).optional(),
+};
+
+const agentCreateBody = strictBody({
+  name: requiredText(120),
+  description: optionalText(1000),
+  avatar: optionalText(2048),
+  visibility: z.enum(['private', 'project']).optional(),
+  project_space_id: optionalProjectSpaceId,
+  projectSpaceId: optionalProjectSpaceId,
+  ...agentConfigurationShape,
+}, { aliases: projectSpaceAliases });
+
+const agentUpdateBody = strictBody({
+  name: optionalRequiredText(120),
+  description: optionalText(1000),
+  avatar: optionalText(2048),
+  visibility: z.enum(['private', 'project']).optional(),
+  project_space_id: optionalProjectSpaceId,
+  projectSpaceId: optionalProjectSpaceId,
+  instructions: optionalRequiredText(16000),
+  model: optionalRequiredText(120),
+  temperature: finiteNumber.min(0).max(2).optional(),
+  max_iterations: z.number().int().min(1).max(20).optional(),
+  max_duration_ms: z.number().int().min(1000).max(900000).optional(),
+  max_output_tokens: z.number().int().min(128).max(100000).optional(),
+  memory_mode: z.enum(['none', 'conversation', 'user', 'project']).optional(),
+  response_format: z.enum(['markdown', 'json']).optional(),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
+  approval_policy: z.enum(['never', 'writes', 'always']).optional(),
+  tool_bindings: agentToolBindings.optional(),
+  welcome_message: optionalText(2000),
+  suggested_prompts: z.array(requiredText(500)).max(12).optional(),
+}, { aliases: projectSpaceAliases, requireAtLeastOne: true });
+
+const agentDuplicateBody = strictBody({
+  name: optionalRequiredText(120),
+});
+
+const agentStatusBody = strictBody({
+  disabled: z.boolean(),
+});
+
+const agentApprovalDecisionBody = strictBody({
+  decision: z.enum(['approved', 'rejected']),
+  reason: optionalText(1000),
+});
+
+const agentToolConfiguration = z.record(z.string(), z.unknown());
+const agentToolSecrets = z.record(
+  z.string().trim().min(1).max(120),
+  z.string().max(8192),
+).superRefine((secrets, context) => {
+  if (Object.keys(secrets).length > 32) {
+    context.addIssue({ code: 'custom', message: 'At most 32 tool secrets are allowed' });
+  }
+});
+
+const agentToolCreateBody = strictBody({
+  name: requiredText(120),
+  description: optionalText(1000),
+  kind: z.enum(['http', 'mcp']),
+  risk_level: z.enum(['read', 'write', 'high']).optional(),
+  project_space_id: optionalProjectSpaceId,
+  projectSpaceId: optionalProjectSpaceId,
+  configuration: agentToolConfiguration,
+  secrets: agentToolSecrets.optional(),
+  enabled: z.boolean().optional(),
+}, { aliases: projectSpaceAliases });
+
+const agentToolUpdateBody = strictBody({
+  name: optionalRequiredText(120),
+  description: optionalText(1000),
+  risk_level: z.enum(['read', 'write', 'high']).optional(),
+  project_space_id: optionalProjectSpaceId,
+  projectSpaceId: optionalProjectSpaceId,
+  configuration: agentToolConfiguration.optional(),
+  secrets: agentToolSecrets.optional(),
+  clear_secrets: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+}, { aliases: projectSpaceAliases, requireAtLeastOne: true }).superRefine((body, context) => {
+  if (body.secrets !== undefined && body.clear_secrets === true) {
+    context.addIssue({
+      code: 'custom',
+      path: ['clear_secrets'],
+      message: 'Secrets cannot be supplied and cleared in the same request',
+    });
+  }
 });
 
 const ragEvalDatasetCreateBody = strictBody({
@@ -328,7 +457,10 @@ export const mutationSchemas = {
   chatDeleteMessage: { body: emptyBody, params: messageIdParams },
   chatTruncateConversation: { body: emptyBody, params: conversationMessageIdParams },
   chatSendMessage: {
-    body: strictBody({ content: requiredText(MAX_CHAT_MESSAGE_CONTENT_LENGTH) }),
+    body: strictBody({
+      content: requiredText(MAX_CHAT_MESSAGE_CONTENT_LENGTH),
+      continue: z.boolean().optional(),
+    }),
     params: conversationIdParams,
   },
 
@@ -350,6 +482,20 @@ export const mutationSchemas = {
   promptTemplateCreate: { body: promptTemplateCreateBody },
   promptTemplateUpdate: { body: promptTemplateUpdateBody, params: templateIdParams },
   promptTemplateDelete: { body: emptyBody, params: templateIdParams },
+
+  agentCreate: { body: agentCreateBody },
+  agentUpdate: { body: agentUpdateBody, params: agentIdParams },
+  agentPublish: { body: emptyBody, params: agentIdParams },
+  agentDuplicate: { body: agentDuplicateBody, params: agentIdParams },
+  agentStatus: { body: agentStatusBody, params: agentIdParams },
+  agentDelete: { body: emptyBody, params: agentIdParams },
+
+  agentToolCreate: { body: agentToolCreateBody },
+  agentToolUpdate: { body: agentToolUpdateBody, params: agentToolIdParams },
+  agentToolDelete: { body: emptyBody, params: agentToolIdParams },
+  agentRunCancel: { body: emptyBody, params: agentRunIdParams },
+  agentRunConversationCancel: { body: emptyBody, params: conversationIdParams },
+  agentRunApprovalDecision: { body: agentApprovalDecisionBody, params: agentRunApprovalParams },
 
   ragEvalDatasetCreate: { body: ragEvalDatasetCreateBody },
   ragEvalDatasetUpdate: { body: ragEvalDatasetUpdateBody, params: datasetIdParams },

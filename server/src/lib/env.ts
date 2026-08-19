@@ -24,6 +24,7 @@ const DEFAULT_CHAT_RATE_LIMIT_MAX = 60;
 const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 120;
 const DEFAULT_RAG_EVAL_RATE_LIMIT_MAX = 30;
 const DEFAULT_RAG_EVAL_STALE_RUN_MS = 30 * 60 * 1000;
+const DEFAULT_AGENT_RUN_STALE_AFTER_MS = 15 * 60 * 1000;
 const DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY = 1;
 const DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS = 3;
@@ -63,6 +64,15 @@ const DEFAULT_MULTIPART_UPLOAD_URL_EXPIRES_SECONDS = 15 * 60;
 const DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_MULTIPART_COMPLETION_LEASE_MS = 5 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 10000;
+const DEFAULT_AGENT_HTTP_MAX_RESPONSE_BYTES = 256 * 1024;
+const DEFAULT_AGENT_MAX_AGENTS_PER_USER = 100;
+const DEFAULT_AGENT_MAX_TOOLS_PER_USER = 100;
+const DEFAULT_AGENT_MAX_VERSIONS_PER_AGENT = 100;
+const DEFAULT_AGENT_MAX_ACTIVE_RUNS_PER_USER = 3;
+const DEFAULT_AGENT_MAX_SOURCES = 50;
+const DEFAULT_AGENT_MAX_SOURCE_BYTES = 512 * 1024;
+const DEFAULT_AGENT_MAX_TOKEN_BUDGET = 100_000;
+const DEFAULT_AGENT_MAX_STEP_PAYLOAD_BYTES = 256 * 1024;
 
 export interface ServerEnv {
   PORT: number;
@@ -110,6 +120,7 @@ export interface ServerEnv {
   UPLOAD_RATE_LIMIT_MAX: number;
   RAG_EVAL_RATE_LIMIT_MAX: number;
   RAG_EVAL_STALE_RUN_MS: number;
+  AGENT_RUN_STALE_AFTER_MS: number;
   RAG_EVAL_QUEUE_INTERVAL_MS: number;
   RAG_EVAL_QUEUE_CONCURRENCY: number;
   RAG_EVAL_QUEUE_MAX_ATTEMPTS: number;
@@ -145,6 +156,18 @@ export interface ServerEnv {
   MULTIPART_UPLOAD_SESSION_TTL_MS: number;
   MULTIPART_COMPLETION_LEASE_MS: number;
   SHUTDOWN_TIMEOUT_MS: number;
+  AGENT_TOOL_ENCRYPTION_KEY?: string;
+  AGENT_HTTP_ALLOWED_HOSTS: string[];
+  AGENT_MCP_ALLOWED_HOSTS: string[];
+  AGENT_HTTP_MAX_RESPONSE_BYTES: number;
+  AGENT_MAX_AGENTS_PER_USER: number;
+  AGENT_MAX_TOOLS_PER_USER: number;
+  AGENT_MAX_VERSIONS_PER_AGENT: number;
+  AGENT_MAX_ACTIVE_RUNS_PER_USER: number;
+  AGENT_MAX_SOURCES: number;
+  AGENT_MAX_SOURCE_BYTES: number;
+  AGENT_MAX_TOKEN_BUDGET: number;
+  AGENT_MAX_STEP_PAYLOAD_BYTES: number;
 }
 
 const getRequired = (env: NodeJS.ProcessEnv, key: string) => env[key]?.trim() || '';
@@ -263,6 +286,16 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   if (defaultChatModel && isOfficialProviderModelName(defaultChatModel)) {
     errors.push('DEFAULT_CHAT_MODEL must use a supported provider model such as deepseek-chat, moonshot-v1-8k, or qwen-plus');
   }
+  const configuredQwenModel = env.QWEN_CHAT_MODEL?.trim() || 'qwen-plus';
+  if (
+    defaultChatModel
+    && !['deepseek-chat', 'deepseek-reasoner', 'moonshot-v1-8k', 'moonshot-v1-32k', 'moonshot-v1-128k', 'kimi-k2-0711-preview'].includes(defaultChatModel)
+    && defaultChatModel !== configuredQwenModel
+    && !/^(deepseek-|qwen-|moonshot-|kimi-)/i.test(defaultChatModel)
+    && !isOfficialProviderModelName(defaultChatModel)
+  ) {
+    errors.push('DEFAULT_CHAT_MODEL must use a recognized DeepSeek, Qwen, Moonshot, or Kimi model name');
+  }
 
   if (env.NODE_ENV === 'production') {
     if (!getRequired(env, 'METRICS_TOKEN')) {
@@ -287,6 +320,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const uploadRateLimitMax = getPositiveInteger(env, 'UPLOAD_RATE_LIMIT_MAX', DEFAULT_UPLOAD_RATE_LIMIT_MAX, errors);
   const ragEvalRateLimitMax = getPositiveInteger(env, 'RAG_EVAL_RATE_LIMIT_MAX', DEFAULT_RAG_EVAL_RATE_LIMIT_MAX, errors);
   const ragEvalStaleRunMs = getPositiveInteger(env, 'RAG_EVAL_STALE_RUN_MS', DEFAULT_RAG_EVAL_STALE_RUN_MS, errors);
+  const agentRunStaleAfterMs = getPositiveInteger(env, 'AGENT_RUN_STALE_AFTER_MS', DEFAULT_AGENT_RUN_STALE_AFTER_MS, errors);
   const ragEvalQueueIntervalMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_INTERVAL_MS', DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS, errors);
   const ragEvalQueueConcurrency = getPositiveInteger(env, 'RAG_EVAL_QUEUE_CONCURRENCY', DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY, errors);
   const ragEvalQueueMaxAttempts = getPositiveInteger(env, 'RAG_EVAL_QUEUE_MAX_ATTEMPTS', DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS, errors);
@@ -352,6 +386,38 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const multipartUploadSessionTtlMs = getPositiveInteger(env, 'MULTIPART_UPLOAD_SESSION_TTL_MS', DEFAULT_MULTIPART_UPLOAD_SESSION_TTL_MS, errors);
   const multipartCompletionLeaseMs = getPositiveInteger(env, 'MULTIPART_COMPLETION_LEASE_MS', DEFAULT_MULTIPART_COMPLETION_LEASE_MS, errors);
   const shutdownTimeoutMs = getPositiveInteger(env, 'SHUTDOWN_TIMEOUT_MS', DEFAULT_SHUTDOWN_TIMEOUT_MS, errors);
+  const agentHttpMaxResponseBytes = getPositiveSafeInteger(
+    env,
+    'AGENT_HTTP_MAX_RESPONSE_BYTES',
+    DEFAULT_AGENT_HTTP_MAX_RESPONSE_BYTES,
+    errors,
+  );
+  const agentMaxAgentsPerUser = getPositiveInteger(
+    env, 'AGENT_MAX_AGENTS_PER_USER', DEFAULT_AGENT_MAX_AGENTS_PER_USER, errors,
+  );
+  const agentMaxToolsPerUser = getPositiveInteger(
+    env, 'AGENT_MAX_TOOLS_PER_USER', DEFAULT_AGENT_MAX_TOOLS_PER_USER, errors,
+  );
+  const agentMaxVersionsPerAgent = getPositiveInteger(
+    env, 'AGENT_MAX_VERSIONS_PER_AGENT', DEFAULT_AGENT_MAX_VERSIONS_PER_AGENT, errors,
+  );
+  const agentMaxActiveRunsPerUser = getPositiveInteger(
+    env, 'AGENT_MAX_ACTIVE_RUNS_PER_USER', DEFAULT_AGENT_MAX_ACTIVE_RUNS_PER_USER, errors,
+  );
+  const agentMaxSources = getPositiveInteger(env, 'AGENT_MAX_SOURCES', DEFAULT_AGENT_MAX_SOURCES, errors);
+  const agentMaxSourceBytes = getPositiveSafeInteger(
+    env, 'AGENT_MAX_SOURCE_BYTES', DEFAULT_AGENT_MAX_SOURCE_BYTES, errors,
+  );
+  const agentMaxTokenBudget = getPositiveSafeInteger(
+    env, 'AGENT_MAX_TOKEN_BUDGET', DEFAULT_AGENT_MAX_TOKEN_BUDGET, errors,
+  );
+  const agentMaxStepPayloadBytes = getPositiveSafeInteger(
+    env, 'AGENT_MAX_STEP_PAYLOAD_BYTES', DEFAULT_AGENT_MAX_STEP_PAYLOAD_BYTES, errors,
+  );
+  const agentToolEncryptionKey = getRequired(env, 'AGENT_TOOL_ENCRYPTION_KEY');
+  if (agentToolEncryptionKey && !/^[a-fA-F0-9]{64}$/.test(agentToolEncryptionKey)) {
+    errors.push('AGENT_TOOL_ENCRYPTION_KEY must be a 64-character hexadecimal value');
+  }
 
   if (fileQueueIngestTimeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
     errors.push(`FILE_QUEUE_INGEST_TIMEOUT_MS must be at least ${MIN_FILE_QUEUE_INGEST_TIMEOUT_MS}`);
@@ -415,6 +481,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     UPLOAD_RATE_LIMIT_MAX: uploadRateLimitMax,
     RAG_EVAL_RATE_LIMIT_MAX: ragEvalRateLimitMax,
     RAG_EVAL_STALE_RUN_MS: ragEvalStaleRunMs,
+    AGENT_RUN_STALE_AFTER_MS: agentRunStaleAfterMs,
     RAG_EVAL_QUEUE_INTERVAL_MS: ragEvalQueueIntervalMs,
     RAG_EVAL_QUEUE_CONCURRENCY: ragEvalQueueConcurrency,
     RAG_EVAL_QUEUE_MAX_ATTEMPTS: ragEvalQueueMaxAttempts,
@@ -450,6 +517,18 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     MULTIPART_UPLOAD_SESSION_TTL_MS: multipartUploadSessionTtlMs,
     MULTIPART_COMPLETION_LEASE_MS: multipartCompletionLeaseMs,
     SHUTDOWN_TIMEOUT_MS: shutdownTimeoutMs,
+    AGENT_TOOL_ENCRYPTION_KEY: agentToolEncryptionKey || undefined,
+    AGENT_HTTP_ALLOWED_HOSTS: getStringList(env.AGENT_HTTP_ALLOWED_HOSTS, []),
+    AGENT_MCP_ALLOWED_HOSTS: getStringList(env.AGENT_MCP_ALLOWED_HOSTS, []),
+    AGENT_HTTP_MAX_RESPONSE_BYTES: agentHttpMaxResponseBytes,
+    AGENT_MAX_AGENTS_PER_USER: agentMaxAgentsPerUser,
+    AGENT_MAX_TOOLS_PER_USER: agentMaxToolsPerUser,
+    AGENT_MAX_VERSIONS_PER_AGENT: agentMaxVersionsPerAgent,
+    AGENT_MAX_ACTIVE_RUNS_PER_USER: agentMaxActiveRunsPerUser,
+    AGENT_MAX_SOURCES: agentMaxSources,
+    AGENT_MAX_SOURCE_BYTES: agentMaxSourceBytes,
+    AGENT_MAX_TOKEN_BUDGET: agentMaxTokenBudget,
+    AGENT_MAX_STEP_PAYLOAD_BYTES: agentMaxStepPayloadBytes,
   };
 };
 

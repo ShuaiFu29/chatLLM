@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../lib/db';
 import { ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { encodeMessageCursor, MessageCursor } from '../lib/messagePagination';
+import type { AgentApprovalRow, AgentRunStatus, AgentStepRow } from './agentRuns';
 
 export interface MessageRow {
   id: string;
@@ -10,6 +11,11 @@ export interface MessageRow {
   sources: ChatSource[];
   rag_run_id?: string | null;
   rag_trace?: RagTraceSummary | null;
+  agent_run_id?: string | null;
+  agent_run_status?: AgentRunStatus | null;
+  agent_grounding?: Record<string, unknown> | null;
+  agent_steps?: AgentStepRow[];
+  agent_approvals?: AgentApprovalRow[];
   created_at: string;
 }
 
@@ -64,9 +70,39 @@ export const listMessagesForConversation = async (conversationId: string) => {
          'trace_steps', rr.trace_steps,
          'quality', rr.quality
        ) end as rag_trace,
+       ar.id as agent_run_id,
+       ar.status as agent_run_status,
+       ar.grounding as agent_grounding,
+       coalesce(agent_step_page.agent_steps, '[]'::jsonb) as agent_steps,
+       coalesce(agent_approval_page.agent_approvals, '[]'::jsonb) as agent_approvals,
        m.created_at
      from messages m
      left join rag_runs rr on rr.id = m.rag_run_id
+     left join lateral (
+       select id, status, grounding
+       from agent_runs
+       where assistant_message_id = m.id
+       order by created_at desc
+       limit 1
+     ) ar on true
+     left join lateral (
+       select jsonb_agg(to_jsonb(agent_step) order by agent_step.sequence asc) as agent_steps
+       from (
+         select * from agent_steps
+         where run_id = ar.id
+         order by sequence asc
+         limit 200
+       ) agent_step
+     ) agent_step_page on true
+     left join lateral (
+       select jsonb_agg(to_jsonb(agent_approval) order by agent_approval.created_at asc) as agent_approvals
+       from (
+         select * from agent_approvals
+         where run_id = ar.id
+         order by created_at asc
+         limit 100
+       ) agent_approval
+     ) agent_approval_page on true
      where m.conversation_id = $1
      order by m.created_at asc`,
     [conversationId]
@@ -84,6 +120,18 @@ export const listRecentMessages = async (conversationId: string, limit = 10) => 
     [conversationId, limit]
   );
   return rows;
+};
+
+export const findLatestUserMessageForConversation = async (conversationId: string) => {
+  const { rows } = await query<Pick<MessageRow, 'id' | 'content'>>(
+    `select id, content
+     from messages
+     where conversation_id = $1 and role = 'user'
+     order by created_at desc, id desc
+     limit 1`,
+    [conversationId],
+  );
+  return rows[0] || null;
 };
 
 export const searchMessagesForUser = async (userId: string, search: string, filters: SearchMessageFilters = {}) => {
@@ -182,9 +230,39 @@ export const listMessagesForConversationPage = async (
          'trace_steps', rr.trace_steps,
          'quality', rr.quality
        ) end as rag_trace,
+       ar.id as agent_run_id,
+       ar.status as agent_run_status,
+       ar.grounding as agent_grounding,
+       coalesce(agent_step_page.agent_steps, '[]'::jsonb) as agent_steps,
+       coalesce(agent_approval_page.agent_approvals, '[]'::jsonb) as agent_approvals,
        m.created_at
      from messages m
      left join rag_runs rr on rr.id = m.rag_run_id
+     left join lateral (
+       select id, status, grounding
+       from agent_runs
+       where assistant_message_id = m.id
+       order by created_at desc
+       limit 1
+     ) ar on true
+     left join lateral (
+       select jsonb_agg(to_jsonb(agent_step) order by agent_step.sequence asc) as agent_steps
+       from (
+         select * from agent_steps
+         where run_id = ar.id
+         order by sequence asc
+         limit 200
+       ) agent_step
+     ) agent_step_page on true
+     left join lateral (
+       select jsonb_agg(to_jsonb(agent_approval) order by agent_approval.created_at asc) as agent_approvals
+       from (
+         select * from agent_approvals
+         where run_id = ar.id
+         order by created_at asc
+         limit 100
+       ) agent_approval
+     ) agent_approval_page on true
      where m.conversation_id = $1
        ${cursorFilter}
      order by m.created_at desc, m.id desc

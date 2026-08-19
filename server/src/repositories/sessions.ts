@@ -95,6 +95,7 @@ export const findSessionWithUser = async (rawToken: string) => {
      from sessions s
      join users u on u.id = s.user_id
      where s.token_hash = $1
+       and s.expires_at > now()
        and u.deletion_status = 'active'`,
     [hashRefreshToken(rawToken)]
   );

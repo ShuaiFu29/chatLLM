@@ -152,7 +152,12 @@ def _bool(name: str, default: bool) -> bool:
     raw = os.environ.get(name)
     if raw is None or raw.strip() == "":
         return default
-    return raw.strip().lower() != "false"
+    normalized = raw.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{name} must be either true or false")
 
 
 def _string_list(name: str, default: list[str]) -> list[str]:

@@ -82,8 +82,10 @@ const getDispatcher = () => {
 };
 
 const fetchText = async (url: string, init: any) => {
+  const requestSignal = init?.signal || AbortSignal.timeout(15_000);
   const response = await undiciFetch(url, {
     ...init,
+    signal: requestSignal,
     dispatcher: getDispatcher(),
   });
   const text = await response.text();

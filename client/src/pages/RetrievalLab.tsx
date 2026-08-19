@@ -8,6 +8,7 @@ import Modal from '../components/Modal';
 import Skeleton from '../components/Skeleton';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useShallow } from 'zustand/react/shallow';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
 
 const MarkdownRenderer = lazy(() => import('../components/MarkdownRenderer'));
@@ -163,7 +164,11 @@ function RetrievalSourceList({ sources, getSourceName, t }: RetrievalSourceListP
 
 export default function RetrievalLabPage() {
   const { t } = useTranslation();
-  const { projectSpaces, currentProjectSpaceId, fetchProjectSpaces } = useProjectSpaceStore();
+  const { projectSpaces, currentProjectSpaceId, fetchProjectSpaces } = useProjectSpaceStore(useShallow((state) => ({
+    projectSpaces: state.projectSpaces,
+    currentProjectSpaceId: state.currentProjectSpaceId,
+    fetchProjectSpaces: state.fetchProjectSpaces,
+  })));
   const initialQuery = useMemo(() => new URLSearchParams(window.location.search).get('q')?.trim() || '', []);
   const hasAutoRunFromUrl = useRef(false);
   const [query, setQuery] = useState(initialQuery);

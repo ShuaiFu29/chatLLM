@@ -44,6 +44,14 @@ jobs:
       - name: Install locked RAG dependencies
         run: python -m pip install --require-hashes -r rag-service/requirements.txt
 
+      - name: Audit production dependencies
+        run: |
+          npm audit --omit=dev
+          npm --prefix client audit --omit=dev
+          npm --prefix server audit --omit=dev
+          python -m pip install pip-audit
+          python -m pip_audit -r rag-service/requirements.txt
+
       - name: Run JavaScript and TypeScript lint gates
         run: npm run lint
 

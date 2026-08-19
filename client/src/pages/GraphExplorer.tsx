@@ -7,6 +7,7 @@ import DocumentViewerModal, { type DocumentReference } from '../components/Docum
 import Skeleton from '../components/Skeleton';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useShallow } from 'zustand/react/shallow';
 import type { SourceLocator } from '../lib/sourceLocator';
 
 interface GraphExtractionSummary {
@@ -543,7 +544,11 @@ const buildGraphViewData = (
 
 export default function GraphExplorerPage() {
   const { t } = useTranslation();
-  const { projectSpaces, currentProjectSpaceId, fetchProjectSpaces } = useProjectSpaceStore();
+  const { projectSpaces, currentProjectSpaceId, fetchProjectSpaces } = useProjectSpaceStore(useShallow((state) => ({
+    projectSpaces: state.projectSpaces,
+    currentProjectSpaceId: state.currentProjectSpaceId,
+    fetchProjectSpaces: state.fetchProjectSpaces,
+  })));
   const initialQuery = useMemo(() => new URLSearchParams(window.location.search).get('q')?.trim() || '', []);
   const hasAutoRunFromUrl = useRef(false);
   const graphRequestSeq = useRef(0);

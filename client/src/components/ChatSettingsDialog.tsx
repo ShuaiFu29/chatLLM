@@ -3,9 +3,11 @@ import { useChatStore } from '../stores/useChatStore';
 import { AlertCircle, Save, RotateCcw, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useShallow } from 'zustand/react/shallow';
 import api from '../lib/api';
 import { toSafeError } from '../lib/safeError';
 import SelectField from './SelectField';
+import { useAgentStore } from '../stores/useAgentStore';
 
 interface ChatSettingsDialogProps {
   isOpen: boolean;
@@ -39,8 +41,20 @@ const FALLBACK_CHAT_MODEL = 'moonshot-v1-8k';
 
 export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDialogProps) {
   const { t } = useTranslation();
-  const { currentConversationId, conversations, updateConversation } = useChatStore();
-  const { projectSpaces, currentProjectSpaceId } = useProjectSpaceStore();
+  const { currentConversationId, conversations, updateConversation } = useChatStore(useShallow((state) => ({
+    currentConversationId: state.currentConversationId,
+    conversations: state.conversations,
+    updateConversation: state.updateConversation,
+  })));
+  const { projectSpaces, currentProjectSpaceId } = useProjectSpaceStore(useShallow((state) => ({
+    projectSpaces: state.projectSpaces,
+    currentProjectSpaceId: state.currentProjectSpaceId,
+  })));
+  const { agents, loading: isLoadingAgents, fetchCatalog: fetchAgentCatalog } = useAgentStore(useShallow((state) => ({
+    agents: state.agents,
+    loading: state.loading,
+    fetchCatalog: state.fetchCatalog,
+  })));
   const [promptTemplates, setPromptTemplates] = useState<PromptTemplate[]>([]);
   const [providerHealth, setProviderHealth] = useState<ProviderHealthResponse | null>(null);
   const [isLoadingPromptTemplates, setIsLoadingPromptTemplates] = useState(false);
@@ -58,6 +72,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     project_space_id: conversation?.project_space_id || currentProjectSpaceId || '',
     tags: conversation?.tags || [],
     note: conversation?.note || '',
+    agent_id: conversation?.agent_id || '',
     promptTemplate: ''
   }), [conversation, currentProjectSpaceId, defaultChatModel]);
 
@@ -73,6 +88,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     project_space_id: currentProjectSpaceId || '',
     tags: [],
     note: '',
+    agent_id: '',
     promptTemplate: ''
   };
 
@@ -84,7 +100,15 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
     settings.project_space_id !== initialSettings.project_space_id ||
     settings.tags.join(',') !== initialSettings.tags.join(',') ||
     settings.note !== initialSettings.note
+    || settings.agent_id !== initialSettings.agent_id
   );
+
+  useEffect(() => {
+    if (!isOpen) return;
+    void fetchAgentCatalog(settings.project_space_id || null).catch((error) => {
+      console.error('Failed to load Agent catalog:', toSafeError(error));
+    });
+  }, [fetchAgentCatalog, isOpen, settings.project_space_id]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -159,6 +183,12 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
   }, [providerHealth, settings.model]);
 
   const isSelectedProviderUnavailable = Boolean(selectedProviderHealth && !selectedProviderHealth['has_api_key']);
+  const availableAgents = useMemo(
+    () => agents.filter((agent) => agent.status === 'published' && Boolean(agent.published_version_id)),
+    [agents],
+  );
+  const selectedAgent = availableAgents.find((agent) => agent.id === settings.agent_id);
+  const isAgentMode = Boolean(settings.agent_id);
 
   const handleChange = (newSettings: typeof settings) => {
     setDraftSettings(newSettings);
@@ -183,6 +213,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
         project_space_id: settings.project_space_id,
         tags: settings.tags,
         note: settings.note,
+        agent_id: settings.agent_id || null,
       });
     }
     setDraftSettings(null);
@@ -202,11 +233,21 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-bg-sidebar border border-border rounded-xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="chat-settings-title"
+        className="bg-bg-sidebar border border-border rounded-xl w-full max-w-lg shadow-xl flex flex-col max-h-[90vh]"
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-border">
-          <h2 className="text-lg font-semibold text-text-main">{t('settings.title')}</h2>
-          <button onClick={handleClose} className="text-text-muted hover:text-text-main">
+          <h2 id="chat-settings-title" className="text-lg font-semibold text-text-main">{t('settings.title')}</h2>
+          <button
+            type="button"
+            aria-label={t('common.close')}
+            onClick={handleClose}
+            className="text-text-muted hover:text-text-main"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -214,12 +255,37 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
         {/* Content */}
         <div className="p-6 space-y-6 overflow-y-auto">
 
-          {/* Model Selection */}
+          {/* Agent Selection */}
           <div className="space-y-2">
+            <label className="text-sm font-medium text-text-main">{t('settings.agent')}</label>
+            <SelectField
+              value={settings.agent_id}
+              onChange={(event) => handleChange({ ...settings, agent_id: event.target.value })}
+              className="w-full"
+            >
+              <option value="">{t('settings.standardChat')}</option>
+              {availableAgents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.avatar || '🤖'} {agent.name}
+                </option>
+              ))}
+            </SelectField>
+            <p className="text-xs text-text-muted">
+              {isLoadingAgents
+                ? t('common.loading')
+                : selectedAgent
+                  ? t('settings.agentManagedHint', { model: selectedAgent.model })
+                  : t('settings.agentHint')}
+            </p>
+          </div>
+
+          {/* Model Selection */}
+          <div className={`space-y-2 ${isAgentMode ? 'opacity-50' : ''}`}>
             <label className="text-sm font-medium text-text-main">{t('settings.model')}</label>
             <SelectField
               value={settings.model}
               onChange={(e) => handleChange({ ...settings, model: e.target.value })}
+              disabled={isAgentMode}
               className="w-full"
             >
               {modelOptions.map((option) => (
@@ -274,7 +340,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
             <label className="text-sm font-medium text-text-main">{t('settings.projectSpace')}</label>
             <SelectField
               value={settings.project_space_id}
-              onChange={(e) => handleChange({ ...settings, project_space_id: e.target.value })}
+              onChange={(e) => handleChange({ ...settings, project_space_id: e.target.value, agent_id: '' })}
               className="w-full"
             >
               {projectSpaces.map((space) => (
@@ -286,10 +352,11 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           </div>
 
           {/* Prompt Template */}
-          <div className="space-y-2">
+          <div className={`space-y-2 ${isAgentMode ? 'opacity-50' : ''}`}>
             <label className="text-sm font-medium text-text-main">{t('settings.promptTemplate')}</label>
             <SelectField
               value={settings.promptTemplate}
+              disabled={isAgentMode}
               onChange={(e) => {
                 const template = promptTemplates.find((item) => item.id === e.target.value);
                 handleChange({
@@ -311,7 +378,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           </div>
 
           {/* Temperature */}
-          <div className="space-y-2">
+          <div className={`space-y-2 ${isAgentMode ? 'opacity-50' : ''}`}>
             <div className="flex items-center justify-between">
               <label className="text-sm font-medium text-text-main">{t('settings.temperature')}: {settings.temperature}</label>
               <span className="text-xs text-text-muted">
@@ -324,16 +391,18 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
               max="1"
               step="0.1"
               value={settings.temperature}
+              disabled={isAgentMode}
               onChange={(e) => handleChange({ ...settings, temperature: parseFloat(e.target.value) })}
               className="w-full h-2 bg-bg-base rounded-lg appearance-none cursor-pointer accent-primary"
             />
           </div>
 
           {/* System Prompt */}
-          <div className="space-y-2">
+          <div className={`space-y-2 ${isAgentMode ? 'opacity-50' : ''}`}>
             <label className="text-sm font-medium text-text-main">{t('settings.systemPrompt')}</label>
             <textarea
               value={settings.system_prompt}
+              disabled={isAgentMode}
               onChange={(e) => handleChange({ ...settings, system_prompt: e.target.value })}
               className="w-full h-24 bg-bg-base text-text-main border border-border rounded-lg px-3 py-2 focus:ring-2 focus:ring-primary focus:outline-none resize-none text-sm"
               placeholder={t('settings.systemPromptPlaceholder')}
@@ -364,7 +433,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
           </div>
 
           {/* Workspace Documents (RAG) */}
-          <div className="flex items-center justify-between p-3 bg-bg-base rounded-lg border border-border">
+          <div className={`flex items-center justify-between p-3 bg-bg-base rounded-lg border border-border ${isAgentMode ? 'opacity-50' : ''}`}>
             <div>
               <div className="text-sm font-medium text-text-main">{t('settings.enableRag')}</div>
               <div className="text-xs text-text-muted">{t('settings.enableRagHint')}</div>
@@ -373,6 +442,7 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
               <input
                 type="checkbox"
                 checked={settings.enable_rag}
+                disabled={isAgentMode}
                 onChange={(e) => handleChange({ ...settings, enable_rag: e.target.checked })}
                 className="sr-only peer"
               />
@@ -400,8 +470,8 @@ export default function ChatSettingsDialog({ isOpen, onClose }: ChatSettingsDial
             </button>
             <button
               onClick={handleSave}
-              disabled={!isDirty || isSelectedProviderUnavailable}
-              className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors ${isDirty && !isSelectedProviderUnavailable
+              disabled={!isDirty || (!isAgentMode && isSelectedProviderUnavailable)}
+              className={`flex items-center gap-2 px-4 py-2 text-sm rounded-lg transition-colors ${isDirty && (isAgentMode || !isSelectedProviderUnavailable)
                 ? 'bg-primary hover:bg-primary-hover text-white'
                 : 'bg-bg-surface text-text-muted cursor-not-allowed border border-border'
                 }`}

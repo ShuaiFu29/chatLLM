@@ -6,6 +6,7 @@ import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SelectField from '../components/SelectField';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useShallow } from 'zustand/react/shallow';
 
 interface PromptTemplate {
   id: string;
@@ -45,7 +46,10 @@ const createDraftFromTemplate = (template: PromptTemplate): PromptTemplateDraft 
 
 export default function PromptTemplatesPage() {
   const { t } = useTranslation();
-  const { projectSpaces, fetchProjectSpaces } = useProjectSpaceStore();
+  const { projectSpaces, fetchProjectSpaces } = useProjectSpaceStore(useShallow((state) => ({
+    projectSpaces: state.projectSpaces,
+    fetchProjectSpaces: state.fetchProjectSpaces,
+  })));
   const [templates, setTemplates] = useState<PromptTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [templateModalMode, setTemplateModalMode] = useState<TemplateModalMode>(null);

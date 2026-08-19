@@ -30,11 +30,16 @@ import {
 } from '../lib/chatDrafts';
 import { X } from 'lucide-react';
 import type { ConversationComparison } from '../stores/useChatStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useAgentStore } from '../stores/useAgentStore';
 
 export default function ChatPage() {
-  const { user } = useAuthStore();
+  const user = useAuthStore((state) => state.user);
   const { t } = useTranslation();
-  const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore();
+  const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore(useShallow((state) => ({
+    currentProjectSpaceId: state.currentProjectSpaceId,
+    projectSpaces: state.projectSpaces,
+  })));
   const {
     currentConversationId,
     conversations,
@@ -48,13 +53,34 @@ export default function ChatPage() {
     regenerateMessage,
     stopGeneration,
     continueGeneration,
+    refreshMessages,
     loadOlderMessages,
     messagePagination,
     loadingOlderMessages,
     loadingMessages,
     sendingMessage,
     isStopped
-  } = useChatStore();
+  } = useChatStore(useShallow((state) => ({
+    currentConversationId: state.currentConversationId,
+    conversations: state.conversations,
+    messages: state.messages,
+    createConversation: state.createConversation,
+    branchConversation: state.branchConversation,
+    compareConversations: state.compareConversations,
+    toggleConversationFavorite: state.toggleConversationFavorite,
+    sendMessage: state.sendMessage,
+    deleteMessage: state.deleteMessage,
+    regenerateMessage: state.regenerateMessage,
+    stopGeneration: state.stopGeneration,
+    continueGeneration: state.continueGeneration,
+    refreshMessages: state.refreshMessages,
+    loadOlderMessages: state.loadOlderMessages,
+    messagePagination: state.messagePagination,
+    loadingOlderMessages: state.loadingOlderMessages,
+    loadingMessages: state.loadingMessages,
+    sendingMessage: state.sendingMessage,
+    isStopped: state.isStopped,
+  })));
 
   const [input, setInput] = useState('');
   const [isUploading, setIsUploading] = useState(false);
@@ -63,15 +89,45 @@ export default function ChatPage() {
   const [compareTargetId, setCompareTargetId] = useState('');
   const [comparison, setComparison] = useState<ConversationComparison | null>(null);
   const [isComparing, setIsComparing] = useState(false);
+  const { agents, fetchAgentCatalog } = useAgentStore(useShallow((state) => ({
+    agents: state.agents,
+    fetchAgentCatalog: state.fetchCatalog,
+  })));
 
   const currentConversation = conversations.find(c => c.id === currentConversationId);
   const currentMessagePageInfo = currentConversationId ? messagePagination[currentConversationId] : undefined;
   const activeProjectSpaceId = currentConversation?.project_space_id || currentProjectSpaceId;
+  const currentAgent = agents.find((agent) => agent.id === currentConversation?.agent_id);
   const currentProjectSpace = projectSpaces.find(space => space.id === activeProjectSpaceId);
   const currentDraftKey = useMemo(
     () => createChatDraftKey(user?.id, currentConversationId),
     [currentConversationId, user?.id]
   );
+  const hasRecoverableAgentRun = messages.some((message) => (
+    message.role === 'assistant'
+    && ['queued', 'running', 'waiting_approval'].includes(message.agent_run_status || '')
+  ));
+
+  useEffect(() => {
+    if (!currentConversationId || sendingMessage || !hasRecoverableAgentRun) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await refreshMessages(currentConversationId);
+      if (!stopped) timer = setTimeout(() => void poll(), 1500);
+    };
+    timer = setTimeout(() => void poll(), 500);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [currentConversationId, hasRecoverableAgentRun, refreshMessages, sendingMessage]);
+
+  useEffect(() => {
+    void fetchAgentCatalog(activeProjectSpaceId || null).catch((error) => {
+      console.error('Failed to load Agent catalog:', toSafeError(error));
+    });
+  }, [activeProjectSpaceId, fetchAgentCatalog]);
   const relatedConversations = useMemo(() => {
     if (!currentConversation) return [];
 
@@ -129,6 +185,10 @@ export default function ChatPage() {
     handleInputChange(question);
     toast.success(t('persona.suggestionLoaded'));
   }, [handleInputChange, t]);
+
+  const handleAgentPromptPick = useCallback((prompt: string) => {
+    handleInputChange(prompt);
+  }, [handleInputChange]);
 
   const handleEditMessageAsDraft = useCallback((content: string) => {
     handleInputChange(content);
@@ -301,6 +361,7 @@ export default function ChatPage() {
         compareTargetId={compareTargetId}
         onCompareTargetChange={setCompareTargetId}
         onCompare={handleCompareVersions}
+        agent={currentAgent}
       />
 
       {comparison && (
@@ -361,6 +422,9 @@ export default function ChatPage() {
         onBranch={handleBranchConversation}
         onEditAsDraft={handleEditMessageAsDraft}
         copiedMessageId={copiedMessageId}
+        welcomeMessage={currentAgent?.welcome_message}
+        suggestedPrompts={currentAgent?.suggested_prompts}
+        onSuggestedPrompt={handleAgentPromptPick}
       />
 
       <PersonaSuggestionsPanel onPickSuggestion={handlePersonaSuggestionPick} />

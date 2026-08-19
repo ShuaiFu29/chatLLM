@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useThemeStore } from '../stores/useThemeStore';
+import { useShallow } from 'zustand/react/shallow';
 import { LogOut, Palette, Save, Trash2, User, Upload, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import Modal from '../components/Modal';
@@ -28,8 +29,18 @@ const PRESET_BASES = [
 ];
 
 export default function ProfilePage() {
-  const { user, logout, updateProfile, deleteAccount } = useAuthStore();
-  const { primaryColor, setPrimaryColor, baseColor, setBaseColor } = useThemeStore();
+  const { user, logout, updateProfile, deleteAccount } = useAuthStore(useShallow((state) => ({
+    user: state.user,
+    logout: state.logout,
+    updateProfile: state.updateProfile,
+    deleteAccount: state.deleteAccount,
+  })));
+  const { primaryColor, setPrimaryColor, baseColor, setBaseColor } = useThemeStore(useShallow((state) => ({
+    primaryColor: state.primaryColor,
+    setPrimaryColor: state.setPrimaryColor,
+    baseColor: state.baseColor,
+    setBaseColor: state.setBaseColor,
+  })));
   const { t, i18n } = useTranslation();
 
   const [activeTab, setActiveTab] = useState<'profile' | 'theme'>('profile');

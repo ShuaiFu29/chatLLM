@@ -22,6 +22,7 @@ import {
   findProjectSpaceForUser,
 } from '../../repositories/projectSpaces';
 import { User } from '../../types';
+import { AgentsService } from '../agents/agents.service';
 
 type RequestValues = Record<string, any>;
 
@@ -55,6 +56,8 @@ const resolveProjectSpaceId = async (userId: string, requestedProjectSpaceId?: s
 
 @Injectable()
 export class ChatService {
+  constructor(private readonly agentsService: AgentsService) {}
+
   async listConversations(user: User, query: RequestValues) {
     try {
       const projectSpaceId = readProjectSpaceId(
@@ -93,11 +96,16 @@ export class ChatService {
       );
       const projectSpaceId = await resolveProjectSpaceId(user.id, requestedProjectSpaceId);
       if (!projectSpaceId) throw publicError(404, 'Project space not found');
+      const agentId = typeof body.agent_id === 'string' && body.agent_id.trim()
+        ? body.agent_id.trim()
+        : null;
+      if (agentId) await this.agentsService.getRunnable(user.id, agentId, projectSpaceId);
 
       return await createConversationForUser(
         user.id,
         body.title || 'New Chat',
         projectSpaceId,
+        agentId,
       );
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -121,6 +129,7 @@ export class ChatService {
       is_favorite,
       tags,
       note,
+      agent_id,
     } = body;
     const updates: {
       title?: string;
@@ -134,6 +143,7 @@ export class ChatService {
       is_favorite?: boolean;
       tags?: string[];
       note?: string;
+      agent_id?: string | null;
     } = {};
 
     if (title !== undefined) updates.title = title;
@@ -150,6 +160,17 @@ export class ChatService {
     if (note !== undefined) updates.note = note;
 
     try {
+      const existingConversation = (
+        body.project_space_id !== undefined
+        || body.projectSpaceId !== undefined
+        || agent_id !== undefined
+      )
+        ? await findConversationForUser(conversationId, user.id)
+        : null;
+      if ((body.project_space_id !== undefined || body.projectSpaceId !== undefined || agent_id !== undefined) && !existingConversation) {
+        throw publicError(404, 'Conversation not found');
+      }
+
       if (body.project_space_id !== undefined || body.projectSpaceId !== undefined) {
         const requestedProjectSpaceId = readProjectSpaceId(
           body.project_space_id ?? body.projectSpaceId,
@@ -160,6 +181,24 @@ export class ChatService {
           const space = await findProjectSpaceForUser(requestedProjectSpaceId, user.id);
           if (!space) throw publicError(404, 'Project space not found');
           updates.project_space_id = space.id;
+        }
+      }
+
+      if (agent_id !== undefined) {
+        updates.agent_id = typeof agent_id === 'string' && agent_id.trim()
+          ? agent_id.trim()
+          : null;
+      }
+
+      if (existingConversation) {
+        const effectiveProjectSpaceId = updates.project_space_id !== undefined
+          ? updates.project_space_id
+          : existingConversation.project_space_id;
+        const effectiveAgentId = updates.agent_id !== undefined
+          ? updates.agent_id
+          : existingConversation.agent_id;
+        if (effectiveAgentId) {
+          await this.agentsService.getRunnable(user.id, effectiveAgentId, effectiveProjectSpaceId);
         }
       }
 

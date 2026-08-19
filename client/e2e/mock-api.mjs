@@ -4,6 +4,9 @@ const PORT = 3100;
 const SPACE_ID = '11111111-1111-4111-8111-111111111111';
 const CONVERSATION_ID = '22222222-2222-4222-8222-222222222222';
 const SOURCE_FILE_ID = '33333333-3333-4333-8333-333333333333';
+const AGENT_ID = '66666666-6666-4666-8666-666666666666';
+const RUN_ID = '88888888-8888-4888-8888-888888888888';
+const RUN_STEP_ID = '99999999-9999-4999-8999-999999999999';
 const now = '2026-08-01T12:00:00.000Z';
 
 const user = {
@@ -43,6 +46,82 @@ const source = {
   content: 'The integration source proves citation preview behavior.',
   document_kind: 'markdown',
 };
+const agent = {
+  id: AGENT_ID,
+  user_id: user.id,
+  project_space_id: SPACE_ID,
+  name: 'E2E Research Agent',
+  description: 'Uses explicitly selected tools for browser QA.',
+  avatar: '🧭',
+  visibility: 'project',
+  status: 'published',
+  current_version_id: '77777777-7777-4777-8777-777777777777',
+  published_version_id: '77777777-7777-4777-8777-777777777777',
+  latest_version: 1,
+  version: 1,
+  published_version: 1,
+  has_unpublished_changes: false,
+  instructions: 'Answer with evidence when the RAG tool is used.',
+  model: 'deepseek-chat',
+  temperature: 0.2,
+  max_iterations: 6,
+  max_duration_ms: 120000,
+  max_output_tokens: 2048,
+  memory_mode: 'conversation',
+  response_format: 'markdown',
+  output_schema: {},
+  approval_policy: 'writes',
+  tool_bindings: [{ key: 'agentic_rag', enabled: true }],
+  welcome_message: 'What would you like to research?',
+  suggested_prompts: ['Summarize the workspace evidence'],
+  created_at: now,
+  updated_at: now,
+};
+
+let agentRun = {
+  id: RUN_ID,
+  user_id: user.id,
+  agent_id: AGENT_ID,
+  agent_version_id: agent.published_version_id,
+  agent_version_snapshot: { version: 1, model: agent.model },
+  conversation_id: CONVERSATION_ID,
+  status: 'waiting_approval',
+  iteration_count: 1,
+  tool_call_count: 1,
+  token_usage: { prompt_tokens: 120, completion_tokens: 20, total_tokens: 140 },
+  error_code: null,
+  error_message: null,
+  started_at: now,
+  completed_at: null,
+  created_at: now,
+};
+
+const agentRunDetail = () => ({
+  ...agentRun,
+  steps: [{
+    id: RUN_STEP_ID,
+    run_id: RUN_ID,
+    sequence: 0,
+    kind: 'approval',
+    status: agentRun.status === 'cancelled' ? 'cancelled' : 'pending',
+    tool_call_id: 'e2e-tool-call',
+    tool_key: 'agentic_rag',
+    input: { query: 'workspace evidence' },
+    output: { risk_level: 'read' },
+    created_at: now,
+  }],
+  approvals: [{
+    id: 'approval-e2e-1',
+    run_id: RUN_ID,
+    step_id: RUN_STEP_ID,
+    status: agentRun.status === 'cancelled' ? 'expired' : 'pending',
+    reason: agentRun.status === 'cancelled' ? 'Agent run cancelled' : '',
+    expires_at: '2030-01-01T00:00:00.000Z',
+    created_at: now,
+  }],
+  steps_has_more: false,
+  approvals_has_more: false,
+});
 
 let uploadedFilename = '';
 
@@ -93,6 +172,52 @@ const server = createServer(async (request, response) => {
   if (request.method === 'POST' && pathname === '/api/auth/logout') return json(response, { ok: true });
   if (request.method === 'GET' && pathname === '/api/project-spaces') return json(response, [projectSpace]);
   if (request.method === 'GET' && pathname === '/api/chat/conversations') return json(response, [conversation]);
+  if (request.method === 'GET' && pathname === '/api/agents') return json(response, [agent]);
+  if (request.method === 'GET' && pathname === '/api/agents/tools/catalog') {
+    return json(response, [{
+      key: 'agentic_rag',
+      name: 'Agentic RAG',
+      description: 'Searches workspace evidence with the existing Agentic RAG pipeline.',
+      category: 'knowledge',
+      risk_level: 'read',
+      requires_project: true,
+    }]);
+  }
+  if (request.method === 'GET' && pathname === '/api/agent-runs') {
+    const agentFilter = url.searchParams.get('agentId');
+    return json(response, agentFilter && agentFilter !== AGENT_ID ? [] : [agentRun]);
+  }
+  if (request.method === 'GET' && pathname === `/api/agent-runs/${RUN_ID}`) {
+    return json(response, agentRunDetail());
+  }
+  if (request.method === 'POST' && pathname === `/api/agent-runs/${RUN_ID}/cancel`) {
+    agentRun = {
+      ...agentRun,
+      status: 'cancelled',
+      completed_at: now,
+      error_code: 'agent_run_cancelled',
+      error_message: 'Agent run cancelled',
+    };
+    return json(response, agentRun);
+  }
+  if (request.method === 'GET' && pathname === '/api/agent-tools') return json(response, []);
+  if (request.method === 'GET' && pathname === '/api/prompt-templates') return json(response, []);
+  if (request.method === 'GET' && pathname === '/api/usage/provider-health') {
+    return json(response, {
+      default_provider: 'deepseek',
+      default_model: 'deepseek-chat',
+      providers: [{
+        id: 'deepseek',
+        name: 'DeepSeek',
+        base_url: 'https://api.deepseek.com',
+        default_model: 'deepseek-chat',
+        models: ['deepseek-chat', 'deepseek-reasoner'],
+        has_api_key: true,
+        quota_status: 'unknown',
+        capabilities: { tool_calling: true },
+      }],
+    });
+  }
   if (request.method === 'GET' && pathname === `/api/chat/conversations/${CONVERSATION_ID}/messages`) {
     return json(response, [{
       id: 'initial-assistant-message',

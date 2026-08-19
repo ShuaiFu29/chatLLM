@@ -339,7 +339,7 @@ test('chat streaming aborts upstream model requests when the client disconnects'
   assert.match(sseWriterSource, /stream\.destroyed/);
   assert.match(sseWriterSource, /stream\.writableEnded/);
   assert.match(providerSource, /signal\?:\s*AbortSignal/);
-  assert.match(providerSource, /signal:\s*params\.signal/);
+  assert.match(providerSource, /const \{ signal, \.\.\.payload \} = params;[\s\S]*?signal,/);
 });
 
 test('SSE writer resolves false when a synchronous close races a backpressured write', async () => {

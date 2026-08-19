@@ -21,6 +21,9 @@ interface MessageListProps {
   onBranch?: (id: string) => void;
   onEditAsDraft?: (content: string) => void;
   copiedMessageId: string | null;
+  welcomeMessage?: string;
+  suggestedPrompts?: string[];
+  onSuggestedPrompt?: (prompt: string) => void;
 }
 
 export default function MessageList({
@@ -37,7 +40,10 @@ export default function MessageList({
   onDelete,
   onBranch,
   onEditAsDraft,
-  copiedMessageId
+  copiedMessageId,
+  welcomeMessage,
+  suggestedPrompts = [],
+  onSuggestedPrompt,
 }: MessageListProps) {
   const { t } = useTranslation();
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -65,7 +71,14 @@ export default function MessageList({
           sources: [
             ...(currentMsg.sources || []),
             ...(nextMsg.sources || [])
-          ]
+          ],
+          agentRunId: currentMsg.agentRunId || nextMsg.agentRunId,
+          agent_run_id: currentMsg.agent_run_id || nextMsg.agent_run_id,
+          agent_run_status: nextMsg.agent_run_status || currentMsg.agent_run_status,
+          agent_grounding: nextMsg.agent_grounding || currentMsg.agent_grounding,
+          agentEvents: [...(currentMsg.agentEvents || []), ...(nextMsg.agentEvents || [])],
+          agent_steps: [...(currentMsg.agent_steps || []), ...(nextMsg.agent_steps || [])],
+          agent_approvals: [...(currentMsg.agent_approvals || []), ...(nextMsg.agent_approvals || [])],
         };
       } else {
         merged.push(currentMsg);
@@ -117,8 +130,22 @@ export default function MessageList({
           <div className="w-16 h-16 bg-bg-surface rounded-2xl flex items-center justify-center mb-4">
             <Bot className="w-8 h-8 text-primary" />
           </div>
-          <h2 className="text-xl font-semibold text-text-main mb-2">{t('chat.welcome')}</h2>
+          <h2 className="text-xl font-semibold text-text-main mb-2">{welcomeMessage || t('chat.welcome')}</h2>
           <p>{t('chat.startChatting')}</p>
+          {suggestedPrompts.length > 0 ? (
+            <div className="mt-5 flex max-w-2xl flex-wrap justify-center gap-2">
+              {suggestedPrompts.slice(0, 8).map((prompt) => (
+                <button
+                  key={prompt}
+                  type="button"
+                  onClick={() => onSuggestedPrompt?.(prompt)}
+                  className="rounded-full border border-border bg-bg-sidebar px-3 py-2 text-sm text-text-muted transition-colors hover:border-primary/50 hover:text-text-main"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          ) : null}
         </div>
       ) : (
         <>
@@ -149,7 +176,7 @@ export default function MessageList({
               onBranch={onBranch}
               onEditAsDraft={onEditAsDraft}
               copiedMessageId={copiedMessageId}
-              enableRag={currentConversation?.enable_rag}
+              enableRag={currentConversation?.agent_id ? false : currentConversation?.enable_rag}
             />
           ))}
           <div ref={messagesEndRef} />

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
-import { Outlet, useNavigate, useLocation } from 'react-router-dom';
+import type { ReactNode } from 'react';
+import { useNavigate, useLocation } from '../lib/navigation';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
-import { useChatStore, type Conversation } from '../stores/useChatStore';
-import { MessageSquare, Plus, LogOut, FileText, Trash2, Pencil, Menu, X, Search, Folder, FolderPlus, BarChart3, Pin, Archive, ArchiveRestore, BookOpenText, StickyNote, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
+import { useChatStore } from '../stores/useChatStore';
+import { MessageSquare, Plus, LogOut, FileText, Menu, X, Search, Folder, FolderPlus, BarChart3, BookOpenText, Bot, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
 import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
@@ -11,17 +12,21 @@ import { useSearchStore } from '../stores/useSearchStore';
 import {
   isProjectSpaceSelectionReady,
   useProjectSpaceStore,
-  type ProjectSpace,
 } from '../stores/useProjectSpaceStore';
 import { getAvatarUrl } from '../lib/avatar';
 import { useKnowledgeFilesStore } from '../stores/useKnowledgeFilesStore';
+import { useShallow } from 'zustand/react/shallow';
+import { ConversationRow, WorkspaceRow } from './MainLayoutRows';
 
-export default function MainLayout() {
+export default function MainLayout({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, logout } = useAuthStore();
-  const { setIsOpen: setSearchOpen } = useSearchStore();
+  const { user, logout } = useAuthStore(useShallow((state) => ({
+    user: state.user,
+    logout: state.logout,
+  })));
+  const setSearchOpen = useSearchStore((state) => state.setIsOpen);
   const {
     projectSpaces,
     currentProjectSpaceId,
@@ -30,7 +35,15 @@ export default function MainLayout() {
     renameProjectSpace,
     deleteProjectSpace,
     selectProjectSpace,
-  } = useProjectSpaceStore();
+  } = useProjectSpaceStore(useShallow((state) => ({
+    projectSpaces: state.projectSpaces,
+    currentProjectSpaceId: state.currentProjectSpaceId,
+    fetchProjectSpaces: state.fetchProjectSpaces,
+    createProjectSpace: state.createProjectSpace,
+    renameProjectSpace: state.renameProjectSpace,
+    deleteProjectSpace: state.deleteProjectSpace,
+    selectProjectSpace: state.selectProjectSpace,
+  })));
   const {
     conversations,
     currentConversationId,
@@ -42,7 +55,18 @@ export default function MainLayout() {
     archiveConversation,
     unarchiveConversation,
     selectConversation,
-  } = useChatStore();
+  } = useChatStore(useShallow((state) => ({
+    conversations: state.conversations,
+    currentConversationId: state.currentConversationId,
+    fetchConversations: state.fetchConversations,
+    createConversation: state.createConversation,
+    deleteConversation: state.deleteConversation,
+    renameConversation: state.renameConversation,
+    toggleConversationPinned: state.toggleConversationPinned,
+    archiveConversation: state.archiveConversation,
+    unarchiveConversation: state.unarchiveConversation,
+    selectConversation: state.selectConversation,
+  })));
 
   const knowledgeFileCount = useKnowledgeFilesStore((state) => state.files.length);
   const fetchKnowledgeFiles = useKnowledgeFilesStore((state) => state.fetchFiles);
@@ -312,6 +336,7 @@ export default function MainLayout() {
   const isRagEvalPage = location.pathname === '/rag-eval';
   const isRetrievalLabPage = location.pathname === '/retrieval-lab';
   const isGraphExplorerPage = location.pathname === '/rag-graph';
+  const isAgentsPage = location.pathname === '/agents';
 
   useEffect(() => {
     // Also support clicking on the search trigger
@@ -324,209 +349,6 @@ export default function MainLayout() {
     document.addEventListener('click', handleSearchClick);
     return () => document.removeEventListener('click', handleSearchClick);
   }, [setSearchOpen]);
-
-  const getConversationTitle = (conv: Conversation) => (
-    conv.title === 'New Chat' ? t('sidebar.newChat') : conv.title
-  );
-
-  const renderConversationRow = (conv: Conversation, mode: 'sidebar' | 'modal') => {
-    const isActive = currentConversationId === conv.id && !isKnowledgePage && location.pathname === '/';
-    const actionVisibility = mode === 'modal'
-      ? 'flex opacity-100'
-      : 'hidden md:flex md:opacity-0 md:group-hover:opacity-100';
-
-    return (
-      <div
-        key={conv.id}
-        className={`group relative flex w-full items-center gap-3 rounded-xl p-3 text-left transition-colors ${
-          isActive
-            ? 'bg-primary text-white shadow-sm'
-            : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
-        }`}
-      >
-        <MessageSquare className="h-4 w-4 shrink-0" />
-        {conv.is_pinned && conversationFilter === 'active' && (
-          <Pin className={`h-3 w-3 shrink-0 ${isActive ? 'text-white/80' : 'text-primary'}`} />
-        )}
-
-        {editingId === conv.id ? (
-          <form onSubmit={handleRenameSubmit} className="flex min-w-0 flex-1 items-center gap-1">
-            <input
-              ref={editInputRef}
-              type="text"
-              value={editTitle}
-              onChange={(e) => setEditTitle(e.target.value)}
-              className="min-w-0 flex-1 rounded border border-primary bg-bg-base px-1 py-0.5 text-sm text-text-main outline-none"
-              onClick={(e) => e.stopPropagation()}
-              onBlur={() => handleRenameSubmit()}
-              onKeyDown={(e) => {
-                if (e.key === 'Escape') {
-                  setEditingId(null);
-                  e.stopPropagation();
-                }
-              }}
-            />
-          </form>
-        ) : (
-          <button
-            type="button"
-            data-testid={`conversation-${conv.id}`}
-            className="min-w-0 flex-1 cursor-pointer text-left"
-            onClick={() => handleSelectConversation(conv.id)}
-          >
-            <span className="block truncate text-sm">
-              {getConversationTitle(conv)}
-            </span>
-            {((conv.tags && conv.tags.length > 0) || conv.note) && (
-              <span className="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-                {conv.tags?.slice(0, 2).map((tag) => (
-                  <span
-                    key={tag}
-                    className={`max-w-20 truncate rounded border px-1.5 py-0.5 text-[10px] ${
-                      isActive
-                        ? 'border-white/25 text-white/80'
-                        : 'border-border text-text-muted'
-                    }`}
-                  >
-                    {tag}
-                  </span>
-                ))}
-                {conv.note && (
-                  <span
-                    className={`inline-flex items-center rounded border px-1 py-0.5 ${
-                      isActive
-                        ? 'border-white/25 text-white/80'
-                        : 'border-border text-text-muted'
-                    }`}
-                    title={`${t('chat.conversationNote')}: ${conv.note}`}
-                    aria-label={t('chat.conversationNote')}
-                  >
-                    <StickyNote className="h-3 w-3" />
-                  </span>
-                )}
-              </span>
-            )}
-          </button>
-        )}
-
-        {!editingId && (
-          <div className={`${actionVisibility} shrink-0 items-center gap-1 transition-opacity ${isActive ? 'text-white' : 'text-text-muted'}`}>
-            {conversationFilter === 'active' && (
-              <button
-                onClick={(e) => handleTogglePinClick(e, conv.id)}
-                className="rounded p-1 transition-colors hover:bg-white/20"
-                title={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
-                aria-label={conv.is_pinned ? t('chat.unpinConversation') : t('chat.pinConversation')}
-              >
-                <Pin className={`h-3 w-3 ${conv.is_pinned ? 'fill-current' : ''}`} />
-              </button>
-            )}
-            <button
-              onClick={(e) => handleEditClick(e, conv.id, conv.title)}
-              className="rounded p-1 transition-colors hover:bg-white/20"
-              title={t('common.edit')}
-              aria-label={t('common.edit')}
-            >
-              <Pencil className="h-3 w-3" />
-            </button>
-            {conversationFilter === 'archived' ? (
-              <button
-                onClick={(e) => handleUnarchiveClick(e, conv.id)}
-                className="rounded p-1 transition-colors hover:bg-white/20"
-                title={t('chat.unarchiveConversation')}
-                aria-label={t('chat.unarchiveConversation')}
-              >
-                <ArchiveRestore className="h-3 w-3" />
-              </button>
-            ) : (
-              <button
-                onClick={(e) => handleArchiveClick(e, conv.id)}
-                className="rounded p-1 transition-colors hover:bg-white/20"
-                title={t('chat.archiveConversation')}
-                aria-label={t('chat.archiveConversation')}
-              >
-                <Archive className="h-3 w-3" />
-              </button>
-            )}
-            <button
-              onClick={(e) => handleDeleteClick(e, conv.id)}
-              className="rounded p-1 transition-colors hover:bg-red-500/80 hover:text-white"
-              title={t('common.delete')}
-              aria-label={t('common.delete')}
-            >
-              <Trash2 className="h-3 w-3" />
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  };
-
-  const renderWorkspaceRow = (space: ProjectSpace) => {
-    const isCurrent = space.id === currentProjectSpaceId;
-    const conversationCount = spaceConversationCounts.get(space.id) || 0;
-
-    return (
-      <div
-        key={space.id}
-        className={`group flex items-center gap-3 rounded-xl border p-3 transition-colors ${
-          isCurrent
-            ? 'border-primary/50 bg-primary/10'
-            : 'border-border bg-bg-base hover:border-primary/40 hover:bg-bg-surface'
-        }`}
-      >
-        <button
-          type="button"
-          onClick={() => handleSelectProjectSpace(space.id)}
-          className="flex min-w-0 flex-1 items-center gap-3 text-left"
-          aria-current={isCurrent ? 'true' : undefined}
-        >
-          <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${isCurrent ? 'bg-primary text-white' : 'bg-bg-surface text-primary'}`}>
-            <Folder className="h-4 w-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-medium text-text-main">{space.name}</span>
-            <span className="mt-0.5 block truncate text-xs text-text-muted">
-              {t('workspace.conversationCount', { count: conversationCount })}
-            </span>
-          </span>
-          <span className="flex shrink-0 items-center gap-1">
-            {isCurrent && (
-              <span className="rounded border border-primary/30 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">
-                {t('workspace.currentBadge')}
-              </span>
-            )}
-            {space.is_default && (
-              <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted">
-                {t('workspace.defaultBadge')}
-              </span>
-            )}
-          </span>
-        </button>
-
-        {!space.is_default && (
-          <div className="flex shrink-0 items-center gap-1 opacity-100 md:opacity-0 md:transition-opacity md:group-hover:opacity-100">
-            <button
-              onClick={(e) => handleOpenRenameProjectSpace(e, space.id, space.name)}
-              className="rounded-lg p-2 text-text-muted transition-colors hover:bg-bg-sidebar hover:text-text-main"
-              title={t('common.edit')}
-              aria-label={t('common.edit')}
-            >
-              <Pencil className="h-3.5 w-3.5" />
-            </button>
-            <button
-              onClick={(e) => handleOpenDeleteProjectSpace(e, space.id, space.name)}
-              className="rounded-lg p-2 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-300"
-              title={t('common.delete')}
-              aria-label={t('common.delete')}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        )}
-      </div>
-    );
-  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-bg-base text-text-main transition-colors duration-300">
@@ -755,7 +577,18 @@ export default function MainLayout() {
             </p>
           </div>
           <div className="max-h-[58vh] space-y-2 overflow-y-auto pr-1">
-            {projectSpaces.map(renderWorkspaceRow)}
+            {projectSpaces.map((space) => (
+              <WorkspaceRow
+                key={space.id}
+                conversationCount={spaceConversationCounts.get(space.id) || 0}
+                isCurrent={space.id === currentProjectSpaceId}
+                onDelete={handleOpenDeleteProjectSpace}
+                onRename={handleOpenRenameProjectSpace}
+                onSelect={handleSelectProjectSpace}
+                space={space}
+                t={t}
+              />
+            ))}
           </div>
         </div>
       </Modal>
@@ -800,7 +633,27 @@ export default function MainLayout() {
             </div>
           ) : (
             <div className="max-h-[60vh] space-y-2 overflow-y-auto pr-1">
-              {currentProjectConversations.map((conv) => renderConversationRow(conv, 'modal'))}
+              {currentProjectConversations.map((conversation) => (
+                <ConversationRow
+                  key={conversation.id}
+                  conversation={conversation}
+                  conversationFilter={conversationFilter}
+                  editInputRef={editInputRef}
+                  editTitle={editTitle}
+                  isActive={currentConversationId === conversation.id && !isKnowledgePage && location.pathname === '/'}
+                  isEditing={editingId === conversation.id}
+                  onArchive={handleArchiveClick}
+                  onCancelEdit={() => setEditingId(null)}
+                  onDelete={handleDeleteClick}
+                  onEdit={handleEditClick}
+                  onEditTitleChange={setEditTitle}
+                  onRenameSubmit={handleRenameSubmit}
+                  onSelect={handleSelectConversation}
+                  onTogglePin={handleTogglePinClick}
+                  onUnarchive={handleUnarchiveClick}
+                  t={t}
+                />
+              ))}
             </div>
           )}
         </div>
@@ -972,6 +825,19 @@ export default function MainLayout() {
           <div className="grid grid-cols-2 gap-1.5 rounded-xl bg-bg-base/40 p-2">
             <button
               onClick={() => {
+                navigate('/agents');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`col-span-2 flex h-10 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isAgentsPage ? 'bg-primary text-white shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.agentCenter')}
+            >
+              <Bot className="h-4 w-4 shrink-0" />
+              <span className="truncate text-xs font-semibold">{t('sidebar.agentCenter')}</span>
+            </button>
+            <button
+              onClick={() => {
                 navigate('/prompts');
                 setIsMobileMenuOpen(false);
               }}
@@ -1136,7 +1002,7 @@ export default function MainLayout() {
           <span className="ml-2 font-semibold text-text-main text-sm">ChatLLM</span>
         </div>
 
-        <Outlet />
+        {children}
       </div>
     </div >
   );

@@ -3,9 +3,10 @@ import { Command } from 'cmdk';
 import { Search, Loader2, MessageSquare, Calendar, Filter } from 'lucide-react';
 import { useSearchStore, type SearchResult } from '../stores/useSearchStore';
 import { useChatStore } from '../stores/useChatStore';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate } from '../lib/navigation';
 import { useTranslation } from 'react-i18next';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useShallow } from 'zustand/react/shallow';
 import SelectField from './SelectField';
 
 // We'll create a custom CommandPalette component using cmdk
@@ -16,9 +17,20 @@ import SelectField from './SelectField';
 export default function SearchDialog() {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const { isOpen, setIsOpen, query, setQuery, results, isLoading, filters, setFilters, searchMessages, clearResults } = useSearchStore();
-  const { selectConversation } = useChatStore();
-  const { projectSpaces } = useProjectSpaceStore();
+  const { isOpen, setIsOpen, query, setQuery, results, isLoading, filters, setFilters, searchMessages, clearResults } = useSearchStore(useShallow((state) => ({
+    isOpen: state.isOpen,
+    setIsOpen: state.setIsOpen,
+    query: state.query,
+    setQuery: state.setQuery,
+    results: state.results,
+    isLoading: state.isLoading,
+    filters: state.filters,
+    setFilters: state.setFilters,
+    searchMessages: state.searchMessages,
+    clearResults: state.clearResults,
+  })));
+  const selectConversation = useChatStore((state) => state.selectConversation);
+  const projectSpaces = useProjectSpaceStore((state) => state.projectSpaces);
 
   // Debounce search
   useEffect(() => {

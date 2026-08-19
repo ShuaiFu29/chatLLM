@@ -107,7 +107,6 @@ export default defineConfig({
           'vendor-core': [
             'react',
             'react-dom',
-            'react-router-dom',
             'axios',
             'zustand',
             'i18next',

@@ -65,7 +65,14 @@ const documentSchemaReadinessSql = `
       ('0032_multi_format_documents.sql'),
       ('0033_conversion_generation_integrity.sql'),
       ('0034_parallel_conversion_generations.sql'),
-      ('0035_conversion_generation_cleanup_jobs.sql')
+      ('0035_conversion_generation_cleanup_jobs.sql'),
+      ('0036_user_configurable_agents.sql'),
+      ('0037_agent_integrity_and_indexes.sql'),
+      ('0038_agent_project_scope_restrict.sql'),
+      ('0039_agent_version_composite_fks.sql'),
+      ('0040_agent_audit_events.sql'),
+      ('0041_agent_grounding_summary.sql'),
+      ('0042_agent_pre_run_cancellation.sql')
   ), required_columns(table_name, column_name) as (
     values
       ('files', 'document_kind'),

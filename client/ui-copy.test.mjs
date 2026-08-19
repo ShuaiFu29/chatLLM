@@ -6,8 +6,10 @@ import test from 'node:test';
 const clientDir = path.resolve(import.meta.dirname);
 const appSource = readFileSync(path.join(clientDir, 'src/App.tsx'), 'utf8');
 const mainLayoutSource = readFileSync(path.join(clientDir, 'src/layouts/MainLayout.tsx'), 'utf8');
+const mainLayoutRowsSource = readFileSync(path.join(clientDir, 'src/layouts/MainLayoutRows.tsx'), 'utf8');
 const projectSpaceStoreSource = readFileSync(path.join(clientDir, 'src/stores/useProjectSpaceStore.ts'), 'utf8');
 const chatStoreSource = readFileSync(path.join(clientDir, 'src/stores/useChatStore.ts'), 'utf8');
+const chatStoreTypesSource = readFileSync(path.join(clientDir, 'src/stores/chatStore.types.ts'), 'utf8');
 const errorBoundarySource = readFileSync(path.join(clientDir, 'src/components/ErrorBoundary.tsx'), 'utf8');
 const protectedRouteSource = readFileSync(path.join(clientDir, 'src/components/ProtectedRoute.tsx'), 'utf8');
 const loginSource = readFileSync(path.join(clientDir, 'src/pages/Login.tsx'), 'utf8');
@@ -19,6 +21,10 @@ const searchDialogSource = readFileSync(path.join(clientDir, 'src/components/Sea
 const promptTemplatePageSource = readFileSync(path.join(clientDir, 'src/pages/PromptTemplates.tsx'), 'utf8');
 const ragEvaluationPagePath = path.join(clientDir, 'src/pages/RagEvaluation.tsx');
 const ragEvaluationPageSource = readFileSync(ragEvaluationPagePath, 'utf8');
+const ragEvaluationModelSource = readFileSync(
+  path.join(clientDir, 'src/features/ragEvaluation/model.ts'),
+  'utf8',
+);
 const retrievalLabPagePath = path.join(clientDir, 'src/pages/RetrievalLab.tsx');
 const retrievalLabPageSource = existsSync(retrievalLabPagePath) ? readFileSync(retrievalLabPagePath, 'utf8') : '';
 const graphExplorerPagePath = path.join(clientDir, 'src/pages/GraphExplorer.tsx');
@@ -289,12 +295,12 @@ test('workspace list exposes rename and delete actions for non-default workspace
   assert.match(projectSpaceStoreSource, /deleteProjectSpace/);
   assert.match(mainLayoutSource, /workspace\.renameTitle/);
   assert.match(mainLayoutSource, /workspace\.deleteTitle/);
-  assert.match(mainLayoutSource, /!space\.is_default/);
+  assert.match(mainLayoutRowsSource, /!space\.is_default/);
 });
 
 test('usage tracking page is routed, reachable from navigation, and localized', () => {
   assert.match(appSource, /const UsagePage = lazy\(\(\) => import\('\.\/pages\/Usage'\)\)/);
-  assert.match(appSource, /<Route path="\/usage" element=\{<UsagePage \/>\} \/>/);
+  assert.match(appSource, /'\/usage': UsagePage/);
   assert.match(mainLayoutSource, /sidebar\.usage/);
   assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage'/);
   assert.match(usagePageSource, /api\.get(?:<[^>]+>)?\('\/usage\/provider-health'/);
@@ -331,7 +337,7 @@ test('usage tracking page is routed, reachable from navigation, and localized', 
 
 test('RAG evaluation page is routed, reachable from navigation, and localized', () => {
   assert.match(appSource, /const RagEvaluationPage = lazy\(\(\) => import\('\.\/pages\/RagEvaluation'\)\)/);
-  assert.match(appSource, /<Route path="\/rag-eval" element=\{<RagEvaluationPage \/>\} \/>/);
+  assert.match(appSource, /'\/rag-eval': RagEvaluationPage/);
   assert.match(mainLayoutSource, /sidebar\.ragEvaluation/);
   assert.match(mainLayoutSource, /navigate\('\/rag-eval'\)/);
   assert.match(ragEvaluationPageSource, /api\.get(?:<[^>]+>)?\('\/rag-eval\/datasets'/);
@@ -365,7 +371,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
   assert.match(ragEvaluationPageSource, /isSelectedDatasetAtCaseLimit/);
   assert.match(ragEvaluationPageSource, /ragEval\.maxCasesHint/);
   assert.match(ragEvaluationPageSource, /disabled=\{isSaving \|\| isSelectedDatasetAtCaseLimit\}/);
-  assert.match(ragEvaluationPageSource, /status: 'completed' \| 'failed' \| 'partial' \| 'running'/);
+  assert.match(ragEvaluationModelSource, /status: 'completed' \| 'failed' \| 'partial' \| 'running'/);
   assert.match(ragEvaluationPageSource, /hasRunningRuns/);
   assert.match(ragEvaluationPageSource, /createCompletionPoller\(/);
   assert.doesNotMatch(ragEvaluationPageSource, /setInterval\(/);
@@ -445,7 +451,7 @@ test('RAG evaluation page is routed, reachable from navigation, and localized', 
 test('RAG retrieval lab is routed, reachable from navigation, and localized', () => {
   assert.ok(retrievalLabPageSource, 'RetrievalLab.tsx should exist');
   assert.match(appSource, /const RetrievalLabPage = lazy\(\(\) => import\('\.\/pages\/RetrievalLab'\)\)/);
-  assert.match(appSource, /<Route path="\/retrieval-lab" element=\{<RetrievalLabPage \/>\} \/>/);
+  assert.match(appSource, /'\/retrieval-lab': RetrievalLabPage/);
   assert.match(mainLayoutSource, /sidebar\.retrievalLab/);
   assert.match(mainLayoutSource, /navigate\('\/retrieval-lab'\)/);
   assert.match(retrievalLabPageSource, /api\.post(?:<[^>]+>)?\('\/rag-workbench\/inspect'/);
@@ -487,7 +493,7 @@ test('RAG retrieval lab is routed, reachable from navigation, and localized', ()
 
 test('persona center is routed, editable, explainable, and localized', () => {
   assert.match(appSource, /const PersonaCenterPage = lazy\(\(\) => import\('\.\/pages\/PersonaCenter'\)\)/);
-  assert.match(appSource, /<Route path="\/persona" element=\{<PersonaCenterPage \/>\} \/>/);
+  assert.match(appSource, /'\/persona': PersonaCenterPage/);
   assert.match(mainLayoutSource, /sidebar\.persona/);
   assert.match(mainLayoutSource, /navigate\('\/persona'\)/);
   assert.match(personaCenterPageSource, /api\.get(?:<[^>]+>)?\('\/persona'\)/);
@@ -593,7 +599,7 @@ test('RAG retrieval source snippets render markdown instead of exposing raw enco
 test('RAG graph explorer is routed, reachable from navigation, and localized', () => {
   assert.ok(graphExplorerPageSource, 'GraphExplorer.tsx should exist');
   assert.match(appSource, /const GraphExplorerPage = lazy\(\(\) => import\('\.\/pages\/GraphExplorer'\)\)/);
-  assert.match(appSource, /<Route path="\/rag-graph" element=\{<GraphExplorerPage \/>\} \/>/);
+  assert.match(appSource, /'\/rag-graph': GraphExplorerPage/);
   assert.match(mainLayoutSource, /sidebar\.graphExplorer/);
   assert.match(mainLayoutSource, /navigate\('\/rag-graph'\)/);
   assert.match(graphExplorerPageSource, /api\.post(?:<[^>]+>)?\('\/rag-workbench\/graph\/search'/);
@@ -632,17 +638,6 @@ test('RAG graph explorer is routed, reachable from navigation, and localized', (
   }
 });
 
-test('RAG evaluation keeps dense history and benchmark content behind modals', () => {
-  assert.match(ragEvaluationPageSource, /isHistoryBrowserOpen/);
-  assert.match(ragEvaluationPageSource, /setIsHistoryBrowserOpen\(true\)/);
-  assert.match(ragEvaluationPageSource, /isBenchmarkModalOpen/);
-  assert.match(ragEvaluationPageSource, /setIsBenchmarkModalOpen\(true\)/);
-  assert.match(ragEvaluationPageSource, /title=\{t\('ragEval\.historyTitle'\)\}/);
-  assert.match(ragEvaluationPageSource, /title=\{t\('ragEval\.benchmarkTitle'\)\}/);
-  assert.match(ragEvaluationPageSource, /ragEval\.historySummary/);
-  assert.match(ragEvaluationPageSource, /ragEval\.benchmarkSummary/);
-});
-
 test('knowledge graph renders only backend evidence facts and exposes extraction quality', () => {
   assert.doesNotMatch(
     graphExplorerPageSource,
@@ -660,11 +655,20 @@ test('knowledge graph renders only backend evidence facts and exposes extraction
   assert.match(graphExplorerPageSource, /detailsById/);
 });
 
-test('conversation list supports pinning, archiving, and archived filtering in localized UI', () => {
-  const chatStoreSource = readFileSync(path.join(clientDir, 'src/stores/useChatStore.ts'), 'utf8');
+test('RAG evaluation keeps dense history and benchmark content behind modals', () => {
+  assert.match(ragEvaluationPageSource, /isHistoryBrowserOpen/);
+  assert.match(ragEvaluationPageSource, /setIsHistoryBrowserOpen\(true\)/);
+  assert.match(ragEvaluationPageSource, /isBenchmarkModalOpen/);
+  assert.match(ragEvaluationPageSource, /setIsBenchmarkModalOpen\(true\)/);
+  assert.match(ragEvaluationPageSource, /title=\{t\('ragEval\.historyTitle'\)\}/);
+  assert.match(ragEvaluationPageSource, /title=\{t\('ragEval\.benchmarkTitle'\)\}/);
+  assert.match(ragEvaluationPageSource, /ragEval\.historySummary/);
+  assert.match(ragEvaluationPageSource, /ragEval\.benchmarkSummary/);
+});
 
-  assert.match(chatStoreSource, /is_pinned\?: boolean/);
-  assert.match(chatStoreSource, /archived_at\?: string \| null/);
+test('conversation list supports pinning, archiving, and archived filtering in localized UI', () => {
+  assert.match(chatStoreTypesSource, /is_pinned\?: boolean/);
+  assert.match(chatStoreTypesSource, /archived_at\?: string \| null/);
   assert.match(mainLayoutSource, /conversationFilter/);
   assert.match(mainLayoutSource, /chat\.showActive/);
   assert.match(mainLayoutSource, /chat\.showArchived/);
@@ -693,7 +697,7 @@ test('chat workbench upgrades expose prompt templates, branches, metadata, and s
   const searchDialogSource = readFileSync(path.join(clientDir, 'src/components/SearchDialog.tsx'), 'utf8');
 
   assert.match(appSource, /const PromptTemplatesPage = lazy\(\(\) => import\('\.\/pages\/PromptTemplates'\)\)/);
-  assert.match(appSource, /<Route path="\/prompts" element=\{<PromptTemplatesPage \/>\} \/>/);
+  assert.match(appSource, /'\/prompts': PromptTemplatesPage/);
   assert.match(mainLayoutSource, /sidebar\.promptTemplates/);
   assert.match(promptTemplatePageSource, /api\.get(?:<[^>]+>)?\('\/prompt-templates'\)/);
   assert.match(chatMessageSource, /onBranch/);
@@ -738,8 +742,8 @@ test('conversation sidebar shows metadata badges without redundant favorite or t
   assert.equal(mainLayoutSource.includes("chat.favoritesOnly"), false);
   assert.equal(mainLayoutSource.includes("chat.allTags"), false);
   assert.equal(mainLayoutSource.includes("chat.filterByTag"), false);
-  assert.match(mainLayoutSource, /conv\.tags/);
-  assert.match(mainLayoutSource, /conv\.note/);
+  assert.match(mainLayoutRowsSource, /conversation\.tags/);
+  assert.match(mainLayoutRowsSource, /conversation\.note/);
 
   for (const localeFile of localeFiles) {
     const locale = readLocale(localeFile);
@@ -930,6 +934,10 @@ test('knowledge upload supports selecting or dropping multiple supported files s
 
 test('prompt templates use compact modal editing instead of a permanent oversized editor panel', () => {
   assert.match(modalSource, /maxWidth\?:/);
+  assert.match(modalSource, /role="dialog"/);
+  assert.match(modalSource, /aria-modal="true"/);
+  assert.match(modalSource, /aria-labelledby=\{titleId\}/);
+  assert.match(modalSource, /aria-label=\{t\('common\.close'\)\}/);
   assert.match(promptTemplatePageSource, /import Modal from '\.\.\/components\/Modal'/);
   assert.match(promptTemplatePageSource, /templateModalMode/);
   assert.match(promptTemplatePageSource, /openTemplateView/);
@@ -1082,11 +1090,11 @@ test('RAG trace steps use readable localized labels instead of internal step ids
 });
 
 test('RAG verification and risk signals are visible in localized UI', () => {
-  assert.match(chatStoreSource, /support_label/);
-  assert.match(chatStoreSource, /verification_score/);
-  assert.match(chatStoreSource, /risk_level/);
-  assert.match(chatStoreSource, /answer_grounding_status/);
-  assert.match(chatStoreSource, /answer_grounding_score/);
+  assert.match(chatStoreTypesSource, /support_label/);
+  assert.match(chatStoreTypesSource, /verification_score/);
+  assert.match(chatStoreTypesSource, /risk_level/);
+  assert.match(chatStoreTypesSource, /answer_grounding_status/);
+  assert.match(chatStoreTypesSource, /answer_grounding_score/);
   assert.match(chatMessageSource, /chat\.ragSupport/);
   assert.match(chatMessageSource, /chat\.ragRisk/);
   assert.match(chatMessageSource, /chat\.ragAnswerGrounding/);

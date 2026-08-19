@@ -3,7 +3,32 @@ import { toSafeError } from './safeError';
 
 type ChatProviderId = 'deepseek' | 'moonshot' | 'qwen';
 
-type ChatRole = 'system' | 'user' | 'assistant';
+export type ChatRole = 'system' | 'user' | 'assistant' | 'tool';
+
+export interface ChatToolCall {
+  id: string;
+  type: 'function';
+  function: {
+    name: string;
+    arguments: string;
+  };
+}
+
+export interface ChatMessageParam {
+  role: ChatRole;
+  content: string | null;
+  tool_calls?: ChatToolCall[];
+  tool_call_id?: string;
+}
+
+export interface ChatToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
+}
 
 interface ChatProviderConfig {
   id: ChatProviderId;
@@ -14,27 +39,31 @@ interface ChatProviderConfig {
   models: string[];
 }
 
-interface ChatCompletionCreateParams {
+export interface ChatCompletionCreateParams {
   model: string;
-  messages: Array<{
-    role: ChatRole;
-    content: string;
-  }>;
+  messages: ChatMessageParam[];
   stream?: boolean;
   temperature?: number;
   max_tokens?: number;
   response_format?: unknown;
+  tools?: ChatToolDefinition[];
+  tool_choice?: 'auto' | 'none' | 'required' | {
+    type: 'function';
+    function: { name: string };
+  };
   signal?: AbortSignal;
 }
 
 type StreamingChatCompletionCreateParams = ChatCompletionCreateParams & { stream: true };
 type NonStreamingChatCompletionCreateParams = ChatCompletionCreateParams & { stream?: false | undefined };
 
-interface ChatCompletionResponse {
+export interface ChatCompletionResponse {
   choices: Array<{
     message: {
       content?: string | null;
+      tool_calls?: ChatToolCall[];
     };
+    finish_reason?: string | null;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -43,11 +72,24 @@ interface ChatCompletionResponse {
   };
 }
 
-interface ChatCompletionChunk {
+export interface ChatCompletionChunk {
   choices: Array<{
     delta?: {
       content?: string | null;
+      tool_calls?: Array<{
+        // OpenAI uses a numeric index, but several compatible gateways encode
+        // it as a JSON string. Keep the wire type permissive; Agent runtime
+        // normalizes and validates the value before merging calls.
+        index: number | string;
+        id?: string;
+        type?: 'function';
+        function?: {
+          name?: string;
+          arguments?: string;
+        };
+      }>;
     };
+    finish_reason?: string | null;
   }>;
 }
 
@@ -62,7 +104,7 @@ interface EmbeddingResponse {
   }>;
 }
 
-interface CompatibleChatCompletions {
+export interface CompatibleChatCompletions {
   create(params: StreamingChatCompletionCreateParams): Promise<AsyncIterable<ChatCompletionChunk>>;
   create(params: NonStreamingChatCompletionCreateParams): Promise<ChatCompletionResponse>;
 }
@@ -89,6 +131,26 @@ export class UnsupportedOfficialModelError extends Error {
   }
 }
 
+export class UnsupportedChatModelError extends Error {
+  statusCode = 400;
+
+  constructor(model: string) {
+    super(`Unsupported chat model: ${model}`);
+    this.name = 'UnsupportedChatModelError';
+  }
+}
+
+export class CompatibleStreamProtocolError extends Error {
+  constructor(message = 'Compatible model API stream ended without [DONE]') {
+    super(message);
+    this.name = 'CompatibleStreamProtocolError';
+  }
+}
+
+export const assertCompatibleModelStreamComplete = (sawDone: boolean) => {
+  if (!sawDone) throw new CompatibleStreamProtocolError();
+};
+
 class CompatibleApiError extends Error {
   statusCode: number;
   responseBody: string;
@@ -102,6 +164,7 @@ class CompatibleApiError extends Error {
 }
 
 const uniqueModels = (models: string[]) => Array.from(new Set(models.filter(Boolean)));
+const DEFAULT_EXTERNAL_MODEL_TIMEOUT_MS = 120_000;
 
 const providerConfigs: ChatProviderConfig[] = [
   {
@@ -168,11 +231,12 @@ class CompatibleLlmClient {
   }
 
   private async postJson<T>(path: string, payload: unknown, signal?: AbortSignal): Promise<T> {
+    const requestSignal = signal || AbortSignal.timeout(DEFAULT_EXTERNAL_MODEL_TIMEOUT_MS);
     const response = await fetch(`${this.baseURL}${path}`, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(payload),
-      signal,
+      signal: requestSignal,
     });
 
     if (!response.ok) {
@@ -188,7 +252,8 @@ class CompatibleLlmClient {
     params: ChatCompletionCreateParams
   ): Promise<ChatCompletionResponse | AsyncIterable<ChatCompletionChunk>> {
     if (!params.stream) {
-      return this.postJson<ChatCompletionResponse>('/chat/completions', params, params.signal);
+      const { signal, ...payload } = params;
+      return this.postJson<ChatCompletionResponse>('/chat/completions', payload, signal);
     }
 
     return this.streamChatCompletion(params);
@@ -199,11 +264,13 @@ class CompatibleLlmClient {
   }
 
   private async *streamChatCompletion(params: ChatCompletionCreateParams): AsyncIterable<ChatCompletionChunk> {
+    const { signal, ...payload } = params;
+    const requestSignal = signal || AbortSignal.timeout(DEFAULT_EXTERNAL_MODEL_TIMEOUT_MS);
     const response = await fetch(`${this.baseURL}/chat/completions`, {
       method: 'POST',
       headers: this.headers(),
-      body: JSON.stringify(params),
-      signal: params.signal,
+      body: JSON.stringify(payload),
+      signal: requestSignal,
     });
 
     if (!response.ok) {
@@ -217,6 +284,7 @@ class CompatibleLlmClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let sawDone = false;
 
     const pullEvent = () => {
       const lfIndex = buffer.indexOf('\n\n');
@@ -238,7 +306,8 @@ class CompatibleLlmClient {
         .map((line) => line.slice('data:'.length).trim())
         .join('\n');
 
-    while (true) {
+    try {
+      while (true) {
       const { done, value } = await reader.read();
       if (done) break;
 
@@ -247,26 +316,67 @@ class CompatibleLlmClient {
       let event = pullEvent();
       while (event !== null) {
         const data = parseEvent(event);
-        if (data === '[DONE]') return;
+        if (data === '[DONE]') {
+          sawDone = true;
+          return;
+        }
         if (data) yield JSON.parse(data) as ChatCompletionChunk;
         event = pullEvent();
       }
-    }
+      }
 
-    buffer += decoder.decode();
-    const data = parseEvent(buffer);
-    if (data && data !== '[DONE]') {
-      yield JSON.parse(data) as ChatCompletionChunk;
+      buffer += decoder.decode();
+      const data = parseEvent(buffer);
+      if (data === '[DONE]') {
+        sawDone = true;
+      } else if (data) {
+        yield JSON.parse(data) as ChatCompletionChunk;
+      }
+      // A cleanly closed SSE response without the sentinel is a truncated
+      // provider stream. Let callers fail closed instead of persisting a
+      // partial answer or executing an incomplete tool call.
+      assertCompatibleModelStreamComplete(sawDone);
+    } finally {
+      await reader.cancel().catch(() => undefined);
     }
   }
 }
 
 export const getDefaultChatModel = () => serverEnv.DEFAULT_CHAT_MODEL || findConfiguredProvider().defaultModel;
 
+const getModelContextWindowTokens = (model: string) => {
+  if (model === 'moonshot-v1-8k') return 8_192;
+  if (model === 'moonshot-v1-32k') return 32_768;
+  if (model === 'moonshot-v1-128k') return 131_072;
+  if (model.startsWith('deepseek-')) return 65_536;
+  if (model.startsWith('qwen-')) return 131_072;
+  if (model.startsWith('kimi-')) return 131_072;
+  // Supported model prefixes above cover the public catalog. Keep a
+  // conservative fallback for a deployment-specific compatible alias.
+  return 32_768;
+};
+
+export const getChatModelCapabilities = (model?: string) => {
+  const { provider, resolvedModel } = resolveChatModelProvider(model);
+  const toolCalling = !(provider.id === 'deepseek' && resolvedModel === 'deepseek-reasoner');
+  return {
+    provider: provider.id,
+    model: resolvedModel,
+    tool_calling: toolCalling,
+    streaming_tool_calls: toolCalling,
+    parallel_tool_calls: toolCalling,
+    structured_output: provider.id === 'qwen' || provider.id === 'deepseek',
+    context_window_tokens: getModelContextWindowTokens(resolvedModel),
+  };
+};
+
 export const resolveChatModelProvider = (model?: string) => {
   const normalizedModel = (model || '').trim();
   if (normalizedModel && isOfficialModelName(normalizedModel)) {
     throw new UnsupportedOfficialModelError(normalizedModel);
+  }
+  if (normalizedModel && !isSupportedChatModelName(normalizedModel)) {
+    throw new UnsupportedChatModelError(normalizedModel);
   }
 
   const exactProvider = providerConfigs.find((provider) => provider.models.includes(normalizedModel));
@@ -297,6 +407,16 @@ export const resolveChatModelProvider = (model?: string) => {
     provider: fallbackProvider,
     resolvedModel: normalizedModel || fallbackProvider.defaultModel,
   };
+};
+
+export const isSupportedChatModelName = (model: string) => {
+  const normalized = model.trim();
+  if (!normalized || isOfficialModelName(normalized)) return false;
+  if (providerConfigs.some((provider) => provider.models.includes(normalized))) return true;
+  return normalized.startsWith('deepseek-')
+    || normalized.startsWith('qwen-')
+    || normalized.startsWith('moonshot-')
+    || normalized.startsWith('kimi-');
 };
 
 const createCompatibleClient = (provider: ChatProviderConfig) => new CompatibleLlmClient(
@@ -334,6 +454,7 @@ export const getModelProviderHealth = () => {
         default_model: provider.defaultModel,
         models: provider.models,
         'has_api_key': hasKey,
+        capabilities: getChatModelCapabilities(provider.defaultModel),
         quota_status: hasKey ? 'unknown' : 'missing_key',
       };
     }),

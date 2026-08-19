@@ -4,231 +4,31 @@ import { toSafeError } from '../lib/safeError';
 import i18n from '../i18n';
 import { chatRequestState } from './chatRequestState';
 import { RequestGenerationGuard } from './requestGeneration';
-import type { SourceLocator } from '../lib/sourceLocator';
+import type {
+  ChatState,
+  Conversation,
+  ConversationComparison,
+  Message,
+  MessagePageInfo,
+} from './chatStore.types';
+import {
+  ChatStreamError,
+  readChatStreamError,
+  readHttpChatError,
+  type ChatSseData,
+} from './chatStream';
 
-export interface Conversation {
-  id: string;
-  project_space_id?: string | null;
-  parent_conversation_id?: string | null;
-  branched_from_message_id?: string | null;
-  title: string;
-  created_at: string;
-  updated_at: string;
-  model?: string;
-  temperature?: number;
-  system_prompt?: string;
-  enable_rag?: boolean;
-  is_pinned?: boolean;
-  archived_at?: string | null;
-  branch_name?: string;
-  is_favorite?: boolean;
-  tags?: string[];
-  note?: string;
-}
-
-export interface Message {
-  id: string;
-  conversation_id?: string;
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-  created_at: string;
-  rag_run_id?: string | null;
-  ragRunId?: string | null;
-  rag_trace?: RagTraceSummary | null;
-  traceSummary?: RagTraceSummary | null;
-  qualitySummary?: RagQualitySummary | null;
-  ragWarning?: boolean;
-  ragError?: {
-    code: string;
-    retryable: boolean;
-  };
-  ragSkipped?: boolean;
-  sources?: ChatSource[];
-}
-
-export interface ChatSource {
-  chunk_id?: string;
-  file_id?: string;
-  filename: string;
-  chunk_index?: number;
-  similarity: number;
-  content: string;
-  document_kind?: string;
-  conversion_generation_id?: string;
-  source_unit_ids?: string[];
-  source_locator?: SourceLocator;
-}
-
-export interface RagTraceStep {
-  step_type: string;
-  status: string;
-  duration_ms: number;
-  input?: Record<string, unknown>;
-  output?: Record<string, unknown>;
-}
-
-export interface RagQualitySummary {
-  retrieval_score: number;
-  citation_score: number;
-  evidence_score: number;
-  overall_score: number;
-  evidence_label: string;
-  support_label?: string;
-  verification_score?: number;
-  risk_level?: string;
-  risk_factors?: string[];
-  missing_markers?: string[];
-  matched_markers?: string[];
-  answer_grounding_status?: string;
-  answer_grounding_score?: number;
-}
-
-export interface RagTraceSummary {
-  mode: string;
-  intent?: {
-    type: string;
-    complexity: string;
-    routes: string[];
-  };
-  planned_queries: string[];
-  trace_steps: RagTraceStep[];
-  quality: RagQualitySummary;
-  answer_grounding?: Record<string, unknown>;
-  cache?: {
-    status: string;
-    hit_type?: string;
-    scope_fingerprint?: string;
-    reused_count?: number;
-  };
-}
-
-export interface ConversationComparison {
-  conversations: Conversation[];
-  messagesByConversation: Record<string, Message[]>;
-}
-
-export interface MessagePageInfo {
-  hasMore: boolean;
-  nextCursor: string | null;
-  limit: number;
-}
-
-export interface ChatStreamErrorPayload {
-  code: string;
-  message: string;
-  retryable: boolean;
-}
-
-interface ChatSseData {
-  userMessageId?: string;
-  assistantMessageId?: string;
-  content?: string;
-  sources?: Message['sources'];
-  ragRunId?: string;
-  traceSummary?: RagTraceSummary;
-  qualitySummary?: RagQualitySummary;
-  ragSkipped?: boolean;
-  rag_warning?: boolean;
-  ragError?: unknown;
-  error?: unknown;
-}
-
-export class ChatStreamError extends Error {
-  readonly code: string;
-  readonly retryable: boolean;
-
-  constructor(payload: ChatStreamErrorPayload) {
-    super(payload.message);
-    this.name = 'ChatStreamError';
-    this.code = payload.code;
-    this.retryable = payload.retryable;
-  }
-}
-
-const readChatStreamError = (data: ChatSseData) => {
-  const rawError = data.error ?? data.ragError;
-  if (!rawError) return null;
-
-  if (typeof rawError === 'string') {
-    return new ChatStreamError({
-      code: 'chat_stream_failed',
-      message: rawError,
-      retryable: true,
-    });
-  }
-  if (typeof rawError !== 'object') return null;
-
-  const candidate = rawError as Record<string, unknown>;
-  const isRagError = Boolean(data.ragError);
-  return new ChatStreamError({
-    code: typeof candidate.code === 'string' && candidate.code
-      ? candidate.code
-      : isRagError ? 'rag_retrieval_unavailable' : 'chat_stream_failed',
-    message: typeof candidate.message === 'string' && candidate.message
-      ? candidate.message
-      : isRagError
-        ? 'Workspace document retrieval failed. Retry before relying on an answer.'
-        : 'Failed to generate response',
-    retryable: candidate.retryable !== false,
-  });
-};
-
-const readHttpChatError = async (response: Response) => {
-  let message = response.statusText || `Chat request failed (${response.status})`;
-  try {
-    const body = await response.json() as { error?: unknown };
-    if (typeof body.error === 'string' && body.error) message = body.error;
-    if (
-      body.error
-      && typeof body.error === 'object'
-      && typeof (body.error as { message?: unknown }).message === 'string'
-    ) {
-      message = (body.error as { message: string }).message;
-    }
-  } catch {
-    // The status text remains the safe fallback for non-JSON responses.
-  }
-
-  return new ChatStreamError({
-    code: `chat_http_${response.status}`,
-    message,
-    retryable: response.status === 429 || response.status >= 500,
-  });
-};
-
-interface ChatState {
-  conversations: Conversation[];
-  currentConversationId: string | null;
-  messages: Message[];
-  messagesCache: Record<string, Message[]>;
-  messagePagination: Record<string, MessagePageInfo>;
-  loadingConversations: boolean;
-  loadingMessages: boolean;
-  loadingOlderMessages: boolean;
-  sendingMessage: boolean;
-  isStopped: boolean; // Add this
-  abortController: AbortController | null;
-
-  fetchConversations: (options?: { includeArchived?: boolean }) => Promise<void>;
-  createConversation: (title?: string, settings?: Partial<Conversation>) => Promise<string>;
-  renameConversation: (id: string, title: string) => Promise<void>;
-  updateConversation: (id: string, updates: Partial<Conversation>) => Promise<void>;
-  toggleConversationPinned: (id: string) => Promise<void>;
-  toggleConversationFavorite: (id: string) => Promise<void>;
-  branchConversation: (conversationId: string, messageId?: string) => Promise<string | null>;
-  compareConversations: (conversationId: string, otherConversationId: string) => Promise<ConversationComparison | null>;
-  archiveConversation: (id: string) => Promise<void>;
-  unarchiveConversation: (id: string) => Promise<void>;
-  deleteConversation: (id: string) => Promise<void>;
-  deleteMessage: (messageId: string) => Promise<void>;
-  regenerateMessage: () => Promise<void>;
-  stopGeneration: () => void;
-  continueGeneration: () => Promise<void>;
-  selectConversation: (id: string) => Promise<void>;
-  loadOlderMessages: (id?: string) => Promise<void>;
-  sendMessage: (content: string, isContinue?: boolean, targetConversationId?: string) => Promise<void>;
-  reset: () => void;
-}
+export type {
+  ChatSource,
+  Conversation,
+  ConversationComparison,
+  Message,
+  MessagePageInfo,
+  RagQualitySummary,
+  RagTraceStep,
+  RagTraceSummary,
+} from './chatStore.types';
+export { ChatStreamError } from './chatStream';
 
 const DEFAULT_MESSAGE_PAGE_LIMIT = 100;
 
@@ -435,6 +235,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       const res = await api.post('/chat/conversations', {
         title,
         project_space_id: settings?.project_space_id,
+        agent_id: settings?.agent_id,
       });
       const newConv = res.data;
 
@@ -535,6 +336,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       console.error('Failed to update conversation:', toSafeError(err));
       // Rollback
       set({ conversations: previousConversations });
+      throw err;
     }
   },
 
@@ -782,11 +584,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
   stopGeneration: () => {
     const conversationId = get().currentConversationId;
     if (!conversationId || !chatRequestState.stopStream(conversationId)) return;
+    const activeAssistant = [...getConversationMessages(get(), conversationId)]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    const activeAgentRunId = activeAssistant?.agentRunId || activeAssistant?.agent_run_id;
+    void (activeAgentRunId
+      ? api.post(`/agent-runs/${activeAgentRunId}/cancel`, {})
+      : api.post(`/agent-runs/conversations/${conversationId}/cancel`, {}))
+      .catch(() => undefined);
+    // Remove the local numeric placeholder immediately. The server persists a
+    // terminal Agent message when possible; re-fetching reconciles either that
+    // message or a partially generated regular answer.
+    updateConversationMessages(set, conversationId, (messages) => {
+      const last = messages.at(-1);
+      if (last?.role !== 'assistant' || !/^\d+$/.test(last.id)) return messages;
+      return messages.slice(0, -1);
+    });
     set({
       sendingMessage: false,
       isStopped: true,
       abortController: null,
     });
+    void fetchConversationMessages(conversationId, set);
   },
 
   continueGeneration: async () => {
@@ -797,8 +616,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // Only continue if the last message is from assistant
     if (lastMsg.role !== 'assistant') return;
 
-    // We send a "Continue" prompt, but we handle it specially in sendMessage
-    // to NOT add a new user message, but to append to the assistant message.
+    // The server receives an explicit continue marker, so this prompt is not
+    // persisted as a hidden user message.
     // Improved Prompt: Quote the last few characters to guide the LLM
     const lastChars = lastMsg.content.slice(-50).replace(/\n/g, ' '); // Get last 50 chars, flatten newlines
     const prompt = `Please continue your response. You stopped at: "...${lastChars}". Continue exactly from there, do not repeat the context.`;
@@ -824,6 +643,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (activeController && cachedMessages) return;
     await fetchConversationMessages(id, set);
+  },
+
+  refreshMessages: async (id?: string) => {
+    const conversationId = id || get().currentConversationId;
+    if (!conversationId) return false;
+    return fetchConversationMessages(conversationId, set);
   },
 
   loadOlderMessages: async (id?: string) => {
@@ -894,16 +719,27 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     let tempUserId = '';
     let tempAiId = '';
-    let initialAssistantMessage: Message | null = null;
     let streamEstablished = false;
+    let persistedAssistantMessageId = false;
+    let activeAgentRunId: string | null = null;
 
-    // If continue, we don't add user message, and we reuse the last assistant message ID
+    // Continue creates a fresh assistant placeholder without creating a user
+    // message. The server uses the explicit continue marker to keep the
+    // prompt out of persisted history.
     if (isContinue) {
-      // Find the last assistant message to append to
       const lastMsg = messages[messages.length - 1];
       if (lastMsg?.role === 'assistant') {
-        tempAiId = lastMsg.id;
-        initialAssistantMessage = { ...lastMsg };
+        tempAiId = (Date.now() + 1).toString();
+        replaceConversationMessages(
+          set,
+          currentConversationId,
+          [...messages, {
+            id: tempAiId,
+            role: 'assistant',
+            content: '',
+            created_at: new Date().toISOString(),
+          }],
+        );
       } else {
         // Fallback if somehow last msg is not assistant
         isContinue = false;
@@ -942,14 +778,6 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const rollbackFailedAssistant = (removeOptimisticUser: boolean) => {
       const currentMsgs = getConversationMessages(get(), currentConversationId);
-      if (isContinue && initialAssistantMessage) {
-        const assistantToRestore = initialAssistantMessage;
-        updateMessages(currentMsgs.map((message) => (
-          message.id === tempAiId ? assistantToRestore : message
-        )));
-        return;
-      }
-
       updateMessages(currentMsgs.filter((message) => (
         message.id !== tempAiId
         && (!removeOptimisticUser || message.id !== tempUserId)
@@ -965,7 +793,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
         // 'include' tells the browser to send cookies even for cross-origin calls (if CORS allows),
         // or same-origin calls.
         credentials: 'include',
-        body: JSON.stringify({ content }),
+        body: JSON.stringify(isContinue ? { content, continue: true } : { content }),
         signal: abortController.signal
       });
 
@@ -1038,6 +866,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
               }
 
               if (data.assistantMessageId && tempAiId) {
+                persistedAssistantMessageId = true;
                 const currentMsgs = getConversationMessages(get(), currentConversationId);
                 const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
                 if (lastMsgIndex !== -1) {
@@ -1061,6 +890,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...updatedMsgs[lastMsgIndex],
                     sources: data.sources
+                  };
+                  updateMessages(updatedMsgs);
+                }
+              }
+
+              if (data.agentRunId || data.agentEvent) {
+                activeAgentRunId = data.agentRunId || activeAgentRunId;
+                const currentMsgs = getConversationMessages(get(), currentConversationId);
+                const lastMsgIndex = currentMsgs.findIndex(m => m.id === tempAiId);
+                if (lastMsgIndex !== -1) {
+                  const currentMessage = currentMsgs[lastMsgIndex];
+                  const updatedMsgs = [...currentMsgs];
+                  updatedMsgs[lastMsgIndex] = {
+                    ...currentMessage,
+                    agentRunId: data.agentRunId || currentMessage.agentRunId,
+                    agentEvents: data.agentEvent
+                      ? [...(currentMessage.agentEvents || []), data.agentEvent]
+                      : currentMessage.agentEvents,
                   };
                   updateMessages(updatedMsgs);
                 }
@@ -1154,11 +1001,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     } catch (err: unknown) {
       if (isAbortError(err)) {
+        if (chatRequestState.isStopped(currentConversationId)) {
+          void (activeAgentRunId
+            ? api.post(`/agent-runs/${activeAgentRunId}/cancel`, {})
+            : api.post(`/agent-runs/conversations/${currentConversationId}/cancel`, {}))
+            .catch(() => undefined);
+        }
         return;
       }
       console.error('Failed to send message:', toSafeError(err));
       if (chatRequestState.isCurrentStream(currentConversationId, abortController)) {
-        rollbackFailedAssistant(!streamEstablished);
+        if (!persistedAssistantMessageId) rollbackFailedAssistant(!streamEstablished);
       }
       throw err;
     } finally {

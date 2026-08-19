@@ -16,6 +16,7 @@ import Modal from '../components/Modal';
 import DocumentViewerModal, { type DocumentReference } from '../components/DocumentViewerModal';
 import Skeleton from '../components/Skeleton';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
+import { useShallow } from 'zustand/react/shallow';
 import {
   useKnowledgeFilesStore,
   type KnowledgeFile,
@@ -30,7 +31,10 @@ interface UploadingFile {
 
 export default function KnowledgeBase() {
   const { t } = useTranslation();
-  const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore();
+  const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore(useShallow((state) => ({
+    currentProjectSpaceId: state.currentProjectSpaceId,
+    projectSpaces: state.projectSpaces,
+  })));
   const files = useKnowledgeFilesStore((state) => state.files);
   const isLoading = useKnowledgeFilesStore((state) => state.loading);
   const refreshKnowledgeFiles = useKnowledgeFilesStore((state) => state.refreshFiles);

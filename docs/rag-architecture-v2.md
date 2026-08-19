@@ -12,7 +12,9 @@
 6. 重排选出 Child 后，按 `file_id + parent_section_id` 回取同一 Markdown Section 的有限相邻 Chunk，合成不重复标题、限制长度的 Parent 上下文；数据库失败时保留 Child 降级。
 7. 回答前按 Token Budget 去重、跨来源轮转和公平分配上下文。回答模型与声明验证器使用完全相同的截断文本，验证器不能读取未进入 Prompt 的原文。RAG 已触发但上下文为空时直接返回版本化的确定性证据不足拒答并跳过答案模型；无来源事实性回答按 unsupported 处理，正确拒答按 `not_applicable` 处理，不再把零证据伪装成成功回答。
 
-图通道不是普通问答的必经步骤。启用 `GRAPH_EXTRACTION_ENABLED` 后，必须独立配置完整的 `GRAPH_EXTRACTION_API_KEY/BASE_URL/MODEL`，不会隐式复用 Judge Provider。兼容 LLM 只允许返回严格 JSON，并且实体 mention、指代、关系端点和关系证据都必须逐字存在于同一 Section 的有界窗口中；`GRAPH_CONTEXT_WINDOW_CHUNKS=1` 表示目标 Chunk 加前后各一个，设为 `2` 时是前后各两个。单个目标窗口的非法输出只让该目标退回保守规则抽取，不会把规则结果混入已经成功的 LLM 抽取。来源中的开放 `entity_type_label` 和 `relation_label` 会被保留，同时映射到受控安全大类以限制存储和遍历；无法安全映射的关系使用 `RELATED_TO`，不宣称自动生成无限本体。实体按规范名与 aliases 检索，对唯一、双向可证明的 canonical/alias 对应进行合并，歧义 alias 不自动合并。检索从精确实体种子沿真实 `RELATED_TO` 做最多三跳遍历，并限制种子、分支、路径、Hub 度数和证据数量。每条路径都必须能回到原始 Chunk 和 evidence span；规则 fallback 路径会降权，`graph_rank_score` 只是排序特征，不冒充概率或可信度。检索 Trace 会显式返回 `not_routed`、`rules_fallback` 或 `llm_primary_with_rule_fallback`。
+图通道不是普通问答的必经步骤。启用 `GRAPH_EXTRACTION_ENABLED` 后，必须独立配置完整的 `GRAPH_EXTRACTION_API_KEY/BASE_URL/MODEL`，不会隐式复用 Judge Provider；关闭时 capability 报告 `degraded/rules_only`，不得作为企业图谱 healthy。兼容 LLM 只允许返回严格 JSON，并且实体 mention、指代、关系端点和关系证据都必须逐字存在于同一 Section 的有界窗口中；`GRAPH_CONTEXT_WINDOW_CHUNKS=1` 表示目标 Chunk 加前后各一个，设为 `2` 时是前后各两个。验证器除检查逐字证据外，还要求证据包含受控关系或开放谓词的语义 cue，两个实体仅仅共现不会入图。否定、计划/义务、条件和历史陈述分别写入 `polarity` 与 `modality`，不能冒充当前肯定事实。单个目标窗口的非法输出只让该目标退回保守规则抽取，失败原因进入文档级结构化统计。
+
+`core-v2` 使用保守身份策略：同一文档内由 `entity_key` 区分同名实体，跨文档默认不因名字或单一 alias 自动合并；稳定 `entity_id` 包含租户、空间、文档与局部实体身份。每个关系观察生成证据级 `fact_id`，Neo4j 同时写入唯一 `Fact` 节点与按 `fact_id` 区分的 `RELATED_TO`，所以同端点多事实不会覆盖。GraphExtraction cache key 绑定内容、抽取器、本体和 Provider fingerprint；Document 到缓存的 usage 关系记录来源 Chunk，缓存有 TTL，删除文件或 Generation 时撤销引用并清理无主节点。检索先按规范名/alias/受限包含匹配解析多个实体实例，再以 `entity_id` 做最多三跳遍历，并限制种子、分支、路径、Hub 度数和证据数量。所有候选最后由 PostgreSQL active-generation authority 复核。Graph Explorer 只绘制带后端事实和活动 Chunk 证据的边，不再从 Chunk 实体两两生成共现边；页面显示开放谓词、否定/模态、抽取通道、原文位置和转换警告。规则 fallback 路径降权，`graph_rank_score` 只是排序特征，不冒充概率或可信度。
 
 ## 文档摄取
 
@@ -83,19 +85,19 @@ BullMQ 有三个独立队列：文档摄取、RAG 测评、资源清理。消息
 - Graph LLM 默认关闭。规则 fallback 只覆盖有限的显式关系并在检索中降权；开放标签不等于自动学习本体，也不保证任意领域、任意多跳推理正确。
 - 声明验证器是保守、确定性的词项/数字/版本/日期/否定校验，不等同语义 entailment 模型；Judge 未配置或实际答案未生成时维度保持 `N/A`。
 - Query Rewrite、Reranker、Graph 抽取与 Judge 都是显式 opt-in；`npm run check:env` 在开关为 true 时要求对应 key/base URL/model 成套存在。Redis L1 同样只有 `REDIS_CACHE_ENABLED=true` 且 `CACHE_REDIS_URL` 与队列 Redis 分离时启用；缺少真实凭证时保持关闭属于预期状态。
-- `npm run check:ops` 会解析后端 PostgreSQL/Redis/RAG readiness、RAG 的 Milvus/Elasticsearch/Neo4j 检查和上述 capability 状态，而不是只看 HTTP 200；`npm run rag:smoke` 继续验证真实 Markdown 摄取、三套索引写入、检索与清理。没有运行这两条真实环境命令时，默认单元测试不能代替部署验收。
+- `npm run check:ops` 会解析后端 PostgreSQL/Redis/RAG readiness、RAG 的 Milvus/Elasticsearch/Neo4j 检查和上述 capability 状态，而不是只看 HTTP 200；`npm run rag:smoke` 继续验证真实文档摄取、三套索引写入、检索与清理。没有运行这两条真实环境命令时，默认单元测试不能代替部署验收。
 
 ## 验收边界
 
 根目录 `npm test` 会执行可复现的 `rag-answer-eval` 与 `rag-answer-run` 答案质量门禁；依赖特定外部资料或在线模型的 `rag-demo-*` 仍不进入默认 CI。`.github/workflows/quality.yml` 在 Linux、Node 22、Python 3.12 上安装 hash-locked Python 依赖，然后执行完整 test 与 production build。质量门禁覆盖：
 
 - 路由传递、并行执行、RRF 确定性与单路降级；
-- Markdown 标题继承、流式切分与只允许 Markdown；
+- Markdown/TXT 直读，以及文本型 PDF、DOCX、PPTX、XLSX、CSV 的本地转换、来源映射、标题继承与流式切分；
 - 图实体规范化、严格 LLM JSON/证据校验、保守 alias 消歧、跨 Chunk 指代与有界多跳检索；
 - Recall/MRR、实际回答、声明到引用映射、失败分母和 N/A 语义；
 - Parent-child 回取、Token Budget 截断以及“不可使用被截断事实”的边界；
 - Redis exact cache 的用户/项目/版本隔离、跨会话命中、并发单飞、过期与故障回源，限流原子性；
 - BullMQ jobId、PostgreSQL claim/lease/retry 与丢消息重建；
-- 一个真实 Markdown 端到端摄取链路。
+- 一个真实支持格式文档的端到端摄取链路。
 
 Redis、Neo4j 等真实容器集成测试只有在相应环境配置完成后才运行；未配置时必须明确记为 skip，不能写成已验证。

@@ -14,7 +14,7 @@ import {
   Mail,
   UserRound,
 } from 'lucide-react';
-import { Navigate } from 'react-router-dom';
+import Navigate from '../components/Navigate';
 import { useTranslation } from 'react-i18next';
 import {
   getAuthFieldOrder,

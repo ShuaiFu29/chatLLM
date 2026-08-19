@@ -5,6 +5,10 @@ import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
 import {
+  deleteExpiredAgentRunCancelIntents,
+  failStaleAgentRuns as failStaleAgentRunsRepository,
+} from '../repositories/agentRuns';
+import {
   abortMultipartObjectUpload,
   deleteObject,
   headObjectMetadata,
@@ -151,6 +155,8 @@ class MaintenanceService {
   private async runOnce() {
     const results = await Promise.allSettled([
       deleteExpiredSessions(),
+      deleteExpiredAgentRunCancelIntents(),
+      this.recoverStaleAgentRuns(),
       this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),
@@ -168,6 +174,13 @@ class MaintenanceService {
   private async failStaleRunningRagEvalRuns() {
     const count = await failStaleRunningRagEvalRuns(serverEnv.RAG_EVAL_STALE_RUN_MS);
     metrics.recordRagEvalRunsStaleFailed(count);
+  }
+
+  private async recoverStaleAgentRuns() {
+    const count = await failStaleAgentRunsRepository(serverEnv.AGENT_RUN_STALE_AFTER_MS);
+    if (count > 0) {
+      console.warn(`[Maintenance] Recovered ${count} stale Agent runs`);
+    }
   }
 
   private async resetStaleRagEvalRunJobs() {

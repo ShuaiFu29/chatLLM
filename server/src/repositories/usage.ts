@@ -12,6 +12,10 @@ export interface UsageSummary {
   failedDocuments: number;
   totalCitations: number;
   estimatedTokens: number;
+  agentRunCount: number;
+  agentPromptTokens: number;
+  agentCompletionTokens: number;
+  agentTotalTokens: number;
   modelUsage: UsageModelUsage[];
   firstMessageAt: string | null;
   lastMessageAt: string | null;
@@ -117,6 +121,10 @@ interface UsageSummaryRow {
   failed_documents: number | string | null;
   total_citations: number | string | null;
   estimated_tokens: number | string | null;
+  agent_run_count: number | string | null;
+  agent_prompt_tokens: number | string | null;
+  agent_completion_tokens: number | string | null;
+  agent_total_tokens: number | string | null;
   first_message_at: string | null;
   last_message_at: string | null;
 }
@@ -265,6 +273,14 @@ export const getUsageSummaryForUser = async (userId: string): Promise<UsageSumma
        left join messages m on m.conversation_id = c.id
        where c.user_id = $1
        group by c.user_id
+     ), agent_usage as (
+       select
+         count(*)::int as agent_run_count,
+         coalesce(sum(case when token_usage ->> 'prompt_tokens' ~ '^[0-9]+$' then (token_usage ->> 'prompt_tokens')::bigint else 0 end), 0)::bigint as agent_prompt_tokens,
+         coalesce(sum(case when token_usage ->> 'completion_tokens' ~ '^[0-9]+$' then (token_usage ->> 'completion_tokens')::bigint else 0 end), 0)::bigint as agent_completion_tokens,
+         coalesce(sum(case when token_usage ->> 'total_tokens' ~ '^[0-9]+$' then (token_usage ->> 'total_tokens')::bigint else 0 end), 0)::bigint as agent_total_tokens
+       from agent_runs
+       where user_id = $1
      )
      select
        (select count(*)::int from project_spaces
@@ -282,14 +298,20 @@ export const getUsageSummaryForUser = async (userId: string): Promise<UsageSumma
         where user_id = $1 and status = 'failed') as failed_documents,
        coalesce(message_counts.total_citations, 0)::int as total_citations,
        coalesce(message_counts.estimated_tokens, 0)::int as estimated_tokens,
+       coalesce(agent_usage.agent_run_count, 0)::int as agent_run_count,
+       coalesce(agent_usage.agent_prompt_tokens, 0)::bigint as agent_prompt_tokens,
+       coalesce(agent_usage.agent_completion_tokens, 0)::bigint as agent_completion_tokens,
+       coalesce(agent_usage.agent_total_tokens, 0)::bigint as agent_total_tokens,
        message_counts.first_message_at,
        message_counts.last_message_at
      from (select $1::uuid as user_id) usage_scope
-     left join message_counts on message_counts.user_id = usage_scope.user_id`,
+     left join message_counts on message_counts.user_id = usage_scope.user_id
+     cross join agent_usage`,
     [userId]
   );
 
   const row = rows[0];
+  const agentTotalTokens = toCount(row?.agent_total_tokens);
   const { rows: modelRows } = await query<UsageModelUsageRow>(
     `select
        coalesce(c.model, 'deepseek-chat') as model,
@@ -314,7 +336,11 @@ export const getUsageSummaryForUser = async (userId: string): Promise<UsageSumma
     completedDocuments: toCount(row?.completed_documents),
     failedDocuments: toCount(row?.failed_documents),
     totalCitations: toCount(row?.total_citations),
-    estimatedTokens: toCount(row?.estimated_tokens),
+    estimatedTokens: toCount(row?.estimated_tokens) + agentTotalTokens,
+    agentRunCount: toCount(row?.agent_run_count),
+    agentPromptTokens: toCount(row?.agent_prompt_tokens),
+    agentCompletionTokens: toCount(row?.agent_completion_tokens),
+    agentTotalTokens,
     modelUsage: modelRows.map((modelRow) => ({
       model: modelRow.model || 'deepseek-chat',
       conversationCount: toCount(modelRow.conversation_count),

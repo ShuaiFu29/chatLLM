@@ -247,14 +247,15 @@ print("ok")
 
     def test_readiness_helpers_are_defined_for_database_and_vector_store(self):
         db_source = (ROOT / "db.py").read_text(encoding="utf-8")
+        pool_source = (ROOT / "database_pool.py").read_text(encoding="utf-8")
         vector_source = (ROOT / "vector_store.py").read_text(encoding="utf-8")
         keyword_source = (ROOT / "keyword_store.py").read_text(encoding="utf-8")
         graph_source = (ROOT / "graph_store.py").read_text(encoding="utf-8")
 
         self.assertIn("def check_database_ready", db_source)
-        self.assertIn("class _ConnectionPool", db_source)
-        self.assertIn("settings.rag_db_pool_max", db_source)
-        self.assertIn("settings.rag_db_pool_timeout_ms", db_source)
+        self.assertIn("class _ConnectionPool", pool_source)
+        self.assertIn("settings.rag_db_pool_max", pool_source)
+        self.assertIn("settings.rag_db_pool_timeout_ms", pool_source)
         self.assertIn("select 1", db_source.lower())
         self.assertIn("def check_vector_store_ready", vector_source)
         self.assertIn("client.has_collection", vector_source)
@@ -264,8 +265,8 @@ print("ok")
         self.assertIn("settings.neo4j_url", graph_source)
 
     def test_database_connections_use_configured_connect_timeout(self):
-        db_source = (ROOT / "db.py").read_text(encoding="utf-8")
-        create_connection_body = db_source.split("def _create_connection", 1)[1].split("def acquire", 1)[0]
+        pool_source = (ROOT / "database_pool.py").read_text(encoding="utf-8")
+        create_connection_body = pool_source.split("def _create_connection", 1)[1].split("def acquire", 1)[0]
 
         self.assertIn("connect_timeout", create_connection_body)
         self.assertIn("settings.rag_db_pool_timeout_ms", create_connection_body)

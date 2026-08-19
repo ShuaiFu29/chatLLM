@@ -149,6 +149,7 @@ export class ChatController {
       user,
       conversationId,
       content: body.content,
+      continueGeneration: body.continue === true,
       connection,
       requestId,
     });
