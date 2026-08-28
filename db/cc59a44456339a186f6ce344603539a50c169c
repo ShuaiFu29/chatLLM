@@ -1,0 +1,110 @@
+server/migrations/0046_agent_tool_policy_step.sql
+  s_bc44878cb4b32c::t_4fe58cd79408b0 1-17
+server/src/modules/agents/runtime/agent-tool.ts
+  s_bc44878cb4b32c::t_c807b787e7352c 17-25
+tasks/README.md
+  s_bc44878cb4b32c::t_edd678733af3e1 30
+  s_bc44878cb4b32c::t_a2b170820af68f 10-11
+server/migrations/0048_agent_tool_invocation_limit.sql
+  s_bc44878cb4b32c::t_5af1577f44f41d 1-22
+server/migrations/0045_agent_run_budget_ledger.sql
+  s_bc44878cb4b32c::t_37818d0c921e99 1-88
+server/src/repositories/agentRuns.ts
+  s_bc44878cb4b32c::t_147e9cd927cb31 255-338,341-384
+  s_bc44878cb4b32c::t_24c37eb923800c 30-32
+server/src/modules/agents/runtime/custom-http-tool.ts
+  s_bc44878cb4b32c::t_29c916bd7fcd09 12-15
+  s_bc44878cb4b32c::t_881dda03ee3fa2 69-81
+tasks/12-Agent能力强化-P0至P5.md
+  s_bc44878cb4b32c::t_d136fbe2ed0de6 1-229
+server/src/modules/agents/runtime/subagent-runtime.ts
+  s_bc44878cb4b32c::t_ecb6918252b410 1-91
+server/migrations/0050_agent_subagent_queue.sql
+  s_bc44878cb4b32c::t_2527dcdb5172eb 1-49
+server/migrations/0051_agent_approval_bubbling.sql
+  s_bc44878cb4b32c::t_0344338119406f 1-34
+server/src/modules/agents/runtime/tool-policy.ts
+  s_bc44878cb4b32c::t_fd9d200d6a2ac7 1-123
+server/src/modules/agents/agent-runs.controller.ts
+  s_bc44878cb4b32c::t_cc7d924260c30c 44-56
+server/src/modules/agents/agent-memories.service.ts
+  s_bc44878cb4b32c::t_518860031e56da 52-56
+  s_bc44878cb4b32c::t_5bcd5993bd723d 1-51,57-138
+server/src/modules/agents/runtime/agent-tool-error.ts
+  s_bc44878cb4b32c::t_731566b7165d52 29-38
+  s_bc44878cb4b32c::t_3053dc6fb068e2 63-81
+server/src/repositories/agentToolInvocations.ts
+  s_bc44878cb4b32c::t_2a355291089f2c 1-75
+server/src/modules/agents/runtime/subagent-tool.ts
+  s_bc44878cb4b32c::t_6635c47aed393b 1-17,19-161
+server/migrations/0047_agent_memories.sql
+  s_bc44878cb4b32c::t_7d64ab5d93aa0e 1-71
+server/src/modules/agents/agent-memories.controller.ts
+  s_bc44878cb4b32c::t_159749a3f70ad1 1-47
+server/test/agent-run-tree-postgres.integration.test.mjs
+  s_bc44878cb4b32c::t_80525a5d971dfc 256
+  s_bc44878cb4b32c::t_d990661be9e882 76-77,79-80
+  s_bc44878cb4b32c::t_e51aecfdfbecd4 140
+  s_bc44878cb4b32c::t_0ef55306bfd1aa 212
+  s_bc44878cb4b32c::t_f4b6b01cbd468b 610-611,614
+  s_bc44878cb4b32c::t_d75e4be0014a30 1-62,64-75,78,81-138,141-155,157-162,164-169,171-184,188-194,197-198,201-211,213-216,219-229,232-240,243-255,257-267,270,273-302,305,308-314,317-325,328-342,344-346,349,352-366,369-370,372-425,427-443,446-447,449-589,591,597-602,606,608-609,612-613,615-633,635-834,836-839
+server/src/repositories/agentSubagentQueue.ts
+  s_bc44878cb4b32c::t_3f3d92078b673f 1,3-16,18-196
+tasks/13-Agent能力强化补完与真实验证.md
+  s_bc44878cb4b32c::t_fbf6927f614c2e 1-202
+server/src/repositories/agentMemories.ts
+  s_bc44878cb4b32c::t_5dc438b18fb93d 216-277
+  s_bc44878cb4b32c::t_56e5415da95c35 1-81,84-215
+server/src/repositories/agentRunBudgets.ts
+  s_bc44878cb4b32c::t_257583d7540fef 1-190
+server/src/modules/agents/agent-run.service.ts
+  s_bc44878cb4b32c::t_456a2a4190dc5a 987-1014
+  s_bc44878cb4b32c::t_89b1128d91a950 1191-1194
+client/src/features/agents/types.ts
+  s_bc44878cb4b32c::t_3abce8d172dd27 117-139,141-142,146-148,150
+  s_bc44878cb4b32c::t_641563997729c7 140
+rag-service/tests/test_agentic_retrieval.py
+  s_bc44878cb4b32c::t_861a60a4be6537 1470-1473
+server/src/modules/agents/subagent-executor.ts
+  s_bc44878cb4b32c::t_650ab4fbf8153d 376
+  s_bc44878cb4b32c::t_84bc6778bc0885 1-223,227-375,377-409,413-649,651,653,660,704
+server/test/agent-runtime.test.mjs
+  s_bc44878cb4b32c::t_ea51254a242c0a 1901-2013
+  s_bc44878cb4b32c::t_4f75548795f507 2190-2313
+  s_bc44878cb4b32c::t_19b66964d1925f 2486-2490,2492-2493
+  s_bc44878cb4b32c::t_ce815854722a98 2746-2852
+  s_bc44878cb4b32c::t_4acc6f3462933e 2564-2745
+  s_bc44878cb4b32c::t_8fc51889c7cd6e 2853-2965
+  s_bc44878cb4b32c::t_573e6e88b8581b 2966-3019
+  s_bc44878cb4b32c::t_daa83d1756e1b7 2314-2485,2495-2506,2510,2524-2563
+  s_bc44878cb4b32c::t_1ca254bbe8ec74 2507-2509,2511-2523
+  s_bc44878cb4b32c::t_0689086c07cc36 621-623,626
+  s_bc44878cb4b32c::t_4dfcf2f75a58de 613-617
+  s_bc44878cb4b32c::t_a1d28b02103000 2014-2189
+  s_bc44878cb4b32c::t_4bf9b45d710d0c 3020-3139
+  s_bc44878cb4b32c::t_d156bfabe88230 624-625,627-628
+  s_bc44878cb4b32c::t_03c95edea16e09 2491,2494
+server/src/modules/agents/runtime/memory-tool.ts
+  s_bc44878cb4b32c::t_96637c7101f370 1-92,101-103,114,117-267
+server/src/services/maintenance.ts
+  s_bc44878cb4b32c::t_d2fa8808e64e9e 161
+  s_bc44878cb4b32c::t_da0e6dc52a6267 7
+client/src/features/agents/AgentRunTimeline.tsx
+  s_bc44878cb4b32c::t_287f5648e32d7c 2
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.43-trip",
+  "base_commit_sha": "dbcc59a44456339a186f6ce344603539a50c169c",
+  "prompts": {},
+  "sessions": {
+    "s_bc44878cb4b32c": {
+      "agent_id": {
+        "tool": "kiro-desktop",
+        "id": "sess_2b36959e-7917-4ed5-b288-f4ccffa61cc2",
+        "model": "claude-opus-5"
+      },
+      "human_author": "kangyi <kangyi@trip.com>"
+    }
+  }
+}
