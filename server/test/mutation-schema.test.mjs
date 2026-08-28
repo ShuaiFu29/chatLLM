@@ -64,10 +64,15 @@ const expectedRouteSchemas = {
     'agentToolUpdate',
     'agentToolDelete',
   ],
+  'modules/agents/agent-memories.controller.ts': [
+    'agentMemorySupersede',
+    'agentMemoryDelete',
+  ],
   'modules/agents/agent-runs.controller.ts': [
     'agentRunCancel',
     'agentRunConversationCancel',
     'agentRunApprovalDecision',
+    'agentRunApprovalBatchDecision',
   ],
   'modules/rag-eval/rag-eval.controller.ts': [
     'ragEvalDatasetCreate',
@@ -153,6 +158,15 @@ const validBodies = {
   agentRunCancel: {},
   agentRunConversationCancel: {},
   agentRunApprovalDecision: { decision: 'approved', reason: 'User confirmed the operation' },
+  agentMemorySupersede: { superseded_by: UUID },
+  agentMemoryDelete: {},
+  agentRunApprovalBatchDecision: {
+    decisions: [{
+      approval_id: UUID,
+      decision: 'approved',
+      reason: 'User confirmed both operations',
+    }],
+  },
   ragEvalDatasetCreate: { name: 'Dataset' },
   ragEvalDatasetUpdate: { name: 'Dataset' },
   ragEvalDatasetDelete: {},
@@ -203,6 +217,9 @@ const validParams = {
   agentRunCancel: { runId: UUID },
   agentRunConversationCancel: { conversationId: UUID },
   agentRunApprovalDecision: { runId: UUID, approvalId: UUID },
+  agentRunApprovalBatchDecision: { runId: UUID },
+  agentMemorySupersede: { memoryId: UUID },
+  agentMemoryDelete: { memoryId: UUID },
   ragEvalDatasetUpdate: { datasetId: UUID },
   ragEvalDatasetDelete: { datasetId: UUID },
   ragEvalCaseCreate: { datasetId: UUID },

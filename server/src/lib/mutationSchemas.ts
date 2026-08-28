@@ -267,6 +267,35 @@ const agentApprovalDecisionBody = strictBody({
   reason: optionalText(1000),
 });
 
+/**
+ * Deciding several approvals in one request.
+ *
+ * Every entry names the approval it decides. There is deliberately no
+ * "approve everything pending" form: an approval created between the moment the
+ * list was rendered and the moment it was submitted would be decided by a human
+ * who never saw it, which is exactly the guarantee the approval exists to provide.
+ */
+const agentApprovalBatchDecisionBody = strictBody({
+  decisions: z.array(strictObject({
+    approval_id: uuid,
+    decision: z.enum(['approved', 'rejected']),
+    reason: optionalText(1000),
+  })).min(1).max(20).superRefine((decisions, context) => {
+    const ids = decisions.map((entry) => entry.approval_id);
+    if (new Set(ids).size !== ids.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Each approval may appear at most once in a batch',
+      });
+    }
+  }),
+});
+
+const agentMemoryIdParams = strictObject({ memoryId: uuid });
+// Superseding rather than deleting keeps the fact that a statement once applied,
+// which is why the replacement has to be named explicitly.
+const agentMemorySupersedeBody = strictBody({ superseded_by: uuid });
+
 const agentToolConfiguration = z.record(z.string(), z.unknown());
 const agentToolSecrets = z.record(
   z.string().trim().min(1).max(120),
@@ -496,6 +525,12 @@ export const mutationSchemas = {
   agentRunCancel: { body: emptyBody, params: agentRunIdParams },
   agentRunConversationCancel: { body: emptyBody, params: conversationIdParams },
   agentRunApprovalDecision: { body: agentApprovalDecisionBody, params: agentRunApprovalParams },
+  agentMemorySupersede: { body: agentMemorySupersedeBody, params: agentMemoryIdParams },
+  agentMemoryDelete: { body: emptyBody, params: agentMemoryIdParams },
+  agentRunApprovalBatchDecision: {
+    body: agentApprovalBatchDecisionBody,
+    params: agentRunIdParams,
+  },
 
   ragEvalDatasetCreate: { body: ragEvalDatasetCreateBody },
   ragEvalDatasetUpdate: { body: ragEvalDatasetUpdateBody, params: datasetIdParams },

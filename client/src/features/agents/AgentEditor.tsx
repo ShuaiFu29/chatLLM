@@ -3,6 +3,7 @@ import { Bot, Copy, Power, Save, Send, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import SelectField from '../../components/SelectField';
+import { readApiErrorMessage } from '../../lib/apiError';
 import type { ProjectSpace } from '../../stores/useProjectSpaceStore';
 import type {
   Agent,
@@ -187,7 +188,9 @@ export default function AgentEditor(props: AgentEditorProps) {
       props.onSelected(saved);
       toast.success(t('agents.saved'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('agents.saveFailed'));
+      // Show the server's reason (quota, invalid schema, tool out of scope)
+      // instead of the generic "Request failed with status code 400".
+      toast.error(readApiErrorMessage(error, t('agents.saveFailed')));
     } finally {
       setSaving(false);
     }
@@ -198,8 +201,8 @@ export default function AgentEditor(props: AgentEditorProps) {
       const result = await action();
       props.onSelected(result);
       toast.success(message);
-    } catch {
-      toast.error(t('agents.actionFailed'));
+    } catch (error) {
+      toast.error(readApiErrorMessage(error, t('agents.actionFailed')));
     }
   };
 

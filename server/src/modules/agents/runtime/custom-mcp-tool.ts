@@ -2,6 +2,7 @@ import { decryptAgentToolSecrets } from '../../../lib/agentToolSecrets';
 import { serverEnv } from '../../../lib/env';
 import type { AgentToolWithSecretsRow } from '../../../repositories/agentTools';
 import type { AgentRuntimeTool } from './agent-tool';
+import { AgentToolError } from './agent-tool-error';
 import { validateAgentJsonSchemaInput } from './json-schema-input';
 import {
   assertAllowedRemoteEndpoint,
@@ -37,7 +38,12 @@ const applyMcpSecrets = (endpoint: URL, encryptedSecrets?: string | null) => {
       if (
         ['host', 'content-length', 'transfer-encoding', 'connection', 'upgrade'].includes(normalized)
         || normalized.startsWith('proxy-')
-      ) throw new Error('Transport-controlled headers are not allowed');
+      ) {
+        throw new AgentToolError(
+          'tool_endpoint_misconfigured',
+          'Transport-controlled headers are not allowed',
+        );
+      }
       headers.set(headerName, value);
     } else if (key.startsWith('query:')) {
       endpoint.searchParams.set(key.slice('query:'.length), value);
@@ -58,7 +64,11 @@ const readBoundedResponse = async (response: Response) => {
     size += value.byteLength;
     if (size > maximum) {
       await reader.cancel();
-      throw new Error('Agent MCP response exceeded its size limit');
+      throw new AgentToolError(
+        'tool_response_too_large',
+        'Agent MCP response exceeded its size limit',
+        { limitBytes: maximum },
+      );
     }
     chunks.push(value);
   }
@@ -75,7 +85,9 @@ const readSseJsonRpcResult = async (
   response: Response,
   id: number,
 ) => {
-  if (!response.body) throw new Error('Remote MCP endpoint returned an empty response');
+  if (!response.body) {
+    throw new AgentToolError('tool_mcp_protocol_error', 'Remote MCP endpoint returned an empty response');
+  }
   const maximum = serverEnv.AGENT_HTTP_MAX_RESPONSE_BYTES;
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
@@ -89,9 +101,20 @@ const readSseJsonRpcResult = async (
       .map((line) => line.slice('data:'.length).trim())
       .join('\n');
     if (!data || data === '[DONE]') return undefined;
-    const message = JSON.parse(data) as JsonRpcMessage;
+    let message: JsonRpcMessage;
+    try {
+      message = JSON.parse(data) as JsonRpcMessage;
+    } catch {
+      throw new AgentToolError('tool_response_invalid_json', 'Remote MCP endpoint returned malformed JSON');
+    }
     if (message.id !== id) return undefined;
-    if (message.error) throw new Error('Remote MCP endpoint returned a protocol error');
+    if (message.error) {
+      throw new AgentToolError(
+        'tool_mcp_protocol_error',
+        'Remote MCP endpoint returned a protocol error',
+        { rpcCode: message.error.code },
+      );
+    }
     return { matched: true, result: message.result };
   };
 
@@ -100,7 +123,13 @@ const readSseJsonRpcResult = async (
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
-      if (size > maximum) throw new Error('Agent MCP response exceeded its size limit');
+      if (size > maximum) {
+        throw new AgentToolError(
+          'tool_response_too_large',
+          'Agent MCP response exceeded its size limit',
+          { limitBytes: maximum },
+        );
+      }
       buffer += decoder.decode(value, { stream: true });
 
       while (true) {
@@ -129,7 +158,7 @@ const readSseJsonRpcResult = async (
     if (processed && typeof processed === 'object' && (processed as { matched?: boolean }).matched) {
       return (processed as { result: unknown }).result;
     }
-    throw new Error('Remote MCP endpoint returned no matching response');
+    throw new AgentToolError('tool_mcp_protocol_error', 'Remote MCP endpoint returned no matching response');
   } finally {
     await reader.cancel().catch(() => undefined);
   }
@@ -137,16 +166,20 @@ const readSseJsonRpcResult = async (
 
 const parseJsonRpcMessages = (body: string, contentType: string): JsonRpcMessage[] => {
   if (!body.trim()) return [];
-  if (contentType.toLowerCase().includes('text/event-stream')) {
-    return body
-      .split(/\r?\n/)
-      .filter((line) => line.startsWith('data:'))
-      .map((line) => line.slice(5).trim())
-      .filter((line) => line && line !== '[DONE]')
-      .map((line) => JSON.parse(line) as JsonRpcMessage);
+  try {
+    if (contentType.toLowerCase().includes('text/event-stream')) {
+      return body
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith('data:'))
+        .map((line) => line.slice(5).trim())
+        .filter((line) => line && line !== '[DONE]')
+        .map((line) => JSON.parse(line) as JsonRpcMessage);
+    }
+    const parsed = JSON.parse(body) as JsonRpcMessage | JsonRpcMessage[];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    throw new AgentToolError('tool_response_invalid_json', 'Remote MCP endpoint returned malformed JSON');
   }
-  const parsed = JSON.parse(body) as JsonRpcMessage | JsonRpcMessage[];
-  return Array.isArray(parsed) ? parsed : [parsed];
 };
 
 const readJsonRpcResult = (
@@ -154,8 +187,16 @@ const readJsonRpcResult = (
   id: number,
 ) => {
   const message = messages.find((item) => item.id === id);
-  if (!message) throw new Error('Remote MCP endpoint returned no matching response');
-  if (message.error) throw new Error('Remote MCP endpoint returned a protocol error');
+  if (!message) {
+    throw new AgentToolError('tool_mcp_protocol_error', 'Remote MCP endpoint returned no matching response');
+  }
+  if (message.error) {
+    throw new AgentToolError(
+      'tool_mcp_protocol_error',
+      'Remote MCP endpoint returned a protocol error',
+      { rpcCode: message.error.code },
+    );
+  }
   return message.result;
 };
 
@@ -169,6 +210,7 @@ export const createCustomMcpRuntimeTool = (tool: AgentToolWithSecretsRow): Agent
     key: `custom:${tool.id}`,
     modelName,
     riskLevel: effectiveRiskLevel,
+    maxInvocationsPerRun: tool.max_invocations_per_run ?? undefined,
     definition: {
       type: 'function',
       function: {
@@ -211,7 +253,13 @@ export const createCustomMcpRuntimeTool = (tool: AgentToolWithSecretsRow): Agent
         } as RequestInit & { dispatcher: unknown });
         const responseSessionId = response.headers.get('mcp-session-id');
         if (responseSessionId) sessionId = responseSessionId;
-        if (!response.ok) throw new Error(`Remote MCP endpoint failed with status ${response.status}`);
+        if (!response.ok) {
+          throw new AgentToolError(
+            'tool_http_status',
+            `Remote MCP endpoint failed with status ${response.status}`,
+            { status: response.status },
+          );
+        }
         const contentType = response.headers.get('content-type') || '';
         if (id === undefined) {
           // Notifications may still receive a response body. Consume it so
@@ -253,7 +301,7 @@ export const createCustomMcpRuntimeTool = (tool: AgentToolWithSecretsRow): Agent
           // MCP uses a successful JSON-RPC envelope with isError=true for a
           // tool-level failure. Do not record or expose this as a successful
           // Agent tool step.
-          throw new Error('Remote MCP tool reported an execution error');
+          throw new AgentToolError('tool_reported_error', 'Remote MCP tool reported an execution error');
         }
         return result;
       } finally {

@@ -2,11 +2,16 @@ import { decryptAgentToolSecrets } from '../../../lib/agentToolSecrets';
 import { serverEnv } from '../../../lib/env';
 import type { AgentToolWithSecretsRow } from '../../../repositories/agentTools';
 import type { AgentRuntimeTool } from './agent-tool';
+import { AgentToolError } from './agent-tool-error';
 import { validateAgentJsonSchemaInput } from './json-schema-input';
 import {
   assertAllowedRemoteEndpoint,
   createPinnedRemoteEndpointDispatcher,
 } from './remote-endpoint';
+
+const isRecord = (value: unknown): value is Record<string, unknown> => (
+  Boolean(value && typeof value === 'object' && !Array.isArray(value))
+);
 
 interface HttpToolConfiguration {
   endpoint: string;
@@ -33,7 +38,12 @@ const applySecrets = (
       if (
         ['host', 'content-length', 'transfer-encoding', 'connection', 'upgrade'].includes(normalized)
         || normalized.startsWith('proxy-')
-      ) throw new Error('Transport-controlled headers are not allowed');
+      ) {
+        throw new AgentToolError(
+          'tool_endpoint_misconfigured',
+          'Transport-controlled headers are not allowed',
+        );
+      }
       headers.set(headerName, value);
     } else if (key.startsWith('query:')) {
       endpoint.searchParams.set(key.slice('query:'.length), value);
@@ -45,6 +55,7 @@ const prepareRequest = async (
   configuration: HttpToolConfiguration,
   args: Record<string, unknown>,
   encryptedSecrets?: string | null,
+  idempotencyKey?: string,
 ) => {
   const endpoint = new URL(configuration.endpoint);
   const fixedQueryKeys = new Set(endpoint.searchParams.keys());
@@ -55,16 +66,35 @@ const prepareRequest = async (
     allowHttpSecretsOnLoopback: true,
     hasSecrets: Boolean(encryptedSecrets),
   });
-  const remaining = { ...args };
+  // Only fields the tool author declared may reach the endpoint. The input schema
+  // rejects undeclared keys when it sets `additionalProperties: false`, but that is
+  // opt-in: an author who omits it would otherwise hand the model the ability to
+  // add arbitrary query parameters or body fields to their own API. Filtering here
+  // makes the declared schema the contract regardless of how it was written.
+  const declaredProperties = isRecord(configuration.input_schema.properties)
+    ? new Set(Object.keys(configuration.input_schema.properties))
+    : null;
+  const remaining: Record<string, unknown> = declaredProperties
+    ? Object.fromEntries(
+      Object.entries(args).filter(([key]) => declaredProperties.has(key)),
+    )
+    : { ...args };
   endpoint.pathname = endpoint.pathname.replace(/(?:\{|%7B)([A-Za-z_][A-Za-z0-9_]*)(?:\}|%7D)/gi, (_match, key: string) => {
     const value = remaining[key];
-    if (value === undefined || value === null) throw new Error(`Missing path parameter: ${key}`);
+    if (value === undefined || value === null) {
+      throw new AgentToolError('tool_input_invalid', `Missing path parameter: ${key}`);
+    }
     delete remaining[key];
     return encodeURIComponent(String(value));
   });
 
   const headers = new Headers(configuration.static_headers);
   headers.set('Accept', 'application/json, text/plain;q=0.9');
+  // Advertise the logical identity of this call so an endpoint that supports
+  // idempotency can recognise a retry after a lost response instead of applying
+  // the effect twice. Sent before secrets are applied, so a tool owner can still
+  // override it deliberately via configuration.
+  if (idempotencyKey) headers.set('Idempotency-Key', idempotencyKey);
 
   let body: string | undefined;
   if (configuration.method === 'GET' || configuration.method === 'DELETE') {
@@ -95,7 +125,11 @@ const readBoundedResponse = async (response: Response) => {
     size += value.byteLength;
     if (size > serverEnv.AGENT_HTTP_MAX_RESPONSE_BYTES) {
       await reader.cancel();
-      throw new Error('Agent HTTP tool response exceeded its size limit');
+      throw new AgentToolError(
+        'tool_response_too_large',
+        'Agent HTTP tool response exceeded its size limit',
+        { limitBytes: serverEnv.AGENT_HTTP_MAX_RESPONSE_BYTES },
+      );
     }
     chunks.push(value);
   }
@@ -126,6 +160,7 @@ export const createCustomHttpRuntimeTool = (tool: AgentToolWithSecretsRow): Agen
     key: `custom:${tool.id}`,
     modelName,
     riskLevel: effectiveRiskLevel,
+    maxInvocationsPerRun: tool.max_invocations_per_run ?? undefined,
     definition: {
       type: 'function',
       function: {
@@ -136,7 +171,12 @@ export const createCustomHttpRuntimeTool = (tool: AgentToolWithSecretsRow): Agen
     },
     execute: async (input, context) => {
       const args = validateAgentJsonSchemaInput(input, configuration.input_schema);
-      const request = await prepareRequest(configuration, args, tool.encrypted_secrets);
+      const request = await prepareRequest(
+        configuration,
+        args,
+        tool.encrypted_secrets,
+        context.idempotencyKey,
+      );
       const dispatcher = createPinnedRemoteEndpointDispatcher(request.endpoint, request.addresses);
       try {
         const response = await fetch(request.endpoint, {
@@ -157,13 +197,26 @@ export const createCustomHttpRuntimeTool = (tool: AgentToolWithSecretsRow): Agen
           try {
             parsedBody = JSON.parse(rawBody);
           } catch {
-            throw new Error('Agent HTTP tool returned invalid JSON');
+            throw new AgentToolError(
+              'tool_response_invalid_json',
+              'Agent HTTP tool returned invalid JSON',
+            );
           }
         }
-        if (!response.ok) throw new Error(`Agent HTTP tool failed with status ${response.status}`);
+        if (!response.ok) {
+          throw new AgentToolError(
+            'tool_http_status',
+            `Agent HTTP tool failed with status ${response.status}`,
+            { status: response.status },
+          );
+        }
         const data = selectResponsePath(parsedBody, configuration.response_path);
         if (configuration.response_path && data === undefined) {
-          throw new Error('Agent HTTP tool response path was not found');
+          throw new AgentToolError(
+            'tool_response_path_missing',
+            'Agent HTTP tool response path was not found',
+            { responsePath: configuration.response_path },
+          );
         }
         return {
           status: response.status,

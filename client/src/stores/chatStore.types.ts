@@ -125,6 +125,12 @@ export interface ChatState {
   loadingConversations: boolean;
   loadingMessages: boolean;
   loadingOlderMessages: boolean;
+  /**
+   * The last message fetch for the selected conversation failed. Without this
+   * an existing conversation whose history could not be loaded rendered as the
+   * "start chatting" welcome screen, which looks like data loss.
+   */
+  messagesError: boolean;
   sendingMessage: boolean;
   isStopped: boolean;
   abortController: AbortController | null;

@@ -12,7 +12,8 @@ from pydantic import Field, field_validator
 
 from config import settings
 from capabilities import build_capability_report
-from agentic_retrieval import agentic_retrieve
+from agentic_retrieval import agentic_retrieve, normalize_caller_trace
+from embeddings import get_embeddings
 from db import (
     ConversionGenerationStateError,
     assert_eval_lease_active,
@@ -146,6 +147,22 @@ class ConversationTurnRequest(StrictRequestModel):
     @classmethod
     def strip_content(cls, value: str):
         return strip_and_reject_blank_value(value)
+
+
+class EmbedRequest(StrictRequestModel):
+    # Bounded so one call cannot become an unmetered embedding job. The caller
+    # embeds a handful of short memory statements, not documents.
+    texts: list[str] = Field(..., min_length=1, max_length=64)
+
+    @field_validator("texts")
+    @classmethod
+    def reject_blank_texts(cls, value: list[str]):
+        cleaned = [item.strip() for item in value]
+        if any(not item for item in cleaned):
+            raise ValueError("texts must not contain blank entries")
+        if any(len(item) > 4096 for item in cleaned):
+            raise ValueError("each text must be at most 4096 characters")
+        return cleaned
 
 
 class AgenticRetrieveRequest(RetrieveRequest):
@@ -390,7 +407,15 @@ def retrieve_endpoint(request: RetrieveRequest):
 
 # Protected route marker for legacy source checks: @app.post("/agentic-retrieve")
 @app.post("/agentic-retrieve", dependencies=[Depends(require_internal_auth)])
-def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
+def agentic_retrieve_endpoint(
+    request: AgenticRetrieveRequest,
+    # Correlation travels in headers, not in the request body, so it stays out of
+    # the retrieval schema. Malformed values are dropped by
+    # normalize_caller_trace rather than rejected: losing the ability to join
+    # traces must never cost the user an answer.
+    x_chatllm_trace_id: str | None = Header(default=None),
+    x_chatllm_span_id: str | None = Header(default=None),
+):
     return agentic_retrieve(
         query=request.query,
         user_id=request.user_id,
@@ -400,8 +425,27 @@ def agentic_retrieve_endpoint(request: AgenticRetrieveRequest):
         limit=request.limit,
         threshold=request.threshold,
         cache_store=get_default_retrieval_cache(),
+        caller_trace=normalize_caller_trace(x_chatllm_trace_id, x_chatllm_span_id),
     )
 
+
+
+@app.post("/embed", dependencies=[Depends(require_internal_auth)])
+def embed_endpoint(request: EmbedRequest):
+    """Embed short texts on behalf of the backend.
+
+    Exposed so the backend can rank Agent memories by relevance without owning an
+    embedding client of its own. The dimension travels with the response because
+    vectors from different models are not comparable, and the caller stores the
+    model name alongside each vector so a model change invalidates them instead of
+    silently producing meaningless distances.
+    """
+    vectors = get_embeddings(list(request.texts))
+    return {
+        "model": settings.embedding_model,
+        "dimension": len(vectors[0]) if vectors else 0,
+        "embeddings": vectors,
+    }
 
 @app.post("/graph/search", dependencies=[Depends(require_internal_auth)])
 def graph_search_endpoint(request: RetrieveRequest):

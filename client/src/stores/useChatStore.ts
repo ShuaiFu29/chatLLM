@@ -1,5 +1,6 @@
 import { create, type StoreApi } from 'zustand';
 import api, { authenticatedFetch } from '../lib/api';
+import { agentRunStatusFromEvent, isMessageAgentRunRecoverable } from '../lib/agentRunRecovery';
 import { toSafeError } from '../lib/safeError';
 import i18n from '../i18n';
 import { chatRequestState } from './chatRequestState';
@@ -98,6 +99,25 @@ const replaceConversationMessages = (
   messages: Message[],
 ) => updateConversationMessages(set, conversationId, () => messages);
 
+let optimisticMessageSequence = 0;
+
+/**
+ * Ids for messages that only exist in the browser.
+ *
+ * These used to be bare `Date.now()` numbers, which the UI could not tell apart
+ * from a real message id: the branch action happily posted a numeric id that no
+ * conversation contained. The `temp-` prefix is the single marker for "not
+ * persisted yet", matching the optimistic conversation ids.
+ */
+const createOptimisticMessageId = (role: 'user' | 'assistant') => {
+  optimisticMessageSequence += 1;
+  return `temp-${role}-${Date.now()}-${optimisticMessageSequence}`;
+};
+
+export const isOptimisticMessageId = (id: string) => (
+  id.startsWith('temp-') || id.startsWith('welcome-')
+);
+
 const isAbortError = (error: unknown) => {
   if (!error || typeof error !== 'object') return false;
   const candidate = error as { name?: unknown; code?: unknown };
@@ -128,11 +148,17 @@ const fetchConversationMessages = async (
         ...state.messagePagination,
         [conversationId]: pageInfo,
       },
+      ...(state.currentConversationId === conversationId ? { messagesError: false } : {}),
     }));
     return true;
   } catch (error) {
     if (!isAbortError(error)) {
       console.error('Failed to fetch messages:', toSafeError(error));
+      // Surface the failure instead of letting an empty list masquerade as a
+      // brand new conversation. Any already cached messages are kept.
+      set((state) => (
+        state.currentConversationId === conversationId ? { messagesError: true } : {}
+      ));
     }
     return false;
   } finally {
@@ -163,6 +189,7 @@ const initialChatState = {
   loadingConversations: false,
   loadingMessages: false,
   loadingOlderMessages: false,
+  messagesError: false,
   sendingMessage: false,
   isStopped: false,
   abortController: null,
@@ -269,8 +296,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
         };
       });
 
-      // Fetch the real welcome message from server
-      get().selectConversation(newConv.id);
+      // Load the real welcome message before returning. Fire-and-forget here
+      // raced with the caller's first `sendMessage`: the late response replaced
+      // the optimistic user message and streaming placeholder with the server's
+      // welcome-only history.
+      await get().selectConversation(newConv.id);
 
       return newConv.id;
     } catch (err) {
@@ -597,7 +627,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     // message or a partially generated regular answer.
     updateConversationMessages(set, conversationId, (messages) => {
       const last = messages.at(-1);
-      if (last?.role !== 'assistant' || !/^\d+$/.test(last.id)) return messages;
+      if (last?.role !== 'assistant' || !last.id.startsWith('temp-assistant-')) return messages;
       return messages.slice(0, -1);
     });
     set({
@@ -636,6 +666,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       messages: cachedMessages || [],
       loadingMessages: !cachedMessages,
       loadingOlderMessages: chatRequestState.isLoadingOlderMessages(id),
+      messagesError: false,
       sendingMessage: chatRequestState.hasActiveStream(id),
       isStopped: chatRequestState.isStopped(id),
       abortController: activeController,
@@ -729,7 +760,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     if (isContinue) {
       const lastMsg = messages[messages.length - 1];
       if (lastMsg?.role === 'assistant') {
-        tempAiId = (Date.now() + 1).toString();
+        tempAiId = createOptimisticMessageId('assistant');
         replaceConversationMessages(
           set,
           currentConversationId,
@@ -748,7 +779,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     if (!isContinue) {
       // 1. Optimistic User Message
-      tempUserId = Date.now().toString();
+      tempUserId = createOptimisticMessageId('user');
       const optimisticUserMsg: Message = {
         id: tempUserId,
         role: 'user',
@@ -757,7 +788,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       };
 
       // 2. Placeholder AI Message
-      tempAiId = (Date.now() + 1).toString();
+      tempAiId = createOptimisticMessageId('assistant');
       const optimisticAiMsg: Message = {
         id: tempAiId,
         role: 'assistant',
@@ -778,6 +809,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
     const rollbackFailedAssistant = (removeOptimisticUser: boolean) => {
       const currentMsgs = getConversationMessages(get(), currentConversationId);
+      // An Agent run outlives its SSE stream on purpose. Dropping the assistant
+      // placeholder here would also drop the `agentRunId` and event list, which
+      // is the only evidence the chat page has to resume polling after the
+      // connection breaks.
+      const keepForRecovery = currentMsgs.some((message) => (
+        message.id === tempAiId && isMessageAgentRunRecoverable(message)
+      ));
+      if (keepForRecovery) return;
       updateMessages(currentMsgs.filter((message) => (
         message.id !== tempAiId
         && (!removeOptimisticUser || message.id !== tempUserId)
@@ -905,6 +944,11 @@ export const useChatStore = create<ChatState>((set, get) => ({
                   updatedMsgs[lastMsgIndex] = {
                     ...currentMessage,
                     agentRunId: data.agentRunId || currentMessage.agentRunId,
+                    // Mirror the status the messages API would report so a
+                    // dropped SSE connection can still be recovered without a
+                    // full page reload.
+                    agent_run_status: agentRunStatusFromEvent(data.agentEvent?.type)
+                      || currentMessage.agent_run_status,
                     agentEvents: data.agentEvent
                       ? [...(currentMessage.agentEvents || []), data.agentEvent]
                       : currentMessage.agentEvents,

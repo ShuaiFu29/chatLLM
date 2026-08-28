@@ -27,6 +27,15 @@ def _escape_filter_value(value: str) -> str:
 
 
 def _has_project_space_field() -> bool:
+    """Is `project_space_id` filterable in the live Milvus collection?
+
+    A negative answer removes the workspace predicate from vector search, so a
+    wrong `False` leaks other workspaces' chunks into results. The probe used to
+    cache `False` on *any* exception, which meant one transient Milvus hiccup
+    disabled workspace isolation for the whole process lifetime. Only a
+    successful describe may be cached; a failed probe raises so the caller fails
+    closed and the next call retries.
+    """
     global _project_space_field_available
 
     if _project_space_field_available is not None:
@@ -35,11 +44,12 @@ def _has_project_space_field() -> bool:
     client = get_client()
     try:
         description = client.describe_collection(collection_name=settings.milvus_collection)
-        fields = description.get("fields", [])
-        _project_space_field_available = any(field.get("name") == "project_space_id" for field in fields)
-    except Exception:
-        _project_space_field_available = False
-
+    except Exception as error:
+        raise RuntimeError(
+            "Unable to determine the Milvus project space field; refusing to run an unscoped search"
+        ) from error
+    fields = description.get("fields", [])
+    _project_space_field_available = any(field.get("name") == "project_space_id" for field in fields)
     return _project_space_field_available
 
 

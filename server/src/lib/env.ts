@@ -73,6 +73,26 @@ const DEFAULT_AGENT_MAX_SOURCES = 50;
 const DEFAULT_AGENT_MAX_SOURCE_BYTES = 512 * 1024;
 const DEFAULT_AGENT_MAX_TOKEN_BUDGET = 100_000;
 const DEFAULT_AGENT_MAX_STEP_PAYLOAD_BYTES = 256 * 1024;
+// Only transport-level tool failures are retried, and only while the Run's own
+// deadline still allows it. Two attempts turns a single dropped connection from a
+// lost Run into a hiccup without meaningfully widening the duplicate-effect window.
+const DEFAULT_AGENT_TOOL_MAX_ATTEMPTS = 2;
+// Tokens withheld for a final, tool-free turn so an exhausted Run can still
+// answer partially instead of failing with nothing to show.
+const DEFAULT_AGENT_FINAL_ANSWER_RESERVE_TOKENS = 1_500;
+const DEFAULT_AGENT_MAX_TOOL_CALLS_PER_RUN = 40;
+// How many subagents one dispatch may start. Bounds provider concurrency and the
+// worst-case cost of a single model decision.
+const DEFAULT_AGENT_MAX_SUBAGENT_FANOUT = 3;
+// Nesting depth for a Run tree. The database enforces the same ceiling, so a
+// runtime bug cannot exceed it.
+const DEFAULT_AGENT_MAX_SUBAGENT_DEPTH = 3;
+// Lease held while a dispatched subagent executes. Renewed while it works; a lease
+// that lapses means the holder died and the subtask is failed rather than retried.
+const DEFAULT_AGENT_SUBAGENT_LEASE_MS = 2 * 60 * 1000;
+// How long a subagent waits for a human to decide an approval it bubbled up. Also
+// bounded by the tree's own deadline, so it can never outlive the run.
+const DEFAULT_AGENT_SUBAGENT_APPROVAL_TIMEOUT_MS = 3 * 60 * 1000;
 
 export interface ServerEnv {
   PORT: number;
@@ -168,13 +188,42 @@ export interface ServerEnv {
   AGENT_MAX_SOURCE_BYTES: number;
   AGENT_MAX_TOKEN_BUDGET: number;
   AGENT_MAX_STEP_PAYLOAD_BYTES: number;
+  AGENT_TOOL_MAX_ATTEMPTS: number;
+  AGENT_FINAL_ANSWER_RESERVE_TOKENS: number;
+  AGENT_MAX_TOOL_CALLS_PER_RUN: number;
+  AGENT_MAX_SUBAGENT_FANOUT: number;
+  AGENT_MAX_SUBAGENT_DEPTH: number;
+  AGENT_SUBAGENT_LEASE_MS: number;
+  AGENT_SUBAGENT_APPROVAL_TIMEOUT_MS: number;
 }
 
 const getRequired = (env: NodeJS.ProcessEnv, key: string) => env[key]?.trim() || '';
 
-const getBoolean = (value: string | undefined, defaultValue: boolean) => {
+const TRUE_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
+const FALSE_BOOLEAN_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+/**
+ * Parse a boolean flag strictly.
+ *
+ * The old rule was "anything that is not literally `false` is true", so the very
+ * natural `S3_FORCE_PATH_STYLE=0` silently enabled path style, and a typo like
+ * `flase` did too. Accept the usual spellings of both sides and report anything
+ * else as a configuration error instead of guessing.
+ */
+const getBoolean = (
+  value: string | undefined,
+  defaultValue: boolean,
+  key?: string,
+  errors?: string[],
+) => {
   if (value === undefined || value.trim() === '') return defaultValue;
-  return value.toLowerCase() !== 'false';
+  const normalized = value.trim().toLowerCase();
+  if (TRUE_BOOLEAN_VALUES.has(normalized)) return true;
+  if (FALSE_BOOLEAN_VALUES.has(normalized)) return false;
+  if (key && errors) {
+    errors.push(`${key} must be one of true/false, 1/0, yes/no, on/off`);
+  }
+  return defaultValue;
 };
 
 const getPort = (value: string | undefined) => {
@@ -414,6 +463,41 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const agentMaxStepPayloadBytes = getPositiveSafeInteger(
     env, 'AGENT_MAX_STEP_PAYLOAD_BYTES', DEFAULT_AGENT_MAX_STEP_PAYLOAD_BYTES, errors,
   );
+  const agentToolMaxAttempts = getPositiveInteger(
+    env, 'AGENT_TOOL_MAX_ATTEMPTS', DEFAULT_AGENT_TOOL_MAX_ATTEMPTS, errors,
+  );
+  const agentFinalAnswerReserveTokens = getPositiveInteger(
+    env, 'AGENT_FINAL_ANSWER_RESERVE_TOKENS', DEFAULT_AGENT_FINAL_ANSWER_RESERVE_TOKENS, errors,
+  );
+  const agentMaxToolCallsPerRun = getPositiveInteger(
+    env, 'AGENT_MAX_TOOL_CALLS_PER_RUN', DEFAULT_AGENT_MAX_TOOL_CALLS_PER_RUN, errors,
+  );
+  const agentMaxSubagentFanout = getPositiveInteger(
+    env, 'AGENT_MAX_SUBAGENT_FANOUT', DEFAULT_AGENT_MAX_SUBAGENT_FANOUT, errors,
+  );
+  const agentMaxSubagentDepth = getPositiveInteger(
+    env, 'AGENT_MAX_SUBAGENT_DEPTH', DEFAULT_AGENT_MAX_SUBAGENT_DEPTH, errors,
+  );
+  const agentSubagentLeaseMs = getPositiveInteger(
+    env, 'AGENT_SUBAGENT_LEASE_MS', DEFAULT_AGENT_SUBAGENT_LEASE_MS, errors,
+  );
+  const agentSubagentApprovalTimeoutMs = getPositiveInteger(
+    env,
+    'AGENT_SUBAGENT_APPROVAL_TIMEOUT_MS',
+    DEFAULT_AGENT_SUBAGENT_APPROVAL_TIMEOUT_MS,
+    errors,
+  );
+  // The schema caps depth at 3; allowing a larger runtime value would only turn a
+  // configuration mistake into a constraint violation mid-run.
+  if (agentMaxSubagentDepth > 3) {
+    errors.push('AGENT_MAX_SUBAGENT_DEPTH must be at most 3');
+  }
+  // The reserve is carved out of the token budget, so it cannot swallow it.
+  if (agentFinalAnswerReserveTokens >= agentMaxTokenBudget) {
+    errors.push(
+      'AGENT_FINAL_ANSWER_RESERVE_TOKENS must be smaller than AGENT_MAX_TOKEN_BUDGET',
+    );
+  }
   const agentToolEncryptionKey = getRequired(env, 'AGENT_TOOL_ENCRYPTION_KEY');
   if (agentToolEncryptionKey && !/^[a-fA-F0-9]{64}$/.test(agentToolEncryptionKey)) {
     errors.push('AGENT_TOOL_ENCRYPTION_KEY must be a 64-character hexadecimal value');
@@ -426,6 +510,11 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   if (ragRetrieveTotalTimeoutMs < ragRetrieveTimeoutMs) {
     errors.push('RAG_RETRIEVE_TOTAL_TIMEOUT_MS must be at least RAG_RETRIEVE_TIMEOUT_MS');
   }
+
+  // Parse boolean flags before the error gate so an unrecognized value fails
+  // startup instead of silently resolving to its default.
+  const s3ForcePathStyle = getBoolean(env.S3_FORCE_PATH_STYLE, true, 'S3_FORCE_PATH_STYLE', errors);
+  const embeddingDebugLogs = getBoolean(env.EMBEDDING_DEBUG_LOGS, false, 'EMBEDDING_DEBUG_LOGS', errors);
 
   if (errors.length > 0) {
     throw new Error(`Server configuration invalid:\n- ${errors.join('\n- ')}`);
@@ -448,7 +537,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     S3_SECRET_KEY: getRequired(env, 'S3_SECRET_KEY'),
     S3_BUCKET: env.S3_BUCKET?.trim() || 'documents',
     S3_REGION: env.S3_REGION?.trim() || 'us-east-1',
-    S3_FORCE_PATH_STYLE: getBoolean(env.S3_FORCE_PATH_STYLE, true),
+    S3_FORCE_PATH_STYLE: s3ForcePathStyle,
     JWT_SECRET: jwtSecret,
     RAG_SERVICE_URL: env.RAG_SERVICE_URL?.trim() || 'http://localhost:8000',
     RAG_SERVICE_TOKEN: ragServiceToken,
@@ -468,7 +557,7 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     EMBEDDING_API_KEY: env.EMBEDDING_API_KEY?.trim() || undefined,
     EMBEDDING_BASE_URL: env.EMBEDDING_BASE_URL?.trim() || 'https://llm-ro9cl3th56gnvkzo.cn-beijing.maas.aliyuncs.com/compatible-mode/v1',
     EMBEDDING_MODEL: env.EMBEDDING_MODEL?.trim() || 'text-embedding-v4',
-    EMBEDDING_DEBUG_LOGS: getBoolean(env.EMBEDDING_DEBUG_LOGS, false),
+    EMBEDDING_DEBUG_LOGS: embeddingDebugLogs,
     DB_POOL_MAX: dbPoolMax,
     DB_CONNECTION_TIMEOUT_MS: dbConnectionTimeoutMs,
     DB_IDLE_TIMEOUT_MS: dbIdleTimeoutMs,
@@ -529,6 +618,13 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     AGENT_MAX_SOURCE_BYTES: agentMaxSourceBytes,
     AGENT_MAX_TOKEN_BUDGET: agentMaxTokenBudget,
     AGENT_MAX_STEP_PAYLOAD_BYTES: agentMaxStepPayloadBytes,
+    AGENT_TOOL_MAX_ATTEMPTS: agentToolMaxAttempts,
+    AGENT_FINAL_ANSWER_RESERVE_TOKENS: agentFinalAnswerReserveTokens,
+    AGENT_MAX_TOOL_CALLS_PER_RUN: agentMaxToolCallsPerRun,
+    AGENT_MAX_SUBAGENT_FANOUT: agentMaxSubagentFanout,
+    AGENT_MAX_SUBAGENT_DEPTH: agentMaxSubagentDepth,
+    AGENT_SUBAGENT_LEASE_MS: agentSubagentLeaseMs,
+    AGENT_SUBAGENT_APPROVAL_TIMEOUT_MS: agentSubagentApprovalTimeoutMs,
   };
 };
 

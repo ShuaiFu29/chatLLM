@@ -1,3 +1,5 @@
+import { AgentToolError } from './agent-tool-error';
+
 const ALLOWED_SCHEMA_TYPES = new Set([
   'string',
   'number',
@@ -10,6 +12,13 @@ const ALLOWED_SCHEMA_TYPES = new Set([
 
 const MAX_SCHEMA_DEPTH = 12;
 const MAX_SCHEMA_BYTES = 64 * 1024;
+const MAX_PATTERN_LENGTH = 200;
+// A pattern is matched against model-produced text inside the request path, and
+// JavaScript offers no way to interrupt a running regular expression. The static
+// screen below is the primary defence; this cap bounds the damage if a hazardous
+// shape ever slips past it.
+const MAX_PATTERN_INPUT_LENGTH = 4096;
+const MAX_COMPILED_PATTERN_CACHE = 256;
 const ALLOWED_SCHEMA_KEYWORDS = new Set([
   '$schema',
   'title',
@@ -33,6 +42,152 @@ const ALLOWED_SCHEMA_KEYWORDS = new Set([
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   Boolean(value && typeof value === 'object' && !Array.isArray(value))
 );
+
+/**
+ * True when an unbounded repetition starts at `index`. Only unbounded
+ * repetitions (`*`, `+`, `{n,}`) can drive exponential backtracking; a bounded
+ * `{n}` or `{n,m}` expands to a fixed size and is treated as ordinary.
+ */
+const unboundedQuantifierAt = (pattern: string, index: number) => {
+  const char = pattern[index];
+  if (char === '*' || char === '+') return true;
+  if (char === '{') return /^\{\d+,\}/.test(pattern.slice(index));
+  return false;
+};
+
+/** Scan a group body for the constructs that make repetition ambiguous. */
+const hasAmbiguousRepetition = (body: string) => {
+  let inCharacterClass = false;
+  for (let index = 0; index < body.length; index += 1) {
+    const char = body[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (inCharacterClass) {
+      if (char === ']') inCharacterClass = false;
+      continue;
+    }
+    if (char === '[') {
+      inCharacterClass = true;
+      continue;
+    }
+    // Alternation inside a repeated group is the classic `(a|a)*` shape. Telling
+    // the harmful cases apart from the harmless ones needs full ambiguity
+    // analysis, so every alternation in a repeated group is refused.
+    if (char === '|') return true;
+    if (unboundedQuantifierAt(body, index)) return true;
+  }
+  return false;
+};
+
+/**
+ * Reject regular expressions that can backtrack catastrophically before they are
+ * ever compiled. Patterns come from whoever authored the tool, run in the server
+ * process, and cannot be cancelled once started, so this errs towards refusing
+ * legitimate-but-exotic patterns rather than admitting a hangable one.
+ */
+const assertSafeStringPattern = (raw: unknown, path: string): string => {
+  if (typeof raw !== 'string' || !raw) {
+    throw new Error(`${path} must be a non-empty string`);
+  }
+  if (raw.length > MAX_PATTERN_LENGTH) {
+    throw new Error(`${path} must be at most ${MAX_PATTERN_LENGTH} characters`);
+  }
+
+  const groupStack: { bodyStart: number }[] = [];
+  let inCharacterClass = false;
+  for (let index = 0; index < raw.length; index += 1) {
+    const char = raw[index];
+    if (char === '\\') {
+      const next = raw[index + 1];
+      if (next === undefined) throw new Error(`${path} ends with a dangling escape`);
+      // Backreferences take the language outside the regular class and are a
+      // well-known backtracking amplifier.
+      if (/[1-9]/.test(next) || next === 'k') {
+        throw new Error(`${path} must not use backreferences`);
+      }
+      index += 1;
+      continue;
+    }
+    if (inCharacterClass) {
+      if (char === ']') inCharacterClass = false;
+      continue;
+    }
+    if (char === '[') {
+      inCharacterClass = true;
+      continue;
+    }
+    if (char === '(') {
+      if (
+        raw.startsWith('(?=', index)
+        || raw.startsWith('(?!', index)
+        || raw.startsWith('(?<=', index)
+        || raw.startsWith('(?<!', index)
+      ) {
+        throw new Error(`${path} must not use lookahead or lookbehind`);
+      }
+      if (raw.startsWith('(?<', index)) {
+        throw new Error(`${path} must not use named capture groups`);
+      }
+      if (raw.startsWith('(?', index) && !raw.startsWith('(?:', index)) {
+        throw new Error(`${path} uses an unsupported group modifier`);
+      }
+      groupStack.push({ bodyStart: raw.startsWith('(?:', index) ? index + 3 : index + 1 });
+      continue;
+    }
+    if (char === ')') {
+      const group = groupStack.pop();
+      if (!group) throw new Error(`${path} has unbalanced parentheses`);
+      // Only a repeated group can multiply the work of a repetition inside it.
+      if (
+        unboundedQuantifierAt(raw, index + 1)
+        && hasAmbiguousRepetition(raw.slice(group.bodyStart, index))
+      ) {
+        throw new Error(`${path} nests unbounded quantifiers, which can backtrack catastrophically`);
+      }
+      continue;
+    }
+  }
+  if (inCharacterClass) throw new Error(`${path} has an unterminated character class`);
+  if (groupStack.length > 0) throw new Error(`${path} has unbalanced parentheses`);
+
+  try {
+    new RegExp(raw);
+  } catch {
+    throw new Error(`${path} is not a valid regular expression`);
+  }
+  return raw;
+};
+
+// Patterns are validated once at definition time, so compiling them per request
+// is pure overhead. The cache is bounded because the key space is attacker
+// influenced: a tool owner can define many distinct schemas.
+const compiledPatterns = new Map<string, RegExp>();
+
+const compilePattern = (pattern: string) => {
+  const cached = compiledPatterns.get(pattern);
+  if (cached) return cached;
+  // JSON Schema `pattern` is an unanchored ECMA-262 expression, which is exactly
+  // what RegExp#test provides. No flags, so behaviour matches the spec.
+  const compiled = new RegExp(pattern);
+  if (compiledPatterns.size >= MAX_COMPILED_PATTERN_CACHE) compiledPatterns.clear();
+  compiledPatterns.set(pattern, compiled);
+  return compiled;
+};
+
+const assertPatternMatches = (
+  value: string,
+  pattern: string,
+  path: string,
+) => {
+  if (value.length > MAX_PATTERN_INPUT_LENGTH) {
+    throw new Error(`${path} is too long to be checked against pattern`);
+  }
+  if (!compilePattern(pattern).test(value)) {
+    throw new Error(`${path} does not match pattern`);
+  }
+};
 
 const typeMatches = (value: unknown, type: unknown): boolean => {
   if (Array.isArray(type)) return type.some((candidate) => typeMatches(value, candidate));
@@ -69,15 +224,30 @@ const assertFiniteNumber = (value: unknown, path: string) => {
   }
 };
 
+export interface AgentSchemaDefinitionOptions {
+  /**
+   * Accept `pattern` on string subschemas. Off by default because it is only
+   * sound for tool *input* schemas: an Agent output schema must stay
+   * synthesizable, and buildAgentJsonInsufficientEvidenceOutput cannot invent a
+   * refusal placeholder that is guaranteed to satisfy an arbitrary regex.
+   */
+  allowPattern?: boolean;
+}
+
 const validateSchemaNode = (
   rawSchema: unknown,
   path: string,
   depth: number,
+  options: AgentSchemaDefinitionOptions = {},
 ) => {
   if (!isRecord(rawSchema)) throw new Error(`${path} must be an object`);
   if (depth > MAX_SCHEMA_DEPTH) throw new Error(`JSON Schema exceeds the maximum depth of ${MAX_SCHEMA_DEPTH}`);
-  const unsupportedKeyword = Object.keys(rawSchema).find((key) => !ALLOWED_SCHEMA_KEYWORDS.has(key));
+  const allowedKeywords = options.allowPattern
+    ? new Set([...ALLOWED_SCHEMA_KEYWORDS, 'pattern'])
+    : ALLOWED_SCHEMA_KEYWORDS;
+  const unsupportedKeyword = Object.keys(rawSchema).find((key) => !allowedKeywords.has(key));
   if (unsupportedKeyword) throw new Error(`${path} uses unsupported keyword: ${unsupportedKeyword}`);
+  if (rawSchema.pattern !== undefined) assertSafeStringPattern(rawSchema.pattern, `${path}.pattern`);
   if (rawSchema.$schema !== undefined && typeof rawSchema.$schema !== 'string') {
     throw new Error(`${path}.$schema must be a string`);
   }
@@ -155,7 +325,7 @@ const validateSchemaNode = (
   }
   if (isRecord(properties)) {
     for (const [key, propertySchema] of Object.entries(properties)) {
-      validateSchemaNode(propertySchema, `${path}.properties.${key}`, depth + 1);
+      validateSchemaNode(propertySchema, `${path}.properties.${key}`, depth + 1, options);
     }
     const required = Array.isArray(rawSchema.required) ? rawSchema.required : [];
     const unknownRequired = required.find((key) => !Object.hasOwn(properties, key));
@@ -165,10 +335,10 @@ const validateSchemaNode = (
   }
 
   if (isRecord(rawSchema.additionalProperties)) {
-    validateSchemaNode(rawSchema.additionalProperties, `${path}.additionalProperties`, depth + 1);
+    validateSchemaNode(rawSchema.additionalProperties, `${path}.additionalProperties`, depth + 1, options);
   }
   if (rawSchema.items !== undefined) {
-    validateSchemaNode(rawSchema.items, `${path}.items`, depth + 1);
+    validateSchemaNode(rawSchema.items, `${path}.items`, depth + 1, options);
   }
 
   const objectKeywords = properties !== undefined || rawSchema.required !== undefined
@@ -183,6 +353,7 @@ const validateSchemaNode = (
 
 export const validateAgentJsonSchemaDefinition = (
   schema: Record<string, unknown>,
+  options: AgentSchemaDefinitionOptions = {},
 ) => {
   let serialized: string;
   try {
@@ -193,14 +364,15 @@ export const validateAgentJsonSchemaDefinition = (
   if (Buffer.byteLength(serialized, 'utf8') > MAX_SCHEMA_BYTES) {
     throw new Error(`JSON Schema exceeds the maximum size of ${MAX_SCHEMA_BYTES} bytes`);
   }
-  validateSchemaNode(schema, 'schema', 0);
+  validateSchemaNode(schema, 'schema', 0, options);
   return schema;
 };
 
 export const validateAgentJsonObjectSchemaDefinition = (
   schema: Record<string, unknown>,
+  options: AgentSchemaDefinitionOptions = {},
 ) => {
-  validateAgentJsonSchemaDefinition(schema);
+  validateAgentJsonSchemaDefinition(schema, options);
   if (schema.type !== undefined && !typeMatches({}, schema.type)) {
     throw new Error('schema.type must allow an object at the root');
   }
@@ -227,6 +399,9 @@ const validateValue = (
     }
     if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) {
       throw new Error(`${path} is longer than maxLength`);
+    }
+    if (typeof schema.pattern === 'string') {
+      assertPatternMatches(value, schema.pattern, path);
     }
   }
   if (typeof value === 'number') {
@@ -273,8 +448,13 @@ export const validateAgentJsonSchemaValue = (
   value: unknown,
   schema: Record<string, unknown>,
   path = 'value',
+  options: AgentSchemaDefinitionOptions = {},
 ) => {
-  validateAgentJsonSchemaDefinition(schema);
+  // The schema is re-checked here and not just at definition time: a stored
+  // schema could have been written by an older, laxer build. The options must be
+  // carried through, or a tool input schema that was legally created with a
+  // `pattern` would be rejected at execution time instead.
+  validateAgentJsonSchemaDefinition(schema, options);
   validateValue(value, schema, path);
   return value;
 };
@@ -283,24 +463,31 @@ export const validateAgentJsonSchemaInput = (
   input: unknown,
   schema: Record<string, unknown>,
 ) => {
-  if (!isRecord(input)) throw new Error('Tool input must be an object');
+  // These messages are the only actionable feedback the model gets when its own
+  // arguments are wrong, so they are tagged tool_input_invalid rather than folded
+  // into the generic execution failure: a schema mismatch is not retryable, and
+  // saying so lets the model correct the call instead of hammering the endpoint.
+  if (!isRecord(input)) throw new AgentToolError('tool_input_invalid', 'Tool input must be an object');
   try {
-    validateAgentJsonSchemaValue(input, schema, 'tool input');
+    // This entry point is the tool input path by definition, so it accepts the
+    // keywords that are sound for tool inputs. Output validation keeps the
+    // stricter default.
+    validateAgentJsonSchemaValue(input, schema, 'tool input', { allowPattern: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Tool input is invalid';
     if (/\.([^.]+) is required$/.test(message)) {
       const key = message.match(/\.([^.]+) is required$/)?.[1] || '';
-      throw new Error(`Missing required tool input: ${key}`, { cause: error });
+      throw new AgentToolError('tool_input_invalid', `Missing required tool input: ${key}`, { cause: message });
     }
     if (/\.([^.]+) is not allowed$/.test(message)) {
       const key = message.match(/\.([^.]+) is not allowed$/)?.[1] || '';
-      throw new Error(`Unexpected tool input: ${key}`, { cause: error });
+      throw new AgentToolError('tool_input_invalid', `Unexpected tool input: ${key}`, { cause: message });
     }
     if (/\.([^.]+) has an invalid type$/.test(message)) {
       const key = message.match(/\.([^.]+) has an invalid type$/)?.[1] || '';
-      throw new Error(`Invalid type for tool input: ${key}`, { cause: error });
+      throw new AgentToolError('tool_input_invalid', `Invalid type for tool input: ${key}`, { cause: message });
     }
-    throw error;
+    throw new AgentToolError('tool_input_invalid', message);
   }
   return input;
 };

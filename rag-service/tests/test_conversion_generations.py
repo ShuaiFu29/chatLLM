@@ -297,7 +297,7 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
                 markdown_byte_size=100,
                 source_map_byte_size=200,
                 manifest_byte_size=300,
-                warning_count=1,
+                warnings=("XLSX_EXTERNAL_LINKS_IGNORED",),
                 unit_count=4,
             )
 
@@ -341,7 +341,7 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
                 markdown_byte_size=100,
                 source_map_byte_size=200,
                 manifest_byte_size=300,
-                warning_count=0,
+                warnings=(),
                 unit_count=4,
             )
 
@@ -380,7 +380,7 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
                 markdown_byte_size=100,
                 source_map_byte_size=200,
                 manifest_byte_size=300,
-                warning_count=0,
+                warnings=(),
                 unit_count=4,
             )
 
@@ -419,7 +419,7 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
                     markdown_byte_size=100,
                     source_map_byte_size=200,
                     manifest_byte_size=300,
-                    warning_count=0,
+                    warnings=(),
                     unit_count=4,
                 )
 
@@ -573,6 +573,71 @@ class ConversionGenerationDatabaseTests(unittest.TestCase):
             "11111111-1111-4111-8111-111111111111",
             ["chunk-1", "chunk-2"],
         )
+
+
+class ConversionWarningDetailTests(unittest.TestCase):
+    attempt_id = "11111111-1111-4111-8111-111111111111"
+    lease_token = "22222222-2222-4222-8222-222222222222"
+
+    def _complete(self, warnings, status="completed_with_warnings"):
+        completed = _generation(status=status)
+        cursor = _ScriptedCursor([completed])
+        with patch.object(db, "get_conn", _fake_connection(cursor)):
+            db.complete_conversion_generation(
+                "file-1",
+                completed["id"],
+                self.attempt_id,
+                self.lease_token,
+                markdown_hash=SHA_B,
+                source_map_hash=SHA_C,
+                manifest_hash=SHA_D,
+                markdown_byte_size=100,
+                source_map_byte_size=200,
+                manifest_byte_size=300,
+                warnings=warnings,
+                unit_count=4,
+            )
+        return cursor.calls[0]
+
+    def test_the_warning_codes_are_persisted_next_to_their_count(self):
+        # Only the count was stored before, so answering "why did this document
+        # convert with warnings" meant downloading the manifest artifact.
+        sql, params = self._complete(("PDF_COMPLEX_LAYOUT_MAY_BE_LOSSY", "DOCX_IMAGES_IGNORED"))
+        self.assertIn("warnings = %s", sql)
+        self.assertIn(["PDF_COMPLEX_LAYOUT_MAY_BE_LOSSY", "DOCX_IMAGES_IGNORED"], params)
+        self.assertIn(2, params)
+        self.assertIn("completed_with_warnings", params)
+
+    def test_the_count_is_derived_from_the_codes_so_they_cannot_disagree(self):
+        _, params = self._complete(("XLSX_EXTERNAL_LINKS_IGNORED",))
+        self.assertIn(1, params)
+        self.assertIn(["XLSX_EXTERNAL_LINKS_IGNORED"], params)
+
+        _, clean_params = self._complete((), status="completed")
+        self.assertIn(0, clean_params)
+        self.assertIn([], clean_params)
+        self.assertIn("completed", clean_params)
+        self.assertNotIn("completed_with_warnings", clean_params)
+
+    def test_unusable_warning_codes_are_rejected(self):
+        for invalid in (("",), ("   ",), ("x" * 201,), (None,), (7,), "not-a-sequence"):
+            with self.assertRaises(ValueError):
+                self._complete(invalid)
+
+    def test_the_migration_adds_a_queryable_warning_column(self):
+        migration = (
+            Path(__file__).resolve().parents[2]
+            / "server"
+            / "migrations"
+            / "0043_conversion_warning_details.sql"
+        ).read_text(encoding="utf-8").lower()
+        self.assertIn("add column if not exists warnings text[]", migration)
+        # Legacy rows keep an empty array with a non-zero count, so only
+        # non-empty arrays are required to match the count.
+        self.assertIn("cardinality(warnings) = 0 or cardinality(warnings) = warning_count", migration)
+
+    def test_generation_reads_expose_the_warning_codes(self):
+        self.assertIn("warnings", db._CONVERSION_GENERATION_COLUMNS)
 
 
 if __name__ == "__main__":

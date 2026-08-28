@@ -1,5 +1,5 @@
 import { useRef, useState, useCallback, useEffect, useMemo, useDeferredValue } from 'react';
-import { Bot, ChevronsUp } from 'lucide-react';
+import { Bot, ChevronsUp, RefreshCw, TriangleAlert } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { Message, Conversation } from '../stores/useChatStore';
 import type { User } from '../stores/useAuthStore';
@@ -9,6 +9,8 @@ import MessageSkeleton from './MessageSkeleton';
 interface MessageListProps {
   messages: Message[];
   loadingMessages: boolean;
+  messagesError?: boolean;
+  onRetryMessages?: () => void;
   sendingMessage: boolean;
   user: User | null;
   currentConversation?: Conversation;
@@ -29,6 +31,8 @@ interface MessageListProps {
 export default function MessageList({
   messages,
   loadingMessages,
+  messagesError = false,
+  onRetryMessages,
   sendingMessage,
   user,
   currentConversation,
@@ -53,41 +57,17 @@ export default function MessageList({
   // Use deferred value for messages to prevent blocking UI during rapid streaming updates
   const deferredMessages = useDeferredValue(messages);
 
-  // Merge messages for display to prevent duplicates
-  const displayMessages = useMemo(() => {
-    if (deferredMessages.length === 0) return [];
-
-    const merged: Message[] = [];
-    let currentMsg = deferredMessages[0];
-
-    for (let i = 1; i < deferredMessages.length; i++) {
-      const nextMsg = deferredMessages[i];
-      if (currentMsg.role === 'assistant' && nextMsg.role === 'assistant') {
-        // Merge content
-        currentMsg = {
-          ...currentMsg,
-          content: currentMsg.content + nextMsg.content,
-          // Merge sources if exist
-          sources: [
-            ...(currentMsg.sources || []),
-            ...(nextMsg.sources || [])
-          ],
-          agentRunId: currentMsg.agentRunId || nextMsg.agentRunId,
-          agent_run_id: currentMsg.agent_run_id || nextMsg.agent_run_id,
-          agent_run_status: nextMsg.agent_run_status || currentMsg.agent_run_status,
-          agent_grounding: nextMsg.agent_grounding || currentMsg.agent_grounding,
-          agentEvents: [...(currentMsg.agentEvents || []), ...(nextMsg.agentEvents || [])],
-          agent_steps: [...(currentMsg.agent_steps || []), ...(nextMsg.agent_steps || [])],
-          agent_approvals: [...(currentMsg.agent_approvals || []), ...(nextMsg.agent_approvals || [])],
-        };
-      } else {
-        merged.push(currentMsg);
-        currentMsg = nextMsg;
-      }
-    }
-    merged.push(currentMsg);
-    return merged;
-  }, [deferredMessages]);
+  // Every persisted assistant message is rendered on its own. Adjacent
+  // assistant messages are not duplicates: "Continue" deliberately stores a
+  // second assistant row for the same user turn. Merging them used the first
+  // message's id for the key and for delete/branch/copy, so deleting the
+  // continuation removed the original answer instead.
+  //
+  // The deferred value can lag one frame behind `messages`; fall back to the
+  // live list so a non-empty conversation never renders as a blank frame.
+  const displayMessages = useMemo(() => (
+    deferredMessages.length === 0 && messages.length > 0 ? messages : deferredMessages
+  ), [deferredMessages, messages]);
 
   // Handle scroll events to detect if user has scrolled up
   const handleScroll = useCallback(() => {
@@ -124,6 +104,25 @@ export default function MessageList({
         <div className="space-y-8 p-2">
           <MessageSkeleton />
           <MessageSkeleton />
+        </div>
+      ) : messages.length === 0 && messagesError ? (
+        // Never fall through to the welcome screen after a failed load: an
+        // existing conversation would look empty, as if its history was lost.
+        <div className="flex-1 flex flex-col items-center justify-center text-text-muted p-8 h-full">
+          <div className="mb-4 grid h-16 w-16 place-items-center rounded-2xl bg-bg-surface">
+            <TriangleAlert className="h-8 w-8 text-red-400" />
+          </div>
+          <h2 className="mb-2 text-xl font-semibold text-text-main">{t('chat.messagesLoadFailed')}</h2>
+          {onRetryMessages ? (
+            <button
+              type="button"
+              onClick={onRetryMessages}
+              className="mt-3 inline-flex min-h-9 items-center gap-2 rounded-lg border border-border bg-bg-sidebar px-3 py-2 text-sm text-text-muted transition-colors hover:text-text-main"
+            >
+              <RefreshCw className="h-4 w-4" />
+              {t('chat.messagesLoadRetry')}
+            </button>
+          ) : null}
         </div>
       ) : messages.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center text-text-muted p-8 h-full">

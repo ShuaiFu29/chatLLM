@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
+from chunk_strategy import CHUNK_OVERLAP, CHUNK_SIZE
 from config import settings
 from converted_document import DocumentConversionError
 from converted_ingestion import ConvertedIngestionError, split_converted_document
@@ -185,8 +186,8 @@ def split_text(text_content: str, is_markdown: bool) -> list[str]:
         md_header_splits = markdown_splitter.split_text(text_content)
 
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000,
-            chunk_overlap=100,
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
             separators=separators,
         )
         chunks = []
@@ -198,8 +199,8 @@ def split_text(text_content: str, is_markdown: bool) -> list[str]:
         return chunks
 
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=100,
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
         separators=separators,
     )
     return text_splitter.split_text(text_content)
@@ -216,8 +217,8 @@ def find_streaming_split_boundary(text: str, chunk_size: int) -> int:
 
 def iter_streaming_markdown_chunks(
     byte_chunks,
-    chunk_size: int = 1000,
-    chunk_overlap: int = 100,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
 ):
     decoder = codecs.getincrementaldecoder("utf-8")()
     line_buffer = ""
@@ -875,7 +876,7 @@ def process_converted_file(
                 markdown_byte_size=conversion.document.byte_size,
                 source_map_byte_size=conversion.source_map.byte_size,
                 manifest_byte_size=conversion.manifest_artifact.byte_size,
-                warning_count=len(conversion.manifest.warnings),
+                warnings=conversion.manifest.warnings,
                 unit_count=conversion.manifest.unit_count,
             )
             generation_completed = True

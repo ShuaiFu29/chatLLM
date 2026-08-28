@@ -154,7 +154,10 @@ class PresentationSpreadsheetConverterTests(unittest.TestCase):
         units = read_source_map(first.source_map.path)
 
         self.assertIn("| 2 | 张三 | 包含\\|符号 |", markdown)
-        self.assertIn("CSV_DELIMITER:semicolon", first.manifest.warnings)
+        # The delimiter is provenance, not a defect: it must not push the file
+        # into completed_with_warnings.
+        self.assertIn("CSV_DELIMITER:semicolon", first.manifest.notes)
+        self.assertEqual(first.manifest.warnings, ())
         self.assertNotEqual(first.manifest.source_encoding, "utf-8")
         self.assertEqual(first.manifest.document_kind, "csv")
         self.assertEqual(

@@ -151,6 +151,23 @@ export const assertCompatibleModelStreamComplete = (sawDone: boolean) => {
   if (!sawDone) throw new CompatibleStreamProtocolError();
 };
 
+/**
+ * A 200 response with no readable body is not an empty answer, it is a broken
+ * stream. Returning silently would surface as a successfully persisted empty
+ * reply, which is the same fail-open the `[DONE]` sentinel check exists to
+ * prevent.
+ */
+export const assertCompatibleModelStreamBody = (
+  body: ReadableStream<Uint8Array> | null,
+) => {
+  if (!body) {
+    throw new CompatibleStreamProtocolError(
+      'Compatible model API stream protocol error: response body missing',
+    );
+  }
+  return body;
+};
+
 class CompatibleApiError extends Error {
   statusCode: number;
   responseBody: string;
@@ -277,11 +294,7 @@ class CompatibleLlmClient {
       throw new CompatibleApiError(response.status, await response.text());
     }
 
-    if (!response.body) {
-      return;
-    }
-
-    const reader = response.body.getReader();
+    const reader = assertCompatibleModelStreamBody(response.body).getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let sawDone = false;

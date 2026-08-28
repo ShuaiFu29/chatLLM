@@ -81,7 +81,8 @@
     "signOut": "退出登录",
     "openMenu": "打开侧栏",
     "noConversations": "暂无对话",
-    "noArchivedConversations": "暂无归档对话"
+    "noArchivedConversations": "暂无归档对话",
+    "agentMemories": "Agent 记忆"
   },
   "workspace": {
     "sectionTitle": "工作区",
@@ -140,12 +141,21 @@
       "approval": {
         "required": "工具等待用户审批",
         "resolved": "工具审批已处理"
-      }
+      },
+      "subagent.dispatched": "派发子任务",
+      "subagent.completed": "子任务完成",
+      "decision.memory_read": "读取记忆",
+      "decision.memory_write": "写入记忆",
+      "decision.context_evicted": "裁剪上下文",
+      "decision.budget_check": "预算判定",
+      "decision.tool_policy": "工具策略",
+      "decision.plan": "任务拆解"
     },
     "approveTool": "批准并继续",
     "rejectTool": "拒绝调用",
     "approvalApproved": "工具调用已批准",
     "approvalRejected": "工具调用已拒绝",
+    "approvalExpired": "审批已过期，未做出决定",
     "approvalFailed": "审批提交失败，请确认 Run 是否仍在等待",
     "approvalExpires": "有效期至 {{time}}",
     "welcomeSubtitle": "选择一个对话或开始一个新的对话。",
@@ -173,6 +183,9 @@
     "ragRetrievalFailed": "工作区文档检索失败，为避免无依据回答，本次未生成答案。请重试。",
     "generationFailed": "回答生成失败。",
     "generationFailedRetryable": "回答生成失败，请重试。",
+    "agentRunRecovering": "连接已断开，但 Agent 仍在运行，正在从服务器恢复时间线。",
+    "messagesLoadFailed": "加载会话消息失败。",
+    "messagesLoadRetry": "重试",
     "sources": "来源与引用",
     "viewOriginalDocument": "查看知识来源",
     "ragQuality": "RAG 质量",
@@ -360,6 +373,7 @@
     "deleteConfirm": "您确定要删除",
     "deleteWarning": "此操作无法撤销。",
     "deleteSuccess": "文件删除成功",
+    "deleteAccepted": "删除已受理。该文档不会再用于回答，索引清理在后台完成。",
     "deleteFail": "文件删除失败。",
     "uploadComplete": "上传成功！",
     "uploadFail": "上传失败。请重试。",
@@ -1002,6 +1016,36 @@
       "succeeded": "已完成",
       "failed": "失败",
       "cancelled": "已取消"
+    }
+  },
+  "agentMemories": {
+    "title": "Agent 记忆",
+    "subtitle": "查看并删除 Agent 为你保存的长期记忆。列表同时显示已被取代和已过期的条目，以便理解召回为何如此表现。",
+    "empty": "还没有任何长期记忆。",
+    "loadFailed": "记忆加载失败。",
+    "deleteFailed": "删除失败。",
+    "delete": "删除这条记忆",
+    "refresh": "刷新",
+    "superseded": "已被取代",
+    "noEmbedding": "无向量（按时间排序）",
+    "expiresAt": "有效期至 {{time}}",
+    "scope": {
+      "label": "作用域",
+      "all": "全部作用域",
+      "user": "用户",
+      "project": "项目",
+      "agent": "单个 Agent"
+    },
+    "kind": {
+      "fact": "事实",
+      "preference": "偏好",
+      "decision": "决定",
+      "summary": "摘要"
+    },
+    "trust": {
+      "user_stated": "用户陈述",
+      "agent_inferred": "Agent 推断，可能有误",
+      "tool_derived": "来自外部工具输出，不可信"
     }
   }
 }

@@ -21,8 +21,11 @@
 - Markdown Header Splitter 读取 H1-H6 层级；二次切分后，每个子 Chunk 都显式带完整标题路径。
 - 大文件流式分支维护同样的标题状态，并忽略代码围栏内的伪标题。
 - 大文件对象先只下载一次并流式写入临时 staging。staging 阶段完整验证声明大小、SHA-256、UTF-8、Markdown 分块且至少产生一个 Chunk；全部通过后才 reset 旧 PostgreSQL/向量/BM25/图索引并发布新内容。下载中断、哈希错误或非法文本不会删除当前可服务版本。
-- Chunk 元数据写入 `chunk_strategy_version=markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100`，包含 `heading_path`、`heading_depth` 和稳定的 `parent_section_id`；向量输入同时包含文件名、标题路径和正文。
+- Chunk 元数据写入 `chunk_strategy_version=markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100`，包含 `heading_path`、`heading_depth` 和稳定的 `parent_section_id`；向量输入同时包含文件名、标题路径和正文。该标识由 `rag-service/chunk_strategy.py` 中的 `CHUNK_SIZE`/`CHUNK_OVERLAP` 派生，两个切分器复用同一份常量，切分参数无法在标识不变的情况下被改动。
+- 每个 Chunk 写入 `token_count`。这是 `chunk_strategy.py` 中 `heuristic-cjk-v1` 估算器的**近似值**（CJK/假名/谚文按字计，其余按 4 字符 1 token 向上取整），不是任何模型分词器的精确结果——在用的 embedding/chat 供应商都不暴露分词器。用于预算与可观测，不要当作计费依据。
 - Elasticsearch v2 mapping 同时索引 `filename`、`heading` 和 `content`，每个文本入口都有 standard/CJK 检索面，BM25 首轮召回按 `filename > heading > content` 加权；mapping `_meta.chatllm_schema_version` 固定为 `markdown-fields-v2`，不兼容时明确报错而不是吞掉 HTTP 400。
+- 说明：mapping 中名为 `chatllm_mixed_text` 的 analyzer 实际就是 Elasticsearch 内置 `standard`，**不做中文分词**（对 CJK 按字切分）；混合语种覆盖来自各文本字段的 `.cjk` 子字段（内置 bigram analyzer）。真正的中文分词需要在集群上安装 IK 或 ICU 插件并全量重建 BM25 索引，见 `tasks/11-第二轮深度分析整改.md` 的 `B2`。该名称保留不改，因为它属 index settings，改名会强制既有部署重建索引。
+- 转换警告同时落 `file_conversion_generations.warning_count` 与 `warnings text[]`，可直接在 PostgreSQL 里查出某个文件为何是 `completed_with_warnings`，不必下载 manifest artifact；计数由警告码数量派生，两者不会不一致。CSV 的分隔符检测结果属溯源信息，记入 manifest 的 `notes` 而非 `warnings`，因此使用非逗号分隔符的 CSV 不会再被标成 `completed_with_warnings`。
 - PostgreSQL Chunk、Milvus、Elasticsearch 与 Neo4j 在同一次摄取任务中重建。旧索引不会仅因服务启动或读取 scope 就被标成 v4，也不会自动获得 `markdown-fields-v2` mapping。
 
 历史文档先预览缺少 active Conversion Generation 的数量：
@@ -60,6 +63,8 @@ BullMQ 有三个独立队列：文档摄取、RAG 测评、资源清理。消息
 
 缓存只允许 exact query 跳过检索。词项相似 Query 不再短路；会话证据继续按 `conversation_id` 隔离，只作为当前请求的新检索候选。相同 exact key 的并发 miss 通过 Redis `SET NX EX` 短锁合并；等待者超时、锁丢失或 Cache Redis 故障时正常回源。Trace 返回 hit/miss/bypass/rejected 原因、是否跳过检索、估算节省的 Query/通道调用数和进程内有效命中率。
 
+Key 版本一致不等于证据仍然有效：命中后的证据一律回 PostgreSQL 复核 chunk 与文件是否仍处于可检索状态，无法证明存活的条目直接丢弃并记入 `cache_authority_check` trace step；Parent-child 文档按 `matched_child_ids` 里的真实 chunk 复核，而不是合成的 parent id。这条兜底覆盖删除已标记但异步索引清理尚未完成的时间窗 —— 服务端在把文件标记 `deleting` 的同一事务里就推进 `knowledge_version` 并清空该空间的 exact cache，两层共同保证已删文档不会被继续引用。
+
 ## 测评语义
 
 - Retrieval 使用 Gold Source 的 Recall@K 和 MRR@K。Gold 数组优先保存稳定的 `file_id`，同时兼容旧文件名，因此属于 source-level，不冒充 chunk-level 指标。
@@ -81,6 +86,7 @@ BullMQ 有三个独立队列：文档摄取、RAG 测评、资源清理。消息
 ## 当前能力边界
 
 - Query rewrite 默认使用可审计的确定性改写，已经覆盖连续省略追问、条件追问、比较追问和序号追问；显式配置后可增加受严格 schema 与检索约束校验的 LLM 语义替代查询。确定性模式仍不会猜测历史中从未出现的隐含实体，模型降级时 Trace 会标明 fallback。
+- 单次检索的查询预算里，用户原始问法固定占第一位，其余额度由确定性查询计划与 LLM 语义替代查询轮转分配，每轮确定性优先。开启 LLM 改写不会挤掉确定性计划——后者贡献 exact-marker 查询，字面标识符（订单号、错误码）的召回依赖它，且不受某次改写调用成败影响。
 - 未配置 `/rerank` Provider 时使用 `local-evidence-v2`，比单纯 RRF 多了标题、邻近度、答案承载与重复抑制，但它仍不是 Cross-encoder 语义相关度；Provider 分数也未校准，超时或失败会回退本地顺序，不阻断回答。
 - Graph LLM 默认关闭。规则 fallback 只覆盖有限的显式关系并在检索中降权；开放标签不等于自动学习本体，也不保证任意领域、任意多跳推理正确。
 - 声明验证器是保守、确定性的词项/数字/版本/日期/否定校验，不等同语义 entailment 模型；Judge 未配置或实际答案未生成时维度保持 `N/A`。
@@ -96,7 +102,7 @@ BullMQ 有三个独立队列：文档摄取、RAG 测评、资源清理。消息
 - 图实体规范化、严格 LLM JSON/证据校验、保守 alias 消歧、跨 Chunk 指代与有界多跳检索；
 - Recall/MRR、实际回答、声明到引用映射、失败分母和 N/A 语义；
 - Parent-child 回取、Token Budget 截断以及“不可使用被截断事实”的边界；
-- Redis exact cache 的用户/项目/版本隔离、跨会话命中、并发单飞、过期与故障回源，限流原子性；
+- Redis exact cache 的用户/项目/版本隔离、跨会话命中、并发单飞、过期与故障回源，命中后证据的 PostgreSQL 权威复核，限流原子性；
 - BullMQ jobId、PostgreSQL claim/lease/retry 与丢消息重建；
 - 一个真实支持格式文档的端到端摄取链路。
 

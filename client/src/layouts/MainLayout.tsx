@@ -4,7 +4,7 @@ import { useNavigate, useLocation } from '../lib/navigation';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '../stores/useAuthStore';
 import { useChatStore } from '../stores/useChatStore';
-import { MessageSquare, Plus, LogOut, FileText, Menu, X, Search, Folder, FolderPlus, BarChart3, BookOpenText, Bot, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
+import { MessageSquare, Plus, LogOut, FileText, Menu, X, Search, Folder, FolderPlus, BarChart3, BookOpenText, Bot, Brain, ClipboardCheck, Route, Network, UserRound } from 'lucide-react';
 import { toSafeError } from '../lib/safeError';
 import Modal from '../components/Modal';
 import SearchDialog from '../components/SearchDialog';
@@ -332,6 +332,7 @@ export default function MainLayout({ children }: { children: ReactNode }) {
   const isKnowledgePage = location.pathname === '/knowledge';
   const isUsagePage = location.pathname === '/usage';
   const isPromptsPage = location.pathname === '/prompts';
+  const isAgentMemoriesPage = location.pathname === '/agent-memories';
   const isPersonaPage = location.pathname === '/persona';
   const isRagEvalPage = location.pathname === '/rag-eval';
   const isRetrievalLabPage = location.pathname === '/retrieval-lab';
@@ -848,6 +849,19 @@ export default function MainLayout({ children }: { children: ReactNode }) {
             >
               <BookOpenText className="h-3.5 w-3.5 shrink-0" />
               <span className="truncate text-xs font-medium">{t('sidebar.promptTemplates')}</span>
+            </button>
+            <button
+              onClick={() => {
+                navigate('/agent-memories');
+                setIsMobileMenuOpen(false);
+              }}
+              className={`flex h-9 min-w-0 items-center gap-2 rounded-lg px-2 text-left transition-colors ${
+                isAgentMemoriesPage ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:bg-bg-surface hover:text-text-main'
+              }`}
+              title={t('sidebar.agentMemories')}
+            >
+              <Brain className="h-3.5 w-3.5 shrink-0" />
+              <span className="truncate text-xs font-medium">{t('sidebar.agentMemories')}</span>
             </button>
             <button
               onClick={() => {

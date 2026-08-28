@@ -69,6 +69,82 @@ export class AgentRunsService {
     return cancelActiveAgentRunsForConversationForUser(conversationId, userId);
   }
 
+  /**
+   * Decide several approvals for one run in a single request.
+   *
+   * This exists because a fan-out under an `always` policy can produce several
+   * pending approvals at once, and forcing one round trip each is needlessly
+   * painful. It changes only the number of requests, never the guarantee: each
+   * decision still names the approval it applies to, so a human decides exactly
+   * what they were shown.
+   *
+   * There is intentionally no blanket or remembered approval. "Approve this tool
+   * for the rest of the run" would quietly turn an `always` policy into an
+   * autonomous one, which is the opposite of what the operator configured.
+   *
+   * Outcomes are reported per entry rather than aborting the batch. If one
+   * approval expired while the user was deciding, failing everything would throw
+   * away their decisions on the others and the expired one would not come back.
+   */
+  async decideApprovalBatch(
+    userId: string,
+    runId: string,
+    body: { decisions: { approval_id: string; decision: 'approved' | 'rejected'; reason?: string }[] },
+  ) {
+    if (!UUID.test(runId)) throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent run id');
+    // Checked once for the whole batch: the run either accepts decisions or it
+    // does not, and re-checking per entry would only add races.
+    if (!await isAgentRunActiveForUser(runId, userId)) {
+      throw publicError(HttpStatus.CONFLICT, 'Agent run is no longer active');
+    }
+
+    const results: {
+      approval_id: string;
+      status: 'decided' | 'not_found' | 'already_decided' | 'expired';
+      decision?: 'approved' | 'rejected';
+    }[] = [];
+
+    for (const entry of body.decisions) {
+      const approval = await findAgentApprovalForUser(entry.approval_id, runId, userId);
+      if (!approval) {
+        results.push({ approval_id: entry.approval_id, status: 'not_found' });
+        continue;
+      }
+      if (approval.status !== 'pending') {
+        results.push({ approval_id: entry.approval_id, status: 'already_decided' });
+        continue;
+      }
+      if (new Date(approval.expires_at).getTime() <= Date.now()) {
+        await expireAgentApproval(entry.approval_id, runId);
+        results.push({ approval_id: entry.approval_id, status: 'expired' });
+        continue;
+      }
+      const decided = await decideAgentApprovalForUser({
+        approvalId: entry.approval_id,
+        runId,
+        userId,
+        decision: entry.decision,
+        reason: entry.reason?.trim(),
+      });
+      if (!decided) {
+        // Lost a race with the expiry sweep or another client.
+        results.push({ approval_id: entry.approval_id, status: 'already_decided' });
+        continue;
+      }
+      results.push({
+        approval_id: entry.approval_id,
+        status: 'decided',
+        decision: entry.decision,
+      });
+    }
+
+    return {
+      decided: results.filter((result) => result.status === 'decided').length,
+      total: results.length,
+      results,
+    };
+  }
+
   async decideApproval(
     userId: string,
     runId: string,

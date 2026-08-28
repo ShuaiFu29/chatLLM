@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import db
 import ingestion
+from chunk_strategy import estimate_token_count
 from converted_document import DocumentConversionError
 from converted_ingestion import ConvertedChunk
 from storage import DerivedUploadResult, ObjectIntegrity
@@ -379,6 +380,12 @@ class MultiFormatIngestionTests(unittest.TestCase):
         self.assertEqual(parameters[6], list(chunk.source_unit_ids))
         self.assertEqual(json.loads(parameters[7]), chunk.source_locator)
         self.assertEqual(parameters[8], hashlib.sha256(chunk.content.encode()).hexdigest())
+        # token_count existed in the schema and in the RETURNING clause but was
+        # missing from the INSERT column list, so every stored chunk read back
+        # NULL. It must be both listed and bound.
+        self.assertIn("token_count", insert_sql.split("returning")[0])
+        self.assertEqual(parameters[9], estimate_token_count(chunk.content))
+        self.assertGreater(parameters[9], 0)
 
 
 if __name__ == "__main__":

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 import { PoolClient } from 'pg';
 import { query, withTransaction } from '../lib/db';
 import { abortAgentRunsForProjectSpaceInProcess } from '../modules/agents/agent-run-control';
+import { activeRunStatusPredicate } from './agentRuns';
 
 export type CleanupResourceType =
   | 'file'
@@ -211,6 +212,7 @@ export const enqueueConversionGenerationCleanupWithClient = async (
 interface FileCleanupSource {
   id: string;
   user_id: string;
+  project_space_id?: string | null;
   object_key?: string | null;
 }
 
@@ -247,6 +249,27 @@ const prepareFileCleanupWithClient = async (
        and user_id = $2`,
     [file.id, file.user_id]
   );
+
+  // Deletion visibility must not wait for the async cleanup worker. The RAG
+  // exact-cache key embeds `project_spaces.knowledge_version`, so bumping it in
+  // the same transaction that marks the file `deleting` retires every cached
+  // answer that could still quote this document. The worker's later
+  // `/cleanup-file` bump stays harmless (versions only move forward).
+  if (file.project_space_id) {
+    await client.query(
+      `update project_spaces
+       set knowledge_version = knowledge_version + 1,
+           knowledge_version_updated_at = now(),
+           updated_at = now()
+       where id = $1 and user_id = $2`,
+      [file.project_space_id, file.user_id],
+    );
+    await client.query(
+      `delete from rag_retrieval_cache
+       where user_id = $1 and project_space_id = $2`,
+      [file.user_id, file.project_space_id],
+    );
+  }
 
   await client.query(
     `update file_ingestion_jobs
@@ -387,7 +410,7 @@ export const enqueueFileCleanup = async (
     if (!owner.rows[0]) return null;
 
     const { rows } = await client.query<FileCleanupSource>(
-      `select id, user_id, object_key
+      `select id, user_id, project_space_id, object_key
        from files
        where id = $1 and user_id = $2
        for update`,
@@ -428,7 +451,7 @@ const cancelProjectSpaceAgentRunsWithClient = async (
        and conversation_id in (
          select id from conversations where project_space_id = $3::uuid
        )
-       and status in ('queued', 'running', 'waiting_approval')
+       and ${activeRunStatusPredicate()}
      returning id, conversation_id, assistant_message_id`,
     [userId, PROJECT_SPACE_AGENT_CANCEL_REASON, projectSpaceId],
   );
@@ -443,29 +466,17 @@ const cancelProjectSpaceAgentRunsWithClient = async (
     [runIds, PROJECT_SPACE_AGENT_CANCEL_REASON],
   );
   for (const run of activeRuns) {
-    if (run.assistant_message_id) {
-      await client.query(
-        `update messages
-         set content = $2
-         where id = $1 and conversation_id = $3 and role = 'assistant'
-           and content = ''`,
-        [run.assistant_message_id, `${PROJECT_SPACE_AGENT_CANCEL_REASON}.`, run.conversation_id],
-      );
-      continue;
-    }
-    const { rows: messageRows } = await client.query<{ id: string }>(
-      `insert into messages (conversation_id, role, content, sources)
-       values ($1, 'assistant', $2, '[]'::jsonb)
-       returning id`,
-      [run.conversation_id, `${PROJECT_SPACE_AGENT_CANCEL_REASON}.`],
+    // Only fill an existing placeholder. A null id means the message was
+    // already deleted, and inserting a replacement would recreate a row in a
+    // conversation that this cleanup is about to remove.
+    if (!run.assistant_message_id) continue;
+    await client.query(
+      `update messages
+       set content = $2
+       where id = $1 and conversation_id = $3 and role = 'assistant'
+         and content = ''`,
+      [run.assistant_message_id, `${PROJECT_SPACE_AGENT_CANCEL_REASON}.`, run.conversation_id],
     );
-    if (messageRows[0]) {
-      await client.query(
-        `update agent_runs set assistant_message_id = $2
-         where id = $1 and assistant_message_id is null`,
-        [run.id, messageRows[0].id],
-      );
-    }
   }
   await client.query(
     `update agent_steps
@@ -521,7 +532,7 @@ export const enqueueProjectSpaceCleanup = async (
     });
 
     const { rows: files } = await client.query<FileCleanupSource>(
-      `select id, user_id, object_key
+      `select id, user_id, project_space_id, object_key
        from files
        where user_id = $1 and project_space_id = $2
        order by id
@@ -574,7 +585,7 @@ export const enqueueAccountCleanup = async (
     });
 
     const { rows: files } = await client.query<FileCleanupSource>(
-      `select id, user_id, object_key
+      `select id, user_id, project_space_id, object_key
        from files
        where user_id = $1
        order by id

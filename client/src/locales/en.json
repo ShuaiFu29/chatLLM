@@ -81,7 +81,8 @@
     "signOut": "Sign Out",
     "openMenu": "Open sidebar",
     "noConversations": "No conversations yet",
-    "noArchivedConversations": "No archived conversations"
+    "noArchivedConversations": "No archived conversations",
+    "agentMemories": "Agent memory"
   },
   "workspace": {
     "sectionTitle": "Workspaces",
@@ -140,12 +141,21 @@
       "approval": {
         "required": "Tool is waiting for approval",
         "resolved": "Tool approval resolved"
-      }
+      },
+      "subagent.dispatched": "Subtask dispatched",
+      "subagent.completed": "Subtask finished",
+      "decision.memory_read": "Memory read",
+      "decision.memory_write": "Memory written",
+      "decision.context_evicted": "Context trimmed",
+      "decision.budget_check": "Budget check",
+      "decision.tool_policy": "Tool policy",
+      "decision.plan": "Task breakdown"
     },
     "approveTool": "Approve and continue",
     "rejectTool": "Reject call",
     "approvalApproved": "Tool call approved",
     "approvalRejected": "Tool call rejected",
+    "approvalExpired": "Approval expired before it was decided",
     "approvalFailed": "Approval failed; confirm that the run is still waiting",
     "approvalExpires": "Expires at {{time}}",
     "welcomeSubtitle": "Select a conversation or start a new one to begin.",
@@ -173,6 +183,9 @@
     "ragRetrievalFailed": "Workspace document retrieval failed. No answer was generated without evidence; please retry.",
     "generationFailed": "Answer generation failed.",
     "generationFailedRetryable": "Answer generation failed. Please retry.",
+    "agentRunRecovering": "Connection lost, but the Agent is still running. Recovering the timeline from the server.",
+    "messagesLoadFailed": "Failed to load this conversation.",
+    "messagesLoadRetry": "Retry",
     "sources": "Sources & References",
     "viewOriginalDocument": "View knowledge source",
     "ragQuality": "RAG quality",
@@ -360,6 +373,7 @@
     "deleteConfirm": "Are you sure you want to delete",
     "deleteWarning": "This action cannot be undone.",
     "deleteSuccess": "File deleted successfully",
+    "deleteAccepted": "Deletion accepted. The document is no longer used for answers; index cleanup finishes in the background.",
     "deleteFail": "Failed to delete file.",
     "uploadComplete": "Upload completed successfully!",
     "uploadFail": "Upload failed. Please try again.",
@@ -1002,6 +1016,36 @@
       "succeeded": "Completed",
       "failed": "Failed",
       "cancelled": "Cancelled"
+    }
+  },
+  "agentMemories": {
+    "title": "Agent memory",
+    "subtitle": "Review and delete what Agents have remembered about you. Superseded and expired entries are shown too, so recall behaviour is explainable.",
+    "empty": "Nothing has been remembered yet.",
+    "loadFailed": "Memories could not be loaded.",
+    "deleteFailed": "The memory could not be deleted.",
+    "delete": "Delete this memory",
+    "refresh": "Refresh",
+    "superseded": "superseded",
+    "noEmbedding": "no vector (ordered by recency)",
+    "expiresAt": "expires {{time}}",
+    "scope": {
+      "label": "Scope",
+      "all": "All scopes",
+      "user": "User",
+      "project": "Project",
+      "agent": "Single Agent"
+    },
+    "kind": {
+      "fact": "Fact",
+      "preference": "Preference",
+      "decision": "Decision",
+      "summary": "Summary"
+    },
+    "trust": {
+      "user_stated": "stated by the user",
+      "agent_inferred": "inferred previously, may be wrong",
+      "tool_derived": "from external tool output, untrusted"
     }
   }
 }

@@ -84,7 +84,7 @@ chatLLM/
 
 队列中的消息只保存数据库记录 ID；任务状态、租约、重试和最终结果仍以 PostgreSQL 为准。Redis 中的消息丢失后，Dispatcher 会从 PostgreSQL 重建投递。PostgreSQL-backed RAG exact cache 保持事实源，`docker compose up -d` 默认同时启动独立的可丢弃 Cache Redis L1；它不能与 BullMQ 的 `noeviction` Redis 共用。Cache Redis 断开时 capability 标记 `degraded` 并自动回退 PostgreSQL，不影响回答正确性。
 
-RAG 缓存保存的是检索证据，不缓存最终生成答案。只有证据验证通过、完全相同的独立检索问题才允许跳过后端检索；Key 同时绑定用户、项目空间、知识和索引版本、检索路由、TopK、阈值、Embedding/Chunk 配置以及 Reranker 版本。会话证据仍按 `conversation_id` 隔离，只作为新检索的候选证据；词项相似 Query 不再直接复用。相同 Key 并发 miss 使用短时单飞合并，等待超时或 Cache Redis 故障时自动回源，不影响回答。
+RAG 缓存保存的是检索证据，不缓存最终生成答案。只有证据验证通过、完全相同的独立检索问题才允许跳过后端检索；Key 同时绑定用户、项目空间、知识和索引版本、检索路由、TopK、阈值、Embedding/Chunk 配置以及 Reranker 版本。会话证据仍按 `conversation_id` 隔离，只作为新检索的候选证据；词项相似 Query 不再直接复用。相同 Key 并发 miss 使用短时单飞合并，等待超时或 Cache Redis 故障时自动回源，不影响回答。缓存命中后证据还会回 PostgreSQL 做权威校验：任何无法证明仍然有效的 chunk 直接丢弃，宁可回源重查也不引用已删除的内容。
 
 Agent 平台的配置、运行与安全边界见 [docs/agent-platform.md](docs/agent-platform.md)。
 
@@ -212,6 +212,8 @@ EMBEDDING_DIMENSION=1024
 
 `EMBEDDING_PROVIDER=local` 只建议用于本地 smoke / 开发验证。生产或真实语义检索仍应使用千问百炼等供应商的兼容 embedding 接口。
 
+布尔型变量（`S3_FORCE_PATH_STYLE`、`EMBEDDING_DEBUG_LOGS`）按严格取值解析，两侧都可用 `true/false`、`1/0`、`yes/no`、`on/off`，大小写不敏感，留空使用默认值。无法识别的值会让服务启动失败并指出变量名，不会被静默当成某一侧。升级注意：早期版本把任何非 `false` 的字符串都当成 true，因此 `S3_FORCE_PATH_STYLE=0` 过去等于 `true`，现在等于 `false`；如果你的部署依赖过去这个行为，请显式写成 `true`。
+
 ### PostgreSQL 与 PgBouncer
 
 Node 后端和 Python RAG 服务自身都有有界连接池。单机可直接连接 PostgreSQL；多副本生产环境建议在数据库前使用 PgBouncer 的 `transaction` 模式，避免每个进程的本地池叠加耗尽 PostgreSQL 连接。仓库提供可选覆盖文件，默认开发启动不会启用它：
@@ -266,6 +268,8 @@ API 已发送 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` �
 Docker 首次创建空 PostgreSQL 数据库时会使用 `server/migrations/0001_init.sql` 初始化基础表结构。NestJS 后端启动时会自动执行 `server/migrations` 目录里尚未应用的 SQL 迁移，因此已有本地数据库也会补齐后续表结构。
 
 删除文件、项目空间或账户是跨 PostgreSQL、MinIO、Milvus、Elasticsearch 与 Neo4j 的持久化清理流程。删除接口返回 `202 Accepted` 后，资源进入 `deletion_status=pending` 或 `deleting`，并不表示外部对象已经全部删除；运维端应持续观察队列，失败任务可在租约恢复后重试。
+
+检索侧的可见性不等这条队列：文件被标记 `deleting` 的同一个事务就会推进所属项目空间的 `knowledge_version` 并清空该空间的 RAG exact cache，之后即便命中缓存，证据仍会回 PostgreSQL 校验 chunk 是否仍然有效。因此删除请求返回后回答就不会再引用该文档，外部索引清理只影响存储占用与后台一致性。
 
 部署 `server/migrations/0025_security_sessions_rate_limits.sql` 前必须备份 PostgreSQL。该迁移会把 refresh session 表重写为仅存储 SHA-256 token hash，并删除原始 token 列；旧版本应用不能回滚读取原始 token，因此不能依靠旧二进制执行数据库回滚，应保留备份并采用应用与迁移一起向前恢复的方案。
 
@@ -323,7 +327,7 @@ npm run dev
 - Agent 中心：创建、版本化编辑、复制、发布、停用和删除用户 Agent
 - 会话可在普通聊天与已发布 Agent 之间切换；普通聊天和原 RAG 行为保持兼容
 - Agent 支持模型、指令、记忆模式、JSON/Markdown 输出、迭代/时间/Token 预算和工具权限配置
-- Agent 多轮 Tool Calling，Run/Step/Token 持久化，聊天内 SSE 工具时间线可在刷新后恢复
+- Agent 多轮 Tool Calling，Run/Step/Token 持久化，聊天内 SSE 工具时间线可在页面刷新或 SSE 断线后恢复
 - 内置知识、工作区、会话和实用工具；Agentic RAG 仅作为可选内置工具
 - 自定义 HTTP 与远程 MCP 工具，凭据采用 AES-256-GCM 加密，远端访问受部署白名单约束
 - 写操作和高风险工具支持持久审批，Run 在用户批准或拒绝后继续

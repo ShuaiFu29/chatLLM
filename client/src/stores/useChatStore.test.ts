@@ -46,6 +46,7 @@ const resetStore = () => {
     loadingConversations: false,
     loadingMessages: false,
     loadingOlderMessages: false,
+    messagesError: false,
     sendingMessage: false,
     isStopped: false,
     abortController: null,
@@ -729,5 +730,115 @@ describe('conversation regeneration', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/chat/conversations/conversation-a/messages');
     expect(useChatStore.getState().currentConversationId).toBe('conversation-b');
     expect(useChatStore.getState().messages).toEqual([messageB]);
+  });
+});
+
+describe('first send and optimistic ids', () => {
+  test('createConversation resolves only after the real history is loaded (P1-FIRST-SEND)', async () => {
+    // Fire-and-forget history loading used to overwrite the optimistic user
+    // message and streaming placeholder with the server's welcome-only page.
+    const historyFetch = deferred<{ data: Message[]; headers: Record<string, string> }>();
+    apiMock.post.mockResolvedValue({
+      data: {
+        id: 'conversation-new',
+        title: 'New',
+        created_at: '2026-07-13T00:00:00.000Z',
+        updated_at: '2026-07-13T00:00:00.000Z',
+      },
+    });
+    apiMock.get.mockImplementation(() => historyFetch.promise);
+
+    const create = useChatStore.getState().createConversation('Hello');
+    let settled = false;
+    void create.then(() => { settled = true; });
+
+    await vi.waitFor(() => expect(apiMock.get).toHaveBeenCalled());
+    expect(settled).toBe(false);
+
+    historyFetch.resolve({
+      data: [message('welcome-real', 'Server welcome')],
+      headers: {},
+    });
+    await expect(create).resolves.toBe('conversation-new');
+    expect(useChatStore.getState().messages).toEqual([message('welcome-real', 'Server welcome')]);
+  });
+
+  test('optimistic message ids are prefixed so they cannot be branched (P2-NUMERIC-ID)', async () => {
+    const streamResponses: Array<(response: Response) => void> = [];
+    authenticatedFetchMock.mockImplementation(() => new Promise<Response>((resolve) => {
+      streamResponses.push(resolve);
+    }));
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [],
+      messagesCache: { 'conversation-a': [] },
+    });
+
+    const send = useChatStore.getState().sendMessage('What changed in the handbook?');
+    await vi.waitFor(() => expect(streamResponses.length).toBe(1));
+
+    const optimistic = useChatStore.getState().messages;
+    expect(optimistic).toHaveLength(2);
+    expect(optimistic[0].role).toBe('user');
+    expect(optimistic[1].role).toBe('assistant');
+    for (const item of optimistic) {
+      expect(item.id.startsWith('temp-')).toBe(true);
+      expect(item.id).not.toMatch(/^\d+$/);
+    }
+
+    streamResponses[0](new Response('data: [DONE]\n\n', { status: 200 }));
+    await send.catch(() => undefined);
+  });
+
+  test('a failed history fetch reports an error instead of an empty conversation (P2-FETCH-SILENT)', async () => {
+    apiMock.get.mockRejectedValue(new Error('network down'));
+    useChatStore.setState({
+      conversations: [{
+        id: 'conversation-a',
+        title: 'Existing',
+        created_at: '2026-07-13T00:00:00.000Z',
+        updated_at: '2026-07-13T00:00:00.000Z',
+      }],
+    });
+
+    await useChatStore.getState().selectConversation('conversation-a');
+
+    const state = useChatStore.getState();
+    expect(state.messagesError).toBe(true);
+    expect(state.loadingMessages).toBe(false);
+    expect(state.messages).toEqual([]);
+  });
+
+  test('a successful retry clears the error state (P2-FETCH-SILENT)', async () => {
+    apiMock.get.mockRejectedValueOnce(new Error('network down'));
+    await useChatStore.getState().selectConversation('conversation-a');
+    expect(useChatStore.getState().messagesError).toBe(true);
+
+    apiMock.get.mockResolvedValueOnce({ data: [message('a1', 'Recovered')], headers: {} });
+    await useChatStore.getState().refreshMessages('conversation-a');
+
+    expect(useChatStore.getState().messagesError).toBe(false);
+    expect(useChatStore.getState().messages).toEqual([message('a1', 'Recovered')]);
+  });
+
+  test('the live stream records the Agent run status for SSE recovery (P1-SSE-RECOVER)', async () => {
+    const frames = [
+      'data: {"userMessageId":"user-1"}\n\n',
+      'data: {"agentRunId":"run-1","agentEvent":{"type":"run.started","runId":"run-1"}}\n\n',
+    ].join('');
+    authenticatedFetchMock.mockResolvedValue(new Response(frames, { status: 200 }));
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [],
+      messagesCache: { 'conversation-a': [] },
+    });
+
+    // The stream ends without [DONE], exactly like a dropped connection.
+    await useChatStore.getState().sendMessage('Summarize the handbook').catch(() => undefined);
+
+    const assistantMessage = useChatStore.getState().messages.at(-1);
+    expect(assistantMessage?.role).toBe('assistant');
+    expect(assistantMessage?.agentRunId).toBe('run-1');
+    expect(assistantMessage?.agent_run_status).toBe('running');
   });
 });

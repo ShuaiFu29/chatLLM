@@ -26,6 +26,11 @@ export interface AgentToolCreateBody {
   description?: string;
   kind: AgentToolKind;
   risk_level?: AgentToolRiskLevel;
+  /**
+   * Per-run ceiling for this tool. Omitted or null means only the global ceiling
+   * applies, so this is an opt-in tightening for tools with a real side effect.
+   */
+  max_invocations_per_run?: number | null;
   project_space_id?: string | null;
   projectSpaceId?: string | null;
   configuration: Record<string, unknown>;
@@ -37,6 +42,21 @@ export type AgentToolUpdateBody = Partial<Omit<AgentToolCreateBody, 'kind'>> & {
   clear_secrets?: boolean;
 };
 
+/**
+ * A per-run ceiling is either absent or a small positive integer. Rejecting a
+ * malformed value here keeps the database constraint from being the thing that
+ * reports a user-facing configuration mistake.
+ */
+const normalizeMaxInvocationsPerRun = (value: unknown): number | null => {
+  if (value === null || value === undefined) return null;
+  if (!Number.isInteger(value) || Number(value) < 1 || Number(value) > 100) {
+    throw publicError(
+      HttpStatus.BAD_REQUEST,
+      'max_invocations_per_run must be an integer between 1 and 100',
+    );
+  }
+  return Number(value);
+};
 const looksLikeCredentialQueryKey = (key: string) => (
   /(?:^|[-_])(api[-_]?key|access[-_]?token|auth(?:orization)?|client[-_]?secret|credential|key|pass(?:word|wd)?|signature|secret|token)(?:$|[-_])/i.test(key)
 );
@@ -177,7 +197,15 @@ export class AgentToolsService {
       );
     }
     try {
-      validateAgentJsonObjectSchemaDefinition(result.data.input_schema || { type: 'object', properties: {} });
+      // Tool input schemas may constrain strings with `pattern` so a malformed
+      // argument is reported to the model as invalid input instead of reaching
+      // the endpoint and coming back as an opaque 400. Agent output schemas
+      // deliberately do not get this: a refusal placeholder has to remain
+      // synthesizable.
+      validateAgentJsonObjectSchemaDefinition(
+        result.data.input_schema || { type: 'object', properties: {} },
+        { allowPattern: true },
+      );
     } catch (error) {
       throw publicError(
         HttpStatus.BAD_REQUEST,
@@ -247,6 +275,7 @@ export class AgentToolsService {
         description: body.description,
         kind: body.kind,
         riskLevel: effectiveRisk,
+        maxInvocationsPerRun: normalizeMaxInvocationsPerRun(body.max_invocations_per_run),
         configuration,
         encryptedSecrets,
         enabled: body.enabled,
@@ -278,6 +307,9 @@ export class AgentToolsService {
     if (body.name !== undefined) updates.name = body.name;
     if (body.description !== undefined) updates.description = body.description;
     if (body.risk_level !== undefined) updates.risk_level = body.risk_level;
+    if (body.max_invocations_per_run !== undefined) {
+      updates.max_invocations_per_run = normalizeMaxInvocationsPerRun(body.max_invocations_per_run);
+    }
     if (body.enabled !== undefined) updates.enabled = body.enabled;
     if (body.enabled === false && existing.enabled) {
       const bindingCount = await countEnabledAgentToolBindingsForUser(toolId, userId);

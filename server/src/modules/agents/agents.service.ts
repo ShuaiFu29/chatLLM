@@ -369,7 +369,15 @@ export class AgentsService {
         error instanceof Error ? error.message : 'Agent cannot be published',
       );
     }
-    const agent = await publishAgentForUser(agentId, userId);
+    let agent: Awaited<ReturnType<typeof publishAgentForUser>>;
+    try {
+      agent = await publishAgentForUser(agentId, userId);
+    } catch (error) {
+      if (error instanceof Error && error.message === 'AGENT_DISABLED') {
+        throw publicError(HttpStatus.CONFLICT, 'Enable the agent before publishing it');
+      }
+      throw error;
+    }
     if (!agent) throw publicError(HttpStatus.NOT_FOUND, 'Agent not found');
     void this.audit({ userId, agentId, action: 'agent.published', metadata: { version: agent.published_version } });
     return agent;

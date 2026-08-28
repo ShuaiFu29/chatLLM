@@ -3,11 +3,13 @@ import json
 import re
 import uuid
 from collections.abc import Iterable
+from chunk_strategy import CHUNK_STRATEGY_VERSION, estimate_token_count
 from config import settings
 from database_pool import get_conn
 
+# Frozen history: this identifier names chunks that are already stored, so unlike
+# CHUNK_STRATEGY_VERSION it must never be re-derived from the current parameters.
 LEGACY_CHUNK_STRATEGY_VERSION = "markdown-v1:chunk1000-overlap100"
-CHUNK_STRATEGY_VERSION = "markdown-v4:parent-child:metadata-embedding:chunk1000-overlap100"
 MIXED_CHUNK_STRATEGY_VERSION = "markdown-mixed:v1-v4-reindex-required"
 
 
@@ -59,6 +61,10 @@ class ConversionGenerationStateError(RuntimeError):
 
 class EvalLeaseLostError(RuntimeError):
     """Raised when an evaluation worker no longer owns the current run."""
+
+
+class UnknownProjectSpaceError(RuntimeError):
+    """Raised when a retrieval scope is requested for a workspace the user does not own."""
 
 
 def check_database_ready() -> bool:
@@ -308,18 +314,15 @@ def get_retrieval_scope(user_id: str, project_space_id: str | None = None) -> di
                 )
                 space = cur.fetchone()
                 if not space:
-                    return {
-                        "user_id": user_id,
-                        "project_space_id": project_space_id,
-                        "knowledge_version": 1,
-                        "vector_version": 1,
-                        "bm25_version": 1,
-                        "graph_version": 1,
-                        "chunk_strategy_version": CHUNK_STRATEGY_VERSION,
-                        "embedding_model": settings.embedding_model,
-                        "embedding_dimension": settings.embedding_dimension,
-                        "settings_fingerprint": _index_settings_fingerprint(),
-                    }
+                    # Never invent version numbers for a workspace this user does
+                    # not own. The fabricated `knowledge_version: 1` produced the
+                    # same cache fingerprint for every unknown id and for a real
+                    # brand-new workspace, so entries could be read across
+                    # scopes. Callers treat this as "caching unavailable" and run
+                    # normal, SQL-scoped retrieval instead.
+                    raise UnknownProjectSpaceError(
+                        "Project space is unknown for this user; retrieval cache scope is unavailable"
+                    )
 
                 knowledge_version = int(space.get("knowledge_version") or 1)
                 index_version = _ensure_rag_index_version(cur, user_id, project_space_id, knowledge_version)
@@ -563,6 +566,7 @@ _CONVERSION_GENERATION_COLUMNS = """
   manifest_byte_size,
   status,
   warning_count,
+  warnings,
   unit_count,
   error_code,
   created_at,
@@ -605,6 +609,24 @@ def _require_nonnegative_int(value: int, field: str) -> int:
     if type(value) is not int or value < 0:
         raise ValueError(f"{field} must be a non-negative integer")
     return value
+def _require_warning_codes(values: Iterable[str]) -> list[str]:
+    """Normalise converter warning codes for storage.
+
+    Warning codes are read back by operators, so they are kept as short opaque
+    identifiers: rejecting blank or oversized entries stops a converter from
+    smuggling an unbounded message into an operational column.
+    """
+    if isinstance(values, str) or not isinstance(values, Iterable):
+        raise ValueError("warnings must be an iterable of warning codes")
+    codes: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            raise ValueError("warnings must contain only strings")
+        code = value.strip()
+        if not code or len(code) > 200:
+            raise ValueError("each warning code must be 1-200 characters")
+        codes.append(code)
+    return codes
 
 
 def _enqueue_conversion_generation_cleanup(
@@ -812,7 +834,7 @@ def complete_conversion_generation(
     markdown_byte_size: int,
     source_map_byte_size: int,
     manifest_byte_size: int,
-    warning_count: int,
+    warnings: Iterable[str] = (),
     unit_count: int,
 ) -> dict:
     """Complete an immutable generation only while its bound ingestion lease is active."""
@@ -823,7 +845,11 @@ def complete_conversion_generation(
     markdown_byte_size = _require_nonnegative_int(markdown_byte_size, "markdown_byte_size")
     source_map_byte_size = _require_nonnegative_int(source_map_byte_size, "source_map_byte_size")
     manifest_byte_size = _require_nonnegative_int(manifest_byte_size, "manifest_byte_size")
-    warning_count = _require_nonnegative_int(warning_count, "warning_count")
+    # The count is derived from the codes rather than passed alongside them: a
+    # caller that computed one without the other could persist a count that
+    # disagrees with the recorded reasons.
+    warning_codes = _require_warning_codes(warnings)
+    warning_count = len(warning_codes)
     unit_count = _require_nonnegative_int(unit_count, "unit_count")
     completed_status = "completed_with_warnings" if warning_count else "completed"
 
@@ -840,6 +866,7 @@ def complete_conversion_generation(
                     manifest_byte_size = %s,
                     status = %s,
                     warning_count = %s,
+                    warnings = %s,
                     unit_count = %s,
                     error_code = null,
                     completed_at = now(),
@@ -865,6 +892,7 @@ def complete_conversion_generation(
                     manifest_byte_size,
                     completed_status,
                     warning_count,
+                    warning_codes,
                     unit_count,
                     generation_id,
                     file_id,
@@ -1577,9 +1605,10 @@ def insert_file_chunk_batch(
                       conversion_generation_id,
                       source_unit_ids,
                       source_locator,
-                      content_hash
+                      content_hash,
+                      token_count
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     returning id, file_id, user_id, chunk_index, content, metadata,
                               conversion_generation_id, source_unit_ids, source_locator,
                               content_hash, token_count
@@ -1594,6 +1623,7 @@ def insert_file_chunk_batch(
                         list(source_unit_ids),
                         json.dumps(source_locator),
                         hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        estimate_token_count(content),
                     ),
                 )
                 inserted.append(cur.fetchone())
@@ -1640,9 +1670,10 @@ def replace_file_chunks(file_id: str, user_id: str, chunks: list, file_data: dic
                       conversion_generation_id,
                       source_unit_ids,
                       source_locator,
-                      content_hash
+                      content_hash,
+                      token_count
                     )
-                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     returning id, file_id, user_id, chunk_index, content, metadata,
                               conversion_generation_id, source_unit_ids, source_locator,
                               content_hash, token_count
@@ -1657,6 +1688,7 @@ def replace_file_chunks(file_id: str, user_id: str, chunks: list, file_data: dic
                         list(source_unit_ids),
                         json.dumps(source_locator),
                         hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                        estimate_token_count(content),
                     ),
                 )
                 inserted.append(cur.fetchone())

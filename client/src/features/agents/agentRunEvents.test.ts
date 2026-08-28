@@ -78,3 +78,47 @@ describe('buildPersistedAgentEvents', () => {
     ]);
   });
 });
+
+describe('approval outcomes (P3-EXPIRED-UI)', () => {
+  const buildWithApprovalStatus = (status: 'approved' | 'rejected' | 'expired') => (
+    buildPersistedAgentEvents({
+      runId: 'run-3',
+      status: 'failed',
+      steps: [{
+        id: 'step-approval',
+        run_id: 'run-3',
+        sequence: 0,
+        kind: 'approval',
+        status: status === 'approved' ? 'succeeded' : 'rejected',
+        tool_call_id: 'call-3',
+        tool_key: 'custom:writer',
+        output: { risk_level: 'write' },
+        created_at: '',
+      }],
+      approvals: [{
+        id: 'approval-3',
+        run_id: 'run-3',
+        step_id: 'step-approval',
+        status,
+        reason: '',
+        expires_at: '2026-08-20T00:00:00.000Z',
+        created_at: '',
+      }],
+    })
+  );
+
+  it('keeps an expired approval distinct from a rejection', () => {
+    const resolved = buildWithApprovalStatus('expired')
+      .find((event) => event.type === 'approval.resolved');
+    // Reporting `rejected` told the user they had declined the tool, when in
+    // fact the decision window closed without anyone acting.
+    expect(resolved?.decision).toBe('expired');
+  });
+
+  it('still reports explicit decisions unchanged', () => {
+    expect(buildWithApprovalStatus('approved')
+      .find((event) => event.type === 'approval.resolved')?.decision).toBe('approved');
+    expect(buildWithApprovalStatus('rejected')
+      .find((event) => event.type === 'approval.resolved')?.decision).toBe('rejected');
+  });
+});

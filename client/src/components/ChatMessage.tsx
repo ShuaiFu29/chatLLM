@@ -1,6 +1,7 @@
 import { memo, lazy, Suspense, useState } from 'react';
 import { AlertTriangle, Bot, RefreshCw, Trash2, Check, Copy, Search, BookOpen, FileText, Loader2, GitBranch, Pencil, Gauge, Route, MapPin } from 'lucide-react';
 import type { Message } from '../stores/useChatStore';
+import { isOptimisticMessageId } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
 import DocumentViewerModal, { type DocumentReference } from './DocumentViewerModal';
 import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLabels';
@@ -43,6 +44,9 @@ const ChatMessage = memo(({
   const { t } = useTranslation();
   const [selectedSourceDocument, setSelectedSourceDocument] = useState<DocumentReference | null>(null);
 
+  // Optimistic messages exist only in this browser. Branching or deleting them
+  // would post an id the server has never seen.
+  const isOptimistic = isOptimisticMessageId(msg.id);
   const traceSummary = msg.traceSummary || msg.rag_trace || null;
   const qualitySummary = msg.qualitySummary || traceSummary?.quality || null;
   const traceSteps = traceSummary?.trace_steps || [];
@@ -330,7 +334,7 @@ const ChatMessage = memo(({
             </button>
           )}
 
-          {onBranch && !msg.id.startsWith('temp-') && !msg.id.startsWith('welcome-') && (
+          {onBranch && !isOptimistic && (
             <button
               onClick={() => onBranch(msg.id)}
               className="p-1 text-text-muted hover:text-primary hover:bg-bg-surface rounded transition-colors"
@@ -355,7 +359,8 @@ const ChatMessage = memo(({
 
           <button
             onClick={() => onDelete(msg.id)}
-            className="p-1 text-text-muted hover:text-red-500 hover:bg-bg-surface rounded transition-colors"
+            disabled={isOptimistic}
+            className="p-1 text-text-muted hover:text-red-500 hover:bg-bg-surface rounded transition-colors disabled:cursor-not-allowed disabled:opacity-40"
             title={t('common.delete')}
             aria-label={t('common.delete')}
           >

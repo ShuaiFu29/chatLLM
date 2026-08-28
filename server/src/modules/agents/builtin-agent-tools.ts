@@ -11,6 +11,36 @@ export interface BuiltinAgentToolDefinition {
 
 export const builtinAgentTools: BuiltinAgentToolDefinition[] = [
   {
+    key: 'dispatch_subagents',
+    name: 'Dispatch subagents',
+    description: 'Split the request into subtasks, delegate them to other Agents you own, and'
+      + ' report the combined outcome. Subagents draw from this run\'s shared budget and inherit'
+      + ' the strictest approval policy on the chain.',
+    category: 'utility',
+    // Dispatching itself performs no external side effect; what a child may do is
+    // bounded by the resolved policy chain.
+    risk_level: 'read',
+    requires_project: false,
+  },
+  {
+    key: 'remember',
+    name: 'Remember',
+    description: 'Store a durable fact, preference or decision so later runs can use it. Writes'
+      + ' state that outlives the request, so it is treated as a write and a subagent cannot use it.',
+    category: 'utility',
+    risk_level: 'write',
+    requires_project: false,
+  },
+  {
+    key: 'recall',
+    name: 'Recall',
+    description: 'List durable memories available for this user and workspace, each labelled with'
+      + ' how much it can be trusted.',
+    category: 'utility',
+    risk_level: 'read',
+    requires_project: false,
+  },
+  {
     key: 'agentic_rag',
     name: 'Agentic RAG',
     description: 'Search workspace knowledge with query planning, hybrid retrieval, graph evidence, reranking, and grounding metadata.',

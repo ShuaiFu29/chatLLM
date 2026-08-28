@@ -22,9 +22,20 @@ import {
   findProjectSpaceForUser,
 } from '../../repositories/projectSpaces';
 import { User } from '../../types';
+import { abortAgentRunInProcess } from '../agents/agent-run-control';
 import { AgentsService } from '../agents/agents.service';
 
 type RequestValues = Record<string, any>;
+
+/**
+ * The database transition is authoritative and the run's own 500ms activity
+ * monitor will notice it. Aborting in-process closes that latency window so an
+ * in-flight custom HTTP/MCP call is interrupted immediately instead of firing
+ * one more side effect after the user removed the message.
+ */
+const abortCancelledRunsInProcess = (runIds: string[], userId: string) => {
+  for (const runId of runIds) abortAgentRunInProcess(runId, userId);
+};
 
 const publicError = (statusCode: number, error: string, cause?: unknown) => (
   new HttpException(
@@ -260,8 +271,9 @@ export class ChatService {
 
   async deleteConversation(user: User, conversationId: string) {
     try {
-      const deleted = await deleteConversationForUser(conversationId, user.id);
-      if (!deleted) throw publicError(404, 'Conversation not found');
+      const result = await deleteConversationForUser(conversationId, user.id);
+      if (!result.deleted) throw publicError(404, 'Conversation not found');
+      abortCancelledRunsInProcess(result.cancelledAgentRunIds, user.id);
       return { success: true };
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -271,8 +283,9 @@ export class ChatService {
 
   async deleteMessage(user: User, messageId: string) {
     try {
-      const deleted = await deleteMessageForUser(messageId, user.id);
-      if (!deleted) throw publicError(404, 'Message not found');
+      const result = await deleteMessageForUser(messageId, user.id);
+      if (!result.deleted) throw publicError(404, 'Message not found');
+      abortCancelledRunsInProcess(result.cancelledAgentRunIds, user.id);
       return { success: true };
     } catch (error) {
       if (error instanceof HttpException) throw error;
@@ -292,6 +305,7 @@ export class ChatService {
         user.id,
       );
       if (!result) throw publicError(404, 'Conversation or user message not found');
+      abortCancelledRunsInProcess(result.cancelledAgentRunIds, user.id);
       return { success: true, ...result };
     } catch (error) {
       if (error instanceof HttpException) throw error;

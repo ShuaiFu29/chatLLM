@@ -142,6 +142,62 @@ const versionColumns = `
 
 const CUSTOM_TOOL_KEY = /^custom:([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i;
 
+const customToolIdsFromBindings = (bindings: AgentToolBinding[]) => bindings
+  .filter((binding) => binding.enabled !== false)
+  .flatMap((binding) => {
+    const match = CUSTOM_TOOL_KEY.exec(binding.key);
+    return match ? [match[1]] : [];
+  });
+
+/**
+ * Fail the transaction unless every bound custom tool is usable by an Agent in
+ * `projectSpaceId`.
+ *
+ * The tool rows are locked so a concurrent `updateAgentToolForUser` cannot move a
+ * tool between the check and the commit. Both paths take locks in the same order
+ * (user agents, then tools), so this cannot deadlock with a tool mutation.
+ */
+const assertToolBindingsInAgentScopeWithClient = async (
+  client: PoolClient,
+  input: {
+    userId: string;
+    agentId: string;
+    toolBindings: AgentToolBinding[];
+    projectSpaceId: string | null;
+    includePublishedVersion?: boolean;
+  },
+) => {
+  const toolIds = new Set(customToolIdsFromBindings(input.toolBindings));
+  if (input.includePublishedVersion) {
+    const { rows } = await client.query<{ tool_bindings: AgentToolBinding[] }>(
+      `select published_version.tool_bindings
+       from agents a
+       join agent_versions published_version on published_version.id = a.published_version_id
+       where a.id = $1 and a.user_id = $2`,
+      [input.agentId, input.userId],
+    );
+    for (const id of customToolIdsFromBindings(rows[0]?.tool_bindings || [])) {
+      toolIds.add(id);
+    }
+  }
+  if (toolIds.size === 0) return;
+
+  const requestedIds = [...toolIds];
+  const { rows: toolRows } = await client.query<{ id: string; project_space_id: string | null }>(
+    `select id, project_space_id
+     from agent_tools
+     where user_id = $1 and id = any($2::uuid[]) and enabled = true
+     for update`,
+    [input.userId, requestedIds],
+  );
+  if (toolRows.length !== requestedIds.length) {
+    throw new Error('AGENT_TOOL_BINDING_UNAVAILABLE');
+  }
+  if (toolRows.some((tool) => tool.project_space_id && tool.project_space_id !== input.projectSpaceId)) {
+    throw new Error('AGENT_TOOL_BINDING_SCOPE');
+  }
+};
+
 const selectAgentForUserWithClient = async (
   client: PoolClient,
   agentId: string,
@@ -291,6 +347,27 @@ export const updateAgentForUser = async (input: {
 
   const metadataEntries = Object.entries(input.metadata)
     .filter((entry) => entry[1] !== undefined);
+
+  // Moving an Agent between project spaces can invalidate tool bindings that
+  // were legal a moment ago. When no new version is created the version block
+  // below never runs, so a "change the workspace only" edit used to skip the
+  // scope check entirely: interleaved with a concurrent tool move it could leave
+  // a published Agent in space B bound to a tool scoped to space A, which then
+  // fails fail-closed on every single chat.
+  const movesProjectSpace = input.metadata.project_space_id !== undefined
+    && input.metadata.project_space_id !== current.project_space_id;
+  if (movesProjectSpace) {
+    await assertToolBindingsInAgentScopeWithClient(client, {
+      userId: input.userId,
+      agentId: input.agentId,
+      // The draft version's bindings are what a later publish would ship, and
+      // the published bindings are what running chats use. Both must stay legal.
+      toolBindings: input.version.tool_bindings ?? current.tool_bindings,
+      projectSpaceId: input.metadata.project_space_id ?? null,
+      includePublishedVersion: true,
+    });
+  }
+
   if (metadataEntries.length > 0) {
     const values: unknown[] = [];
     const assignments = metadataEntries.map(([key, value]) => {
@@ -310,7 +387,17 @@ export const updateAgentForUser = async (input: {
     .filter((entry) => entry[1] !== undefined);
   if (versionEntries.length > 0) {
     const nextVersion = current.latest_version + 1;
-    if (nextVersion > (input.maxVersionsPerAgent ?? 100)) {
+    // The quota bounds how many version rows we keep, so it has to count rows.
+    // Comparing it against the monotonic version number instead meant an Agent
+    // edited 100 times was bricked for good: version numbers never go back down,
+    // so every later edit failed even though pruning old versions should have
+    // freed room. Version numbers stay monotonic for identity/audit purposes.
+    const versionCountResult = await client.query<{ count: string }>(
+      'select count(*)::text as count from agent_versions where agent_id = $1',
+      [input.agentId],
+    );
+    const storedVersions = Number(versionCountResult.rows[0]?.count ?? '0');
+    if (storedVersions >= (input.maxVersionsPerAgent ?? 100)) {
       throw new Error('AGENT_VERSION_QUOTA_EXCEEDED');
     }
     const configuration: AgentVersionConfiguration = {
@@ -329,32 +416,15 @@ export const updateAgentForUser = async (input: {
       suggested_prompts: input.version.suggested_prompts ?? current.suggested_prompts,
     };
 
-    const customToolIds = configuration.tool_bindings
-      .filter((binding) => binding.enabled !== false)
-      .flatMap((binding) => {
-        const match = CUSTOM_TOOL_KEY.exec(binding.key);
-        return match ? [match[1]] : [];
-      });
-    if (customToolIds.length > 0) {
-      const toolResult = await client.query<{ id: string; project_space_id: string | null }>(
-        `select id, project_space_id, enabled from agent_tools
-         where user_id = $1 and id = any($2::uuid[])
-           and enabled = true
-         for update`,
-        [input.userId, customToolIds],
-      );
-      if (toolResult.rows.length !== new Set(customToolIds).size) {
-        throw new Error('AGENT_TOOL_BINDING_UNAVAILABLE');
-      }
-      const effectiveProjectSpaceId = input.metadata.project_space_id !== undefined
-        ? input.metadata.project_space_id
-        : current.project_space_id;
-      if (toolResult.rows.some((tool) => (
-        tool.project_space_id && tool.project_space_id !== effectiveProjectSpaceId
-      ))) {
-        throw new Error('AGENT_TOOL_BINDING_SCOPE');
-      }
-    }
+    const effectiveProjectSpaceId = input.metadata.project_space_id !== undefined
+      ? input.metadata.project_space_id
+      : current.project_space_id;
+    await assertToolBindingsInAgentScopeWithClient(client, {
+      userId: input.userId,
+      agentId: input.agentId,
+      toolBindings: configuration.tool_bindings,
+      projectSpaceId: effectiveProjectSpaceId ?? null,
+    });
 
     const versionResult = await client.query<{ id: string }>(
       `insert into agent_versions (
@@ -401,10 +471,22 @@ export const publishAgentForUser = async (agentId: string, userId: string) => {
          status = 'published',
          updated_at = now()
      where id = $1 and user_id = $2 and current_version_id is not null
+       and status <> 'disabled'
      returning id`,
     [agentId, userId],
   );
-  if (rows.length === 0) return null;
+  if (rows.length === 0) {
+    // Publishing used to flip status to 'published' unconditionally, so calling
+    // publish on a disabled Agent silently revoked an operator's kill switch.
+    // The guard above blocks that; this lookup keeps the caller's error honest
+    // instead of reporting a disabled Agent as missing.
+    const existing = await query<{ status: string }>(
+      'select status from agents where id = $1 and user_id = $2',
+      [agentId, userId],
+    );
+    if (existing.rows[0]?.status === 'disabled') throw new Error('AGENT_DISABLED');
+    return null;
+  }
   return findAgentForUser(agentId, userId);
 };
 

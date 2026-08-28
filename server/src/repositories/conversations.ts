@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../lib/db';
+import { cancelAgentRunsForRemovedMessagesWithClient } from './agentRuns';
 import { MessageRow } from './messages';
 
 export interface ConversationRow {
@@ -277,11 +278,38 @@ export const touchConversation = async (conversationId: string, userId: string) 
   );
 };
 
-export const deleteConversationForUser = async (conversationId: string, userId: string) => {
-  const { rowCount } = await query(
+export interface ConversationDeletionResult {
+  deleted: boolean;
+  cancelledAgentRunIds: string[];
+}
+
+export const deleteConversationForUser = async (
+  conversationId: string,
+  userId: string,
+  runInTransaction: typeof withTransaction = withTransaction,
+): Promise<ConversationDeletionResult> => runInTransaction(async (client) => {
+  const { rows } = await client.query<{ id: string }>(
+    `select id
+     from conversations
+     where id = $1 and user_id = $2
+     for update`,
+    [conversationId, userId],
+  );
+  if (!rows[0]) return { deleted: false, cancelledAgentRunIds: [] };
+
+  // Deleting the conversation cascades its messages away. Terminalize every
+  // active run first so no worker keeps calling tools for a conversation the
+  // user removed.
+  const cancelledAgentRunIds = await cancelAgentRunsForRemovedMessagesWithClient(client, {
+    conversationId,
+    userId,
+    reason: 'Agent run cancelled because its conversation was deleted',
+  });
+
+  const { rowCount } = await client.query(
     `delete from conversations
      where id = $1 and user_id = $2`,
-    [conversationId, userId]
+    [conversationId, userId],
   );
-  return (rowCount ?? 0) > 0;
-};
+  return { deleted: (rowCount ?? 0) > 0, cancelledAgentRunIds };
+});

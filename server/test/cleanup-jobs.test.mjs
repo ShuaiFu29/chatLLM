@@ -154,8 +154,8 @@ test('file cleanup snapshots raw, multipart, and every conversion generation obj
     query: async (sql, params = []) => {
       calls.push({ sql, params });
       if (/from users/i.test(sql)) return { rows: [{ id: userId }] };
-      if (/select id, user_id, object_key[\s\S]*from files/i.test(sql)) {
-        return { rows: [{ id: fileId, user_id: userId, object_key: rawKey }] };
+      if (/select id, user_id, project_space_id, object_key[\s\S]*from files/i.test(sql)) {
+        return { rows: [{ id: fileId, user_id: userId, project_space_id: null, object_key: rawKey }] };
       }
       if (/update files/i.test(sql)) return { rows: [] };
       if (/update file_ingestion_jobs/i.test(sql)) return { rows: [] };
@@ -214,6 +214,75 @@ test('file cleanup snapshots raw, multipart, and every conversion generation obj
   assert.ok(ingestionCancelIndex < generationIndex);
   assert.match(calls[generationIndex].sql, /where file_id = \$1\s+for update/i);
   assert.doesNotMatch(calls[generationIndex].sql, /where[\s\S]*status\s*(?:=|in\s*\()/i);
+});
+
+test('marking a file deleting immediately retires the RAG retrieval cache (P1-DELETE-CACHE)', async () => {
+  const repositoryPath = path.join(serverRoot, 'dist', 'repositories', 'cleanupJobs.js');
+  const { enqueueFileCleanup } = require(repositoryPath);
+  const fileId = '11111111-1111-4111-8111-111111111111';
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const projectSpaceId = '44444444-4444-4444-8444-444444444444';
+  const calls = [];
+  const client = {
+    query: async (sql, params = []) => {
+      calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+      if (/from users/i.test(sql)) return { rows: [{ id: userId }] };
+      if (/select id, user_id, project_space_id, object_key[\s\S]*from files/i.test(sql)) {
+        return {
+          rows: [{
+            id: fileId,
+            user_id: userId,
+            project_space_id: projectSpaceId,
+            object_key: 'raw/original.pdf',
+          }],
+        };
+      }
+      if (/insert into artifact_cleanup_jobs/i.test(sql)) return { rows: [{ id: 'cleanup-job' }] };
+      return { rows: [] };
+    },
+  };
+
+  await enqueueFileCleanup(fileId, userId, {
+    runInTransaction: async (callback) => callback(client),
+  });
+
+  const markDeletingIndex = calls.findIndex(({ sql }) => /update files set status = 'deleting'/i.test(sql));
+  const bumpIndex = calls.findIndex(({ sql }) => (
+    /update project_spaces/i.test(sql) && /knowledge_version = knowledge_version \+ 1/i.test(sql)
+  ));
+  const evictIndex = calls.findIndex(({ sql }) => /delete from rag_retrieval_cache/i.test(sql));
+
+  assert.ok(markDeletingIndex >= 0, 'the file must be marked deleting');
+  assert.ok(bumpIndex > markDeletingIndex, 'knowledge_version must be bumped in the same transaction');
+  assert.ok(evictIndex > markDeletingIndex, 'cached answers for the space must be evicted');
+  assert.deepEqual(calls[bumpIndex].params, [projectSpaceId, userId]);
+  assert.deepEqual(calls[evictIndex].params, [userId, projectSpaceId]);
+});
+
+test('a file without a project space still enqueues cleanup without a bogus bump (P1-DELETE-CACHE)', async () => {
+  const repositoryPath = path.join(serverRoot, 'dist', 'repositories', 'cleanupJobs.js');
+  const { enqueueFileCleanup } = require(repositoryPath);
+  const fileId = '11111111-1111-4111-8111-111111111111';
+  const userId = '22222222-2222-4222-8222-222222222222';
+  const calls = [];
+  const client = {
+    query: async (sql, params = []) => {
+      calls.push({ sql: sql.replace(/\s+/g, ' ').trim(), params });
+      if (/from users/i.test(sql)) return { rows: [{ id: userId }] };
+      if (/select id, user_id, project_space_id, object_key[\s\S]*from files/i.test(sql)) {
+        return { rows: [{ id: fileId, user_id: userId, project_space_id: null, object_key: null }] };
+      }
+      if (/insert into artifact_cleanup_jobs/i.test(sql)) return { rows: [{ id: 'cleanup-job' }] };
+      return { rows: [] };
+    },
+  };
+
+  await enqueueFileCleanup(fileId, userId, {
+    runInTransaction: async (callback) => callback(client),
+  });
+
+  assert.equal(calls.some(({ sql }) => /update project_spaces/i.test(sql)), false);
+  assert.equal(calls.some(({ sql }) => /delete from rag_retrieval_cache/i.test(sql)), false);
 });
 
 test('terminal candidate generations are retired and queued without the shared original key', async () => {

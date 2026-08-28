@@ -8,6 +8,16 @@ import { listFilesForUser } from '../../../repositories/files';
 import { searchMessagesForUser } from '../../../repositories/messages';
 import { AgentRuntimeTool, requireAgentProjectSpace } from './agent-tool';
 import { evaluateAgentExpression } from './calculator';
+import {
+  DISPATCH_SUBAGENTS_TOOL_KEY,
+  createDispatchSubagentsRuntimeTool,
+} from './subagent-tool';
+import {
+  RECALL_TOOL_KEY,
+  REMEMBER_TOOL_KEY,
+  createRecallRuntimeTool,
+  createRememberRuntimeTool,
+} from './memory-tool';
 
 const tool = <Input>(input: {
   key: string;
@@ -65,7 +75,7 @@ export const builtinRuntimeTools: AgentRuntimeTool[] = [
         conversation_id: context.conversationId,
         limit: input.limit,
         threshold: 0.1,
-      }, context.signal);
+      }, context.signal, context.trace);
       return {
         run_id: result.run_id,
         intent: result.intent,
@@ -229,4 +239,13 @@ export const builtinRuntimeTools: AgentRuntimeTool[] = [
   }),
 ];
 
-export const builtinRuntimeToolByKey = new Map(builtinRuntimeTools.map((item) => [item.key, item]));
+export const builtinRuntimeToolByKey = new Map<string, AgentRuntimeTool>([
+  ...builtinRuntimeTools.map((item) => [item.key, item] as const),
+  // Registered separately: it is built by a factory because it reads runtime
+  // configuration, and it dispatches through a late-bound executor to avoid an
+  // import cycle with the run service.
+  [DISPATCH_SUBAGENTS_TOOL_KEY, createDispatchSubagentsRuntimeTool()] as const,
+  // `remember` is a write: it changes what every later Run for this user sees.
+  [REMEMBER_TOOL_KEY, createRememberRuntimeTool()] as const,
+  [RECALL_TOOL_KEY, createRecallRuntimeTool()] as const,
+]);

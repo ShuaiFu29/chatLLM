@@ -4,6 +4,7 @@ import { serverEnv } from '../lib/env';
 import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
+import { failExpiredSubagentRunLeases } from '../repositories/agentSubagentQueue';
 import {
   deleteExpiredAgentRunCancelIntents,
   failStaleAgentRuns as failStaleAgentRunsRepository,
@@ -157,6 +158,7 @@ class MaintenanceService {
       deleteExpiredSessions(),
       deleteExpiredAgentRunCancelIntents(),
       this.recoverStaleAgentRuns(),
+      this.failExpiredSubagentLeases(),
       this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
       cleanupUploadTempDirectory(),
@@ -180,6 +182,20 @@ class MaintenanceService {
     const count = await failStaleAgentRunsRepository(serverEnv.AGENT_RUN_STALE_AFTER_MS);
     if (count > 0) {
       console.warn(`[Maintenance] Recovered ${count} stale Agent runs`);
+    }
+  }
+
+  /**
+   * Fail dispatched subagent runs whose worker stopped renewing its lease.
+   *
+   * Not re-queued: a child's progress through its own tool calls is not
+   * checkpointed, so restarting it could repeat a side effect that already
+   * happened. The parent sees a failed subtask, which it can report honestly.
+   */
+  private async failExpiredSubagentLeases() {
+    const failed = await failExpiredSubagentRunLeases();
+    if (failed.length > 0) {
+      console.warn(`[Maintenance] Failed ${failed.length} subagent runs with expired leases`);
     }
   }
 

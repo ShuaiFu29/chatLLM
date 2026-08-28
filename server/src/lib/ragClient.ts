@@ -3,6 +3,7 @@ import { RagDocument, RagQualitySummary, RagTraceStep } from './chatSources';
 import { CircuitOpenError, OperationCircuitBreaker } from './circuitBreaker';
 import { serverEnv } from './env';
 import { metrics as defaultMetrics } from './metrics';
+import { buildTraceHeaders, type TraceContext } from './traceContext';
 
 export interface RagConversationContextItem {
   role: 'user' | 'assistant' | 'system';
@@ -159,7 +160,14 @@ export interface RagEvalRunResponse {
   }>;
 }
 
-export type RagOperation = 'retrieve' | 'agentic-retrieve' | 'graph' | 'eval' | 'ingest' | 'cleanup' | 'health';
+export type RagOperation = 'retrieve' | 'agentic-retrieve' | 'embed' | 'graph' | 'eval' | 'ingest' | 'cleanup' | 'health';
+
+export interface RagEmbedResponse {
+  /** Vectors from different models are not comparable, so the model travels with them. */
+  model: string;
+  dimension: number;
+  embeddings: number[][];
+}
 
 export interface IngestRagFileInput {
   fileId: string;
@@ -304,12 +312,15 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     timeout: number,
     signal?: AbortSignal,
     retry: { maxAttempts?: number; totalTimeoutMs?: number; retryDelayMs?: number } = {},
+    // Correlation travels in headers rather than in the body so it stays out of
+    // the request schema and cannot be confused with retrieval parameters.
+    trace?: TraceContext | null,
   ) => requestRagService<T>(operation, (_attempt, remainingTimeoutMs) => transport.post<T>(
     `${serviceUrl}${path}`,
     payload,
     {
       timeout: Math.min(timeout, remainingTimeoutMs),
-      headers: buildHeaders(serviceToken),
+      headers: { ...buildHeaders(serviceToken), ...buildTraceHeaders(trace) },
       ...(signal ? { signal } : {}),
     },
   ), retry);
@@ -332,9 +343,34 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
     return response.results || [];
   };
 
+  /**
+   * Embed short texts through the RAG service.
+   *
+   * The backend deliberately does not own an embedding client: the provider,
+   * model and dimension are already configured in one place, and duplicating that
+   * configuration is how the two drift apart. The model name comes back with the
+   * vectors because embeddings from different models are not comparable.
+   */
+  const embedTexts = (
+    texts: string[],
+    signal?: AbortSignal,
+  ): Promise<RagEmbedResponse> => (
+    postRagService<RagEmbedResponse>(
+      'embed',
+      '/embed',
+      { texts },
+      retrieveTimeoutMs,
+      signal,
+      // Not retried: a failed embedding degrades ranking, it does not fail the
+      // caller, so spending a retry budget on it is the wrong trade.
+      { maxAttempts: 1 },
+    )
+  );
+
   const retrieveAgenticRagDocuments = (
     input: RetrieveRagDocumentsInput,
     signal?: AbortSignal,
+    trace?: TraceContext | null,
   ): Promise<AgenticRagResponse> => (
     postRagService<AgenticRagResponse>(
       'agentic-retrieve',
@@ -343,6 +379,7 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
       retrieveTimeoutMs,
       signal,
       retrieveRetry,
+      trace,
     )
   );
 
@@ -440,6 +477,7 @@ export const createRagClient = (options: CreateRagClientOptions = {}) => {
   return {
     retrieveRagDocuments,
     retrieveAgenticRagDocuments,
+    embedTexts,
     searchRagGraphDocuments,
     listRagGraphDocuments,
     runRagEvaluation,
@@ -454,6 +492,7 @@ const ragClient = createRagClient();
 
 export const retrieveRagDocuments = ragClient.retrieveRagDocuments;
 export const retrieveAgenticRagDocuments = ragClient.retrieveAgenticRagDocuments;
+export const embedTexts = ragClient.embedTexts;
 export const searchRagGraphDocuments = ragClient.searchRagGraphDocuments;
 export const listRagGraphDocuments = ragClient.listRagGraphDocuments;
 export const runRagEvaluation = ragClient.runRagEvaluation;

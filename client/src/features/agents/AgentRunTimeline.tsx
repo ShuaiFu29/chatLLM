@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { CircleCheck, CircleX, Loader2, ShieldAlert, Square, Wrench } from 'lucide-react';
+import { CircleCheck, CircleX, GitBranch, Info, Loader2, ShieldAlert, Square, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../../lib/api';
@@ -10,6 +10,23 @@ interface AgentRunTimelineProps {
   events: AgentEvent[];
   active: boolean;
 }
+
+type ApprovalDecision = NonNullable<AgentEvent['decision']>;
+
+// `expired` is not a rejection: nobody declined the tool, the decision window
+// simply closed. Keeping it distinct matches the `agent_approval_expired`
+// error code the server now reports.
+const APPROVAL_DECISION_LABELS: Record<ApprovalDecision, string> = {
+  approved: 'chat.approvalApproved',
+  rejected: 'chat.approvalRejected',
+  expired: 'chat.approvalExpired',
+};
+
+const APPROVAL_DECISION_STYLES: Record<ApprovalDecision, string> = {
+  approved: 'text-emerald-300',
+  rejected: 'text-red-300',
+  expired: 'text-amber-300',
+};
 
 export default function AgentRunTimeline({ runId, events, active }: AgentRunTimelineProps) {
   const { t } = useTranslation();
@@ -71,21 +88,53 @@ export default function AgentRunTimeline({ runId, events, active }: AgentRunTime
       </summary>
       <div className="mt-2 space-y-2">
         {events.map((event, index) => {
-          const failed = event.type === 'tool.failed' || event.type === 'run.failed' || event.type === 'run.cancelled';
-          const completed = event.type === 'tool.completed' || event.type === 'run.completed';
+          const subagentFailed = event.type === 'subagent.completed' && event.subagentStatus !== 'succeeded';
+          const failed = event.type === 'tool.failed'
+            || event.type === 'run.failed'
+            || event.type === 'run.cancelled'
+            || subagentFailed;
+          const completed = event.type === 'tool.completed'
+            || event.type === 'run.completed'
+            || (event.type === 'subagent.completed' && event.subagentStatus === 'succeeded');
           const approval = event.type === 'approval.required';
-          const EventIcon = approval ? ShieldAlert : failed ? CircleX : completed ? CircleCheck : event.type === 'tool.started' ? Wrench : Loader2;
+          // A decision note is bookkeeping, not progress: it gets a muted icon so it
+          // does not read as another step in the tool loop.
+          const decision = event.type.startsWith('decision.');
+          const subagent = event.type.startsWith('subagent.');
+          const EventIcon = approval
+            ? ShieldAlert
+            : failed
+              ? CircleX
+              : completed
+                ? CircleCheck
+                : decision
+                  ? Info
+                  : subagent
+                    ? GitBranch
+                    : event.type === 'tool.started' ? Wrench : Loader2;
           const approvalDecision = event.approvalId
             ? resolvedApprovals.get(event.approvalId) || locallyDecided[event.approvalId]
             : undefined;
 
           return (
-            <div key={`${event.type}-${event.approvalId || event.toolCallId || index}`} className="flex items-start gap-2 text-xs text-text-muted">
-              <EventIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${failed ? 'text-red-400' : approval ? 'text-amber-400' : completed ? 'text-emerald-400' : 'text-primary'} ${event.type === 'run.started' && active ? 'animate-spin' : ''}`} />
+            <div
+              key={`${event.type}-${event.approvalId || event.subagentRunId || event.toolCallId || index}`}
+              className={`flex items-start gap-2 text-xs text-text-muted ${subagent ? 'ml-4 border-l border-border/60 pl-2' : ''}`}
+            >
+              <EventIcon className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${failed ? 'text-red-400' : approval ? 'text-amber-400' : completed ? 'text-emerald-400' : decision ? 'text-text-muted' : 'text-primary'} ${event.type === 'run.started' && active ? 'animate-spin' : ''}`} />
               <div className="min-w-0 flex-1">
                 <span className="text-text-main">{t(`chat.agentEvents.${event.type}`, { defaultValue: event.type })}</span>
                 {event.tool && <span className="ml-2 break-all font-mono text-[11px]">{event.tool}</span>}
+                {event.subagentRunId && (
+                  <span className="ml-2 font-mono text-[11px]">{event.subagentRunId.slice(0, 8)}</span>
+                )}
                 {typeof event.durationMs === 'number' && <span className="ml-2">{event.durationMs}ms</span>}
+                {/* The coded reason is what distinguishes "a tool failed" from
+                    "the endpoint was not allowlisted". */}
+                {event.error && (
+                  <span className="ml-2 break-all font-mono text-[11px] text-red-400">{event.error}</span>
+                )}
+                {event.detail && <span className="ml-2 break-words">{event.detail}</span>}
                 {approval && event.approvalId && (
                   <div className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/5 p-2">
                     <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -100,8 +149,8 @@ export default function AgentRunTimeline({ runId, events, active }: AgentRunTime
                       </pre>
                     )}
                     {approvalDecision ? (
-                      <p className={approvalDecision === 'approved' ? 'text-emerald-300' : 'text-red-300'}>
-                        {t(approvalDecision === 'approved' ? 'chat.approvalApproved' : 'chat.approvalRejected')}
+                      <p className={APPROVAL_DECISION_STYLES[approvalDecision]}>
+                        {t(APPROVAL_DECISION_LABELS[approvalDecision])}
                       </p>
                     ) : (
                       <div className="flex gap-2">

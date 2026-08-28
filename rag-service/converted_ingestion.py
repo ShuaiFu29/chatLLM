@@ -10,6 +10,8 @@ from typing import Any
 import zstandard
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
+from chunk_strategy import CHUNK_OVERLAP, CHUNK_SIZE
+
 _UNIT_ID_RE = re.compile(r"u_[0-9a-f]{32}")
 _MARKER_BYTES_RE = re.compile(
     rb"(?m)^[ \t]*<!-- source-unit:(u_[0-9a-f]{32}) -->[ \t]*\n?"
@@ -82,8 +84,8 @@ def split_converted_document(
     document: bytes | str,
     source_map_zstd: bytes | bytearray | memoryview,
     *,
-    chunk_size: int = 1000,
-    chunk_overlap: int = 100,
+    chunk_size: int = CHUNK_SIZE,
+    chunk_overlap: int = CHUNK_OVERLAP,
     max_source_map_bytes: int = 64 * 1024 * 1024,
 ) -> list[ConvertedChunk]:
     """Validate converted artifacts and produce marker-free, source-aware chunks."""

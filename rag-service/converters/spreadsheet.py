@@ -282,13 +282,18 @@ class CsvConverter(DocumentConverter):
                 "EMPTY_DOCUMENT", "CSV source has no embeddable cell values"
             )
 
-        warnings = (f"CSV_DELIMITER:{_delimiter_name(delimiter)}",)
+        # A non-comma delimiter is not a conversion defect: the file parsed
+        # cleanly. Reporting it as a warning made every single CSV land in
+        # completed_with_warnings, which drained the status of meaning and hid
+        # the documents that really did convert imperfectly.
+        notes = (f"CSV_DELIMITER:{_delimiter_name(delimiter)}",)
         return self._convert_located_blocks(
             inspection,
             output_dir,
             units,
             encoding,
-            warnings,
+            (),
+            notes,
         )
 
 

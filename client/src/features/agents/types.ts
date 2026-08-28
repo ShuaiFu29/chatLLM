@@ -114,11 +114,40 @@ export interface ProviderHealthResponse {
   providers: ProviderHealthItem[];
 }
 
+/**
+ * Step kinds the client knows how to interpret, kept open on purpose.
+ *
+ * The runtime records new kinds as it learns to explain more of its own
+ * decisions. Pinning this to a closed union meant every server-side addition
+ * broke the client build, which pushes towards either lock-step releases or
+ * casting the type away. Consumers branch on the kinds they handle and ignore
+ * the rest, so an unrecognised kind degrades to "not rendered" rather than to a
+ * type error or a blank timeline.
+ */
+export type AgentStepKind =
+  | 'model'
+  | 'tool_call'
+  | 'tool_result'
+  | 'approval'
+  | 'assistant'
+  | 'plan'
+  | 'memory_read'
+  | 'memory_write'
+  | 'context_evicted'
+  | 'budget_check'
+  | 'subagent_dispatch'
+  | 'subagent_result'
+  | 'tool_policy'
+  | (string & {});
+
 export interface AgentStep {
   id: string;
   run_id: string;
+  trace_id?: string;
+  span_id?: string;
+  parent_span_id?: string | null;
   sequence: number;
-  kind: 'model' | 'tool_call' | 'tool_result' | 'approval' | 'assistant';
+  kind: AgentStepKind;
   status: 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'rejected';
   tool_call_id?: string | null;
   tool_key?: string | null;
@@ -198,7 +227,12 @@ export interface AgentEvent {
   riskLevel?: 'read' | 'write' | 'high';
   arguments?: unknown;
   expiresAt?: string;
-  decision?: 'approved' | 'rejected';
+  decision?: 'approved' | 'rejected' | 'expired';
   reason?: string;
   grounding?: AgentGroundingSummary;
+  /** Human-readable one-liner for events the timeline renders as a plain note. */
+  detail?: string;
+  /** Set on subagent events so the timeline can nest a dispatched run's work. */
+  subagentRunId?: string;
+  subagentStatus?: 'succeeded' | 'failed' | 'cancelled';
 }

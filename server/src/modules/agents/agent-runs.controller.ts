@@ -41,6 +41,19 @@ export class AgentRunsController {
     return this.agentRunsService.cancelConversation(user.id, conversationId);
   }
 
+  // Declared before the single-approval route so ':approvalId' cannot swallow it.
+  @Post(':runId/approvals')
+  @ValidateMutation(mutationSchemas.agentRunApprovalBatchDecision)
+  decideApprovalBatch(
+    @CurrentUser() user: User,
+    @Param('runId') runId: string,
+    @Body() body: {
+      decisions: { approval_id: string; decision: 'approved' | 'rejected'; reason?: string }[];
+    },
+  ) {
+    return this.agentRunsService.decideApprovalBatch(user.id, runId, body);
+  }
+
   @Post(':runId/approvals/:approvalId')
   @ValidateMutation(mutationSchemas.agentRunApprovalDecision)
   decideApproval(

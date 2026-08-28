@@ -32,6 +32,7 @@ import { X } from 'lucide-react';
 import type { ConversationComparison } from '../stores/useChatStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useAgentStore } from '../stores/useAgentStore';
+import { hasRecoverableAgentRun } from '../lib/agentRunRecovery';
 
 export default function ChatPage() {
   const user = useAuthStore((state) => state.user);
@@ -58,6 +59,7 @@ export default function ChatPage() {
     messagePagination,
     loadingOlderMessages,
     loadingMessages,
+    messagesError,
     sendingMessage,
     isStopped
   } = useChatStore(useShallow((state) => ({
@@ -78,11 +80,13 @@ export default function ChatPage() {
     messagePagination: state.messagePagination,
     loadingOlderMessages: state.loadingOlderMessages,
     loadingMessages: state.loadingMessages,
+    messagesError: state.messagesError,
     sendingMessage: state.sendingMessage,
     isStopped: state.isStopped,
   })));
 
   const [input, setInput] = useState('');
+  const [isStartingConversation, setIsStartingConversation] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
@@ -103,13 +107,12 @@ export default function ChatPage() {
     () => createChatDraftKey(user?.id, currentConversationId),
     [currentConversationId, user?.id]
   );
-  const hasRecoverableAgentRun = messages.some((message) => (
-    message.role === 'assistant'
-    && ['queued', 'running', 'waiting_approval'].includes(message.agent_run_status || '')
-  ));
+  // Covers both recovery paths: a full reload (server `agent_run_status`) and a
+  // dropped SSE connection (local run id with no terminal event yet).
+  const recoverableAgentRun = hasRecoverableAgentRun(messages);
 
   useEffect(() => {
-    if (!currentConversationId || sendingMessage || !hasRecoverableAgentRun) return;
+    if (!currentConversationId || sendingMessage || !recoverableAgentRun) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
@@ -121,7 +124,7 @@ export default function ChatPage() {
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [currentConversationId, hasRecoverableAgentRun, refreshMessages, sendingMessage]);
+  }, [currentConversationId, recoverableAgentRun, refreshMessages, sendingMessage]);
 
   useEffect(() => {
     void fetchAgentCatalog(activeProjectSpaceId || null).catch((error) => {
@@ -177,6 +180,14 @@ export default function ChatPage() {
       return;
     }
 
+    // A dropped SSE connection does not stop the Agent: the run keeps going and
+    // the chat page recovers it by polling. Telling the user to retry here would
+    // make them send the same question twice and start a second run.
+    if (hasRecoverableAgentRun(useChatStore.getState().messages)) {
+      toast.info(t('chat.agentRunRecovering'));
+      return;
+    }
+
     const retryable = !(error instanceof ChatStreamError) || error.retryable;
     toast.error(t(retryable ? 'chat.generationFailedRetryable' : 'chat.generationFailed'));
   }, [t]);
@@ -197,27 +208,36 @@ export default function ChatPage() {
 
   const handleSendMessage = useCallback(async (e: React.FormEvent | React.KeyboardEvent) => {
     e.preventDefault();
-    if (!input.trim() || sendingMessage) return;
-
-    // If no conversation selected, create one first
-    if (!currentConversationId) {
-      await createConversation(input.slice(0, 30), { project_space_id: currentProjectSpaceId }); // Use first 30 chars as title
-    }
+    // `sendingMessage` only turns true once the stream starts, so creating the
+    // conversation needs its own guard. Without it, two quick submits on an
+    // empty workspace created two conversations and two first messages.
+    if (!input.trim() || sendingMessage || isStartingConversation) return;
 
     const content = input;
     const draftStorage = typeof window === 'undefined' ? undefined : window.localStorage;
+    setIsStartingConversation(true);
     clearChatDraft(draftStorage, user?.id, currentConversationId);
     setInput('');
     try {
-      await sendMessage(content);
+      // Creation is part of the same attempt: a failure here has to restore the
+      // draft and show an error instead of throwing out of the handler.
+      const conversationId = currentConversationId
+        // Use the first 30 chars as the provisional title.
+        || await createConversation(input.slice(0, 30), { project_space_id: currentProjectSpaceId });
+      // Pass the id explicitly rather than re-reading the store, so the message
+      // cannot land in a conversation the user switched to meanwhile.
+      await sendMessage(content, false, conversationId);
     } catch (error) {
       setInput(content);
       writeChatDraft(draftStorage, user?.id, currentConversationId, content);
       showGenerationError(error);
+    } finally {
+      setIsStartingConversation(false);
     }
   }, [
     input,
     sendingMessage,
+    isStartingConversation,
     currentConversationId,
     createConversation,
     currentProjectSpaceId,
@@ -225,6 +245,10 @@ export default function ChatPage() {
     showGenerationError,
     user?.id,
   ]);
+
+  const handleRetryMessages = useCallback(() => {
+    void refreshMessages(currentConversationId || undefined);
+  }, [currentConversationId, refreshMessages]);
 
   const handleRegenerateMessage = useCallback(async () => {
     try {
@@ -347,7 +371,12 @@ export default function ChatPage() {
     }
   }, [currentConversationId, toggleConversationFavorite]);
 
-  const canContinue = messages.length > 0 && messages[messages.length - 1].role === 'assistant';
+  // An Agent turn is one tool loop that ends with a single persisted answer, so
+  // there is nothing to extend. The server rejects `continue` for Agent
+  // conversations as well; this only keeps the affordance off the screen.
+  const canContinue = !currentConversation?.agent_id
+    && messages.length > 0
+    && messages[messages.length - 1].role === 'assistant';
 
   return (
     <div className="flex flex-col h-full relative">
@@ -410,6 +439,8 @@ export default function ChatPage() {
       <MessageList
         messages={messages}
         loadingMessages={loadingMessages}
+        messagesError={messagesError}
+        onRetryMessages={handleRetryMessages}
         sendingMessage={sendingMessage}
         user={user}
         currentConversation={currentConversation}
@@ -437,7 +468,7 @@ export default function ChatPage() {
         onClearDraft={handleClearDraft}
         onStop={stopGeneration}
         onContinue={handleContinueGeneration}
-        isSending={sendingMessage}
+        isSending={sendingMessage || isStartingConversation}
         isUploading={isUploading}
         isStopped={isStopped}
         canContinue={canContinue}

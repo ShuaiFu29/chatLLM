@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 from queue import Empty, LifoQueue
 from threading import Lock
+from time import monotonic
 
 import psycopg
 from config import settings
@@ -50,16 +51,38 @@ class _ConnectionPool:
                     self._created = max(0, self._created - 1)
                 raise
 
-        try:
-            conn = self._idle.get(timeout=self.timeout_seconds)
-        except Empty as exc:
-            raise TimeoutError("Timed out waiting for a RAG database connection") from exc
+        # Wait for a live connection within the configured budget. This used to
+        # recurse on every closed connection: each retry restarted the full
+        # timeout and grew the stack, so a burst of dead connections could turn a
+        # bounded wait into an unbounded one (and, at worst, a RecursionError).
+        deadline = monotonic() + self.timeout_seconds
+        while True:
+            remaining = deadline - monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Timed out waiting for a RAG database connection")
+            try:
+                conn = self._idle.get(timeout=remaining)
+            except Empty as exc:
+                raise TimeoutError("Timed out waiting for a RAG database connection") from exc
 
-        if getattr(conn, "closed", False):
+            if not getattr(conn, "closed", False):
+                return conn
+            # A closed connection frees a slot: try to open a fresh one rather
+            # than keep waiting on a queue that may now be empty.
             with self._lock:
                 self._created = max(0, self._created - 1)
-            return self.acquire()
-        return conn
+                if self._created < self.max_size:
+                    self._created += 1
+                    should_replace = True
+                else:
+                    should_replace = False
+            if should_replace:
+                try:
+                    return self._create_connection()
+                except Exception:
+                    with self._lock:
+                        self._created = max(0, self._created - 1)
+                    raise
 
     def release(self, conn):
         if getattr(conn, "closed", False):

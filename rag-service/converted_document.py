@@ -40,6 +40,10 @@ class ConversionManifest:
     source_map_byte_size: int
     unit_count: int
     warnings: tuple[str, ...] = ()
+    # Provenance that does not indicate a defect. Anything placed in `warnings`
+    # flips the file to completed_with_warnings, so benign observations such as
+    # "this CSV used semicolons as its delimiter" belong here instead.
+    notes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +75,7 @@ class ConversionManifest:
             },
             "unit_count": self.unit_count,
             "warnings": list(self.warnings),
+            "notes": list(self.notes),
         }
 
 

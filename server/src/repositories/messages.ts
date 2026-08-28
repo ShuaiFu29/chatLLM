@@ -1,7 +1,12 @@
 import { query, withTransaction } from '../lib/db';
 import { ChatSource, RagTraceSummary } from '../lib/chatSources';
 import { encodeMessageCursor, MessageCursor } from '../lib/messagePagination';
-import type { AgentApprovalRow, AgentRunStatus, AgentStepRow } from './agentRuns';
+import {
+  cancelAgentRunsForRemovedMessagesWithClient,
+  type AgentApprovalRow,
+  type AgentRunStatus,
+  type AgentStepRow,
+} from './agentRuns';
 
 export interface MessageRow {
   id: string;
@@ -281,18 +286,42 @@ export const listMessagesForConversationPage = async (
   };
 };
 
-export const deleteMessageForUser = async (messageId: string, userId: string) => {
-  const { rows } = await query<{ id: string }>(
-    `delete from messages m
-     using conversations c
-     where m.conversation_id = c.id
-       and m.id = $1
-       and c.user_id = $2
-     returning m.id`,
-    [messageId, userId]
+export interface MessageDeletionResult {
+  deleted: boolean;
+  cancelledAgentRunIds: string[];
+}
+
+export const deleteMessageForUser = async (
+  messageId: string,
+  userId: string,
+  runInTransaction: typeof withTransaction = withTransaction,
+): Promise<MessageDeletionResult> => runInTransaction(async (client) => {
+  const { rows: messageRows } = await client.query<Pick<MessageRow, 'id' | 'conversation_id'>>(
+    `select m.id, m.conversation_id
+     from messages m
+     join conversations c on c.id = m.conversation_id
+     where m.id = $1 and c.user_id = $2
+     for update of m`,
+    [messageId, userId],
   );
-  return rows.length > 0;
-};
+  const message = messageRows[0];
+  if (!message) return { deleted: false, cancelledAgentRunIds: [] };
+
+  // Cancel before the delete so the run can still be matched by message id.
+  const cancelledAgentRunIds = await cancelAgentRunsForRemovedMessagesWithClient(client, {
+    conversationId: message.conversation_id,
+    userId,
+    messageIds: [message.id],
+    reason: 'Agent run cancelled because its chat message was deleted',
+  });
+
+  const { rowCount } = await client.query(
+    `delete from messages
+     where id = $1 and conversation_id = $2`,
+    [message.id, message.conversation_id],
+  );
+  return { deleted: (rowCount ?? 0) > 0, cancelledAgentRunIds };
+});
 
 export const truncateConversationFromUserMessage = async (
   conversationId: string,
@@ -321,11 +350,23 @@ export const truncateConversationFromUserMessage = async (
   const selectedMessage = messageRows[0];
   if (!selectedMessage) return null;
 
+  // Regenerate is a truncate followed by a re-send. Any Agent run anchored in
+  // the removed range must reach a terminal state inside this transaction:
+  // otherwise it keeps calling its model/tools and, because its assistant
+  // message id is nulled by the delete, its completion path would insert a
+  // ghost answer into the freshly truncated conversation.
+  const cancelledAgentRunIds = await cancelAgentRunsForRemovedMessagesWithClient(client, {
+    conversationId,
+    userId,
+    createdAtFrom: selectedMessage.created_at,
+    reason: 'Agent run cancelled because the conversation was truncated',
+  });
+
   const { rowCount } = await client.query(
     `delete from messages
      where conversation_id = $1
        and created_at >= $2`,
     [conversationId, selectedMessage.created_at]
   );
-  return { deletedCount: rowCount ?? 0 };
+  return { deletedCount: rowCount ?? 0, cancelledAgentRunIds };
 });

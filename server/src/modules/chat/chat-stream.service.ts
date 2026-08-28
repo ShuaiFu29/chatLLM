@@ -120,6 +120,14 @@ const createChatStream = async (
 
   const conversation = await findConversationForUser(conversationId, user.id);
   if (!conversation) throw publicError(403, 'Forbidden');
+
+  // An Agent turn is a whole tool loop that persists exactly one final answer.
+  // "Continue" is a generation control for plain chat; routing it into an Agent
+  // would start a second Run against the same user message and leave two
+  // assistant bubbles on one turn. Reject it on the server, not only in the UI.
+  if (request.continueGeneration && conversation.agent_id) {
+    throw publicError(400, 'Continue is not supported in an Agent conversation');
+  }
   if (isChatRequestClosed(request)) return;
 
   const chatSlot = tryAcquireChatStreamSlot(user.id);
@@ -138,11 +146,21 @@ const createChatStream = async (
 
   let userMessage;
   try {
-    const previousUserMessage = request.continueGeneration
-      ? await findLatestUserMessageForConversation(conversationId)
-      : null;
-    userMessage = previousUserMessage || await insertMessage(conversationId, 'user', content);
+    if (request.continueGeneration) {
+      // The continue prompt is a synthetic instruction, never a user turn. With
+      // no earlier user message there is nothing to continue, so fail instead of
+      // persisting "Please continue your response..." as chat history.
+      const previousUserMessage = await findLatestUserMessageForConversation(conversationId);
+      if (!previousUserMessage) {
+        chatSlot.release(false);
+        throw publicError(400, 'There is no previous answer to continue');
+      }
+      userMessage = previousUserMessage;
+    } else {
+      userMessage = await insertMessage(conversationId, 'user', content);
+    }
   } catch (error) {
+    if (error instanceof HttpException) throw error;
     chatSlot.release(true);
     throw publicError(500, 'Failed to generate response', error);
   }
@@ -226,7 +244,13 @@ const createChatStream = async (
     const personaProfile = await getPersonaPromptContextForUser(user.id);
     const personalizedSystemPrompt = buildPersonalizedSystemPrompt(systemPrompt, personaProfile);
     const enableRag = conversation.enable_rag !== undefined ? conversation.enable_rag : true;
-    const shouldRunRag = enableRag && shouldUseRagForMessage(content);
+    // Continue is not a new question. Its payload is an instruction ("continue
+    // from where you stopped"), so triggering retrieval on that text produces
+    // unrelated evidence or a bogus "insufficient evidence" refusal. Continue
+    // extends the existing answer from history alone.
+    const shouldRunRag = enableRag
+      && !request.continueGeneration
+      && shouldUseRagForMessage(content);
     const history = await listRecentMessages(conversationId, 10);
 
     let contextText = '';
@@ -237,7 +261,9 @@ const createChatStream = async (
     let insufficientEvidence = false;
     let answerGuidance = '';
 
-    if (enableRag && !shouldRunRag) {
+    // Only report "RAG skipped" for a real question. A continuation reuses the
+    // evidence of the answer it extends, so the badge would be misleading.
+    if (enableRag && !shouldRunRag && !request.continueGeneration) {
       await sse.send({ ragSkipped: true });
     }
 

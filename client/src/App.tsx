@@ -6,7 +6,7 @@ import MainLayout from './layouts/MainLayout';
 import Loading from './components/Loading';
 import Navigate from './components/Navigate';
 import NavigationProvider from './components/NavigationProvider';
-import { useLocation } from './lib/navigation';
+import { normalizeRoutePath, useLocation } from './lib/navigation';
 
 import { Toaster } from 'sonner';
 
@@ -22,6 +22,7 @@ const RetrievalLabPage = lazy(() => import('./pages/RetrievalLab'));
 const GraphExplorerPage = lazy(() => import('./pages/GraphExplorer'));
 const PersonaCenterPage = lazy(() => import('./pages/PersonaCenter'));
 const AgentsPage = lazy(() => import('./pages/Agents'));
+const AgentMemoriesPage = lazy(() => import('./pages/AgentMemories'));
 
 const authenticatedPages: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   '/': ChatPage,
@@ -31,6 +32,7 @@ const authenticatedPages: Record<string, React.LazyExoticComponent<React.Compone
   '/prompts': PromptTemplatesPage,
   '/persona': PersonaCenterPage,
   '/agents': AgentsPage,
+  '/agent-memories': AgentMemoriesPage,
   '/rag-eval': RagEvaluationPage,
   '/retrieval-lab': RetrievalLabPage,
   '/rag-graph': GraphExplorerPage,
@@ -38,9 +40,12 @@ const authenticatedPages: Record<string, React.LazyExoticComponent<React.Compone
 
 function AppRoutes() {
   const { pathname } = useLocation();
-  if (pathname === '/login') return <LoginPage />;
+  // Route keys are matched exactly, so normalize before the lookup: without it
+  // a bookmarked `/knowledge/` redirected to the chat page.
+  const route = normalizeRoutePath(pathname);
+  if (route === '/login') return <LoginPage />;
 
-  const Page = authenticatedPages[pathname];
+  const Page = authenticatedPages[route];
   if (!Page) return <Navigate to="/" replace />;
 
   return (

@@ -11,6 +11,8 @@ export interface AgentToolRow {
   description: string;
   kind: AgentToolKind;
   risk_level: AgentToolRiskLevel;
+  /** Per-run ceiling for this tool. Null means only the global ceiling applies. */
+  max_invocations_per_run?: number | null;
   configuration: Record<string, unknown>;
   enabled: boolean;
   has_secrets: boolean;
@@ -30,6 +32,7 @@ const publicColumns = `
   description,
   kind,
   risk_level,
+  max_invocations_per_run,
   configuration,
   enabled,
   (encrypted_secrets is not null) as has_secrets,
@@ -118,6 +121,7 @@ export const createAgentToolForUser = async (input: {
   description?: string;
   kind: AgentToolKind;
   riskLevel: AgentToolRiskLevel;
+  maxInvocationsPerRun?: number | null;
   configuration: Record<string, unknown>;
   encryptedSecrets?: string | null;
   enabled?: boolean;
@@ -138,8 +142,8 @@ export const createAgentToolForUser = async (input: {
     const { rows } = await client.query<AgentToolRow>(
     `insert into agent_tools (
        user_id, project_space_id, name, description, kind, risk_level,
-       configuration, encrypted_secrets, enabled
-     ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       max_invocations_per_run, configuration, encrypted_secrets, enabled
+     ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      returning ${publicColumns}`,
     [
       input.userId,
@@ -148,6 +152,7 @@ export const createAgentToolForUser = async (input: {
       input.description || '',
       input.kind,
       input.riskLevel,
+      input.maxInvocationsPerRun ?? null,
       JSON.stringify(input.configuration),
       input.encryptedSecrets || null,
       input.enabled ?? true,
@@ -165,6 +170,7 @@ export const updateAgentToolForUser = async (
     name: string;
     description: string;
     risk_level: AgentToolRiskLevel;
+    max_invocations_per_run: number | null;
     configuration: Record<string, unknown>;
     encrypted_secrets: string | null;
     enabled: boolean;

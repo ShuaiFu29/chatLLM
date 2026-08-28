@@ -143,6 +143,7 @@ class DocumentConverter(ABC):
         lines: Iterable[str],
         source_encoding: str,
         warnings: tuple[str, ...] = (),
+        notes: tuple[str, ...] = (),
     ) -> ConversionResult:
         return self._convert_items(
             inspection,
@@ -154,6 +155,7 @@ class DocumentConverter(ABC):
             ),
             source_encoding,
             warnings,
+            notes,
         )
 
     def _convert_located_blocks(
@@ -163,6 +165,7 @@ class DocumentConverter(ABC):
         blocks: Iterable[LocatedTextBlock],
         source_encoding: str,
         warnings: tuple[str, ...] = (),
+        notes: tuple[str, ...] = (),
     ) -> ConversionResult:
         """Persist generated Markdown while retaining caller-provided locators."""
 
@@ -176,6 +179,7 @@ class DocumentConverter(ABC):
             ),
             source_encoding,
             warnings,
+            notes,
         )
 
     def _convert_items(
@@ -185,6 +189,7 @@ class DocumentConverter(ABC):
         items: Iterable[str | TextBlock | LocatedTextBlock],
         source_encoding: str,
         warnings: tuple[str, ...],
+        notes: tuple[str, ...] = (),
     ) -> ConversionResult:
         output_root, final_paths = _prepare_output_paths(inspection.path, output_dir)
         temporary_paths: list[Path] = []
@@ -267,6 +272,7 @@ class DocumentConverter(ABC):
                 source_map_byte_size=map_size,
                 unit_count=unit_count,
                 warnings=warnings,
+                notes=notes,
             )
             manifest_bytes = (
                 json.dumps(

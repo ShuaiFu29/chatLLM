@@ -91,14 +91,18 @@ export default function KnowledgeBase() {
     const { id } = deleteFileTarget;
 
     cancelKnowledgeFilesFetch(currentProjectSpaceId);
-    // Optimistic Update: Immediately remove from UI and close modal
+    // Optimistic Update: Immediately remove from UI and close modal.
     removeKnowledgeFile(id);
     setDeleteFileTarget(null);
-    showNotification('success', t('knowledge.deleteSuccess'));
 
     try {
       await api.delete(`/upload/files/${id}`);
       removeKnowledgeFile(id);
+      // The endpoint answers 202: retrieval stops using the document right
+      // away, but external index and object cleanup finish asynchronously. Only
+      // confirm once the request itself succeeded, and say "accepted" rather
+      // than claiming everything is already gone.
+      showNotification('success', t('knowledge.deleteAccepted'));
     } catch (error) {
       console.error('Delete failed:', toSafeError(error));
       // Revert UI on failure

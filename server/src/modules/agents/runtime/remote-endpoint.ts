@@ -1,6 +1,7 @@
 import dns from 'node:dns/promises';
 import { isIP } from 'node:net';
 import { Agent as UndiciAgent } from 'undici';
+import { AgentToolError } from './agent-tool-error';
 
 const isLoopback = (value: string) => (
   value === 'localhost'
@@ -81,26 +82,35 @@ export const assertAllowedRemoteEndpoint = async (input: {
   const { endpoint, rules } = input;
   const hostname = endpoint.hostname.replace(/^\[/, '').replace(/\]$/, '');
   const port = endpoint.port || (endpoint.protocol === 'https:' ? '443' : '80');
-  if (!['http:', 'https:'].includes(endpoint.protocol)) throw new Error(input.protocolError);
-  if (endpoint.username || endpoint.password) throw new Error('Endpoint credentials are not allowed in URLs');
+  if (!['http:', 'https:'].includes(endpoint.protocol)) {
+    throw new AgentToolError('tool_endpoint_unsupported_protocol', input.protocolError);
+  }
+  if (endpoint.username || endpoint.password) {
+    throw new AgentToolError('tool_endpoint_misconfigured', 'Endpoint credentials are not allowed in URLs');
+  }
   if (!endpointHostAllowed(hostname, port, rules)) {
-    throw new Error('Remote endpoint is not allowlisted');
+    throw new AgentToolError('tool_endpoint_not_allowlisted', 'Remote endpoint is not allowlisted');
   }
   if (
     input.hasSecrets
     && endpoint.protocol === 'http:'
     && !(input.allowHttpSecretsOnLoopback && isLoopback(hostname))
   ) {
-    throw new Error('Credentials require an HTTPS endpoint');
+    throw new AgentToolError('tool_endpoint_credentials_insecure', 'Credentials require an HTTPS endpoint');
   }
 
   const addresses = isIP(hostname)
     ? [hostname]
     : (await dns.lookup(hostname, { all: true, verbatim: true })).map((item) => item.address);
-  if (addresses.length === 0) throw new Error('Remote endpoint did not resolve to an address');
+  if (addresses.length === 0) {
+    throw new AgentToolError('tool_endpoint_misconfigured', 'Remote endpoint did not resolve to an address');
+  }
   const blocked = addresses.find((address) => isPrivateAddress(address));
   if (blocked && !addresses.every((address) => endpointHostAllowed(address, port, rules))) {
-    throw new Error('Remote endpoint resolves to a private or loopback address');
+    throw new AgentToolError(
+      'tool_endpoint_blocked_address',
+      'Remote endpoint resolves to a private or loopback address',
+    );
   }
   return { addresses };
 };

@@ -14,6 +14,12 @@ interface AgentRunHistoryProps {
 }
 
 const activeStatuses: AgentRunStatus[] = ['queued', 'running', 'waiting_approval'];
+const ACTIVE_RUN_POLL_INTERVAL_MS = 2000;
+
+interface LoadOptions {
+  /** Background refresh: keep spinners and error toasts off the screen. */
+  silent?: boolean;
+}
 
 const statusIcons: Record<AgentRunStatus, typeof Loader2> = {
   queued: Clock3,
@@ -39,8 +45,8 @@ export default function AgentRunHistory({ agentId }: AgentRunHistoryProps) {
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [cancelling, setCancelling] = useState(false);
 
-  const loadRuns = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
+  const loadRuns = useCallback(async (signal?: AbortSignal, options: LoadOptions = {}) => {
+    if (!options.silent) setLoading(true);
     try {
       const response = await api.get<AgentRun[]>('/agent-runs', {
         params: agentId ? { agentId, limit: 100 } : { limit: 100 },
@@ -54,12 +60,35 @@ export default function AgentRunHistory({ agentId }: AgentRunHistoryProps) {
     } catch (error) {
       if (!isRequestCancellation(error)) {
         console.error('Failed to load Agent runs:', toSafeError(error));
-        toast.error(t('agents.runsLoadFailed'));
+        // A background refresh must not produce a toast on every tick.
+        if (!options.silent) toast.error(t('agents.runsLoadFailed'));
       }
     } finally {
-      if (!signal?.aborted) setLoading(false);
+      if (!options.silent && !signal?.aborted) setLoading(false);
     }
   }, [agentId, t]);
+
+  const loadDetail = useCallback(async (
+    runId: string,
+    signal?: AbortSignal,
+    options: LoadOptions = {},
+  ) => {
+    if (!options.silent) setLoadingDetail(true);
+    try {
+      const response = await api.get<AgentRunDetail>(`/agent-runs/${runId}`, {
+        params: { stepLimit: 500, approvalLimit: 200 },
+        signal,
+      });
+      setDetail(response.data);
+    } catch (error) {
+      if (!isRequestCancellation(error)) {
+        console.error('Failed to load Agent run:', toSafeError(error));
+        if (!options.silent) toast.error(t('agents.runDetailLoadFailed'));
+      }
+    } finally {
+      if (!options.silent && !signal?.aborted) setLoadingDetail(false);
+    }
+  }, [t]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -74,22 +103,36 @@ export default function AgentRunHistory({ agentId }: AgentRunHistoryProps) {
       return;
     }
     const controller = new AbortController();
-    setLoadingDetail(true);
-    void api.get<AgentRunDetail>(`/agent-runs/${selectedRunId}`, {
-      params: { stepLimit: 500, approvalLimit: 200 },
-      signal: controller.signal,
-    }).then((response) => {
-      setDetail(response.data);
-    }).catch((error) => {
-      if (!isRequestCancellation(error)) {
-        console.error('Failed to load Agent run:', toSafeError(error));
-        toast.error(t('agents.runDetailLoadFailed'));
-      }
-    }).finally(() => {
-      if (!controller.signal.aborted) setLoadingDetail(false);
-    });
+    void loadDetail(selectedRunId, controller.signal);
     return () => controller.abort();
-  }, [selectedRunId, t]);
+  }, [loadDetail, selectedRunId]);
+
+  const hasActiveRun = runs.some((run) => activeStatuses.includes(run.status))
+    || (detail ? activeStatuses.includes(detail.status) : false);
+
+  // Approving or cancelling from the chat page changes a run this view already
+  // rendered. Without polling, the history stayed stale and invited a second
+  // cancel or an action on an approval that was already decided. Uses the same
+  // interval family as the chat recovery poll and stops at a terminal state.
+  useEffect(() => {
+    if (!hasActiveRun) return;
+    const controller = new AbortController();
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await loadRuns(controller.signal, { silent: true });
+      if (!stopped && selectedRunId) {
+        await loadDetail(selectedRunId, controller.signal, { silent: true });
+      }
+      if (!stopped) timer = setTimeout(() => void poll(), ACTIVE_RUN_POLL_INTERVAL_MS);
+    };
+    timer = setTimeout(() => void poll(), ACTIVE_RUN_POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      controller.abort();
+    };
+  }, [hasActiveRun, loadDetail, loadRuns, selectedRunId]);
 
   const detailEvents = useMemo(() => detail
     ? buildPersistedAgentEvents({

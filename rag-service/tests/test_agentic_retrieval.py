@@ -6,7 +6,9 @@ from unittest.mock import patch
 
 from agentic_retrieval import (
     PlannedRetrievalUnavailableError,
+    _active_cached_documents,
     _classify_question,
+    _planned_queries,
     _request_cache_fingerprint,
     _select_diverse_documents,
     agentic_retrieve,
@@ -35,6 +37,16 @@ class AgenticRetrievalTests(unittest.TestCase):
             )
 
         self.assertNotIn("private upstream detail", str(raised.exception))
+
+    @staticmethod
+    def _all_chunks_active(chunk_ids, user_id, project_space_id):
+        """Authoritative re-check stub: every cached chunk is still live.
+
+        Cache reuse now re-authorizes cached evidence against PostgreSQL, so
+        tests that are about reuse (not about deletion) inject this stub instead
+        of reaching a database.
+        """
+        return [{"id": str(chunk_id)} for chunk_id in chunk_ids if str(chunk_id).strip()]
 
     @staticmethod
     def _cache_scope(base_scope: str, query: str, limit: int = 5, threshold: float = 0.1) -> str:
@@ -82,6 +94,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             conversation_id="conversation-1",
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertEqual(result["results"][0]["id"], "chunk-cache-write")
@@ -132,6 +145,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             conversation_id="conversation-1",
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertEqual(retrieve_calls, [])
@@ -179,6 +193,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             conversation_id="conversation-1",
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertEqual(retrieve_calls, [])
@@ -187,6 +202,146 @@ class AgenticRetrievalTests(unittest.TestCase):
         step_types = [step["step_type"] for step in result["trace_steps"]]
         self.assertIn("cache_lookup", step_types)
         self.assertIn("evidence_reuse", step_types)
+
+    def test_cache_hit_drops_evidence_from_a_file_that_is_being_deleted(self):
+        """P1-DELETE-CACHE: a delete must be visible before the cleanup worker runs.
+
+        `files.status` becomes `deleting` immediately, but `knowledge_version` is
+        bumped only when the async worker reaches the RAG service. The exact cache
+        key is still valid in that window, so reuse must re-authorize against
+        PostgreSQL instead of trusting the stored evidence.
+        """
+        cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
+        query = "How does OAuth refresh token rotation work?"
+        cache.upsert_query_cache(
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            normalized_query="how does oauth refresh token rotation work?",
+            original_query=query,
+            scope_fingerprint=self._cache_scope("scope-v1", query),
+            documents=[
+                {
+                    "id": "11111111-1111-4111-8111-111111111111",
+                    "content": "OAuth refresh token rotation reissues the HttpOnly session and invalidates the previous refresh token.",
+                    "metadata": {"filename": "deleted.md", "file_id": "file-deleted", "chunk_index": 1},
+                    "similarity": 0.93,
+                    "retrieval_score": 0.93,
+                }
+            ],
+            quality={"overall_score": 0.82, "evidence_label": "strong"},
+        )
+
+        authority_calls = []
+
+        def no_chunk_is_active(chunk_ids, user_id, project_space_id):
+            authority_calls.append((list(chunk_ids), user_id, project_space_id))
+            return []
+
+        retrieve_calls = []
+
+        def fake_retrieve(planned_query, user_id, project_space_id, limit, threshold):
+            retrieve_calls.append(planned_query)
+            return [{
+                "id": "22222222-2222-4222-8222-222222222222",
+                "content": "OAuth refresh token rotation revokes the previous token and issues a new HttpOnly refresh session.",
+                "metadata": {"filename": "auth.md", "file_id": "file-auth", "chunk_index": 3},
+                "similarity": 0.9,
+                "retrieval_score": 0.9,
+            }]
+
+        result = agentic_retrieve(
+            query=query,
+            user_id="user-1",
+            project_space_id="space-1",
+            conversation_id="conversation-1",
+            retrieve_fn=fake_retrieve,
+            cache_store=cache,
+            active_chunks_fn=no_chunk_is_active,
+        )
+
+        returned_ids = [document["id"] for document in result["results"]]
+        self.assertNotIn("11111111-1111-4111-8111-111111111111", returned_ids)
+        self.assertNotIn("file-deleted", [
+            (document.get("metadata") or {}).get("file_id") for document in result["results"]
+        ])
+        # Cache miss instead of a stale citation: retrieval had to run.
+        self.assertGreater(len(retrieve_calls), 0)
+        self.assertEqual(
+            authority_calls[0][0],
+            ["11111111-1111-4111-8111-111111111111"],
+        )
+        authority_steps = [
+            step for step in result["trace_steps"]
+            if step["step_type"] == "cache_authority_check"
+        ]
+        self.assertEqual(len(authority_steps), 1)
+        self.assertEqual(authority_steps[0]["output"]["dropped_document_count"], 1)
+        self.assertEqual(authority_steps[0]["output"]["remaining_document_count"], 0)
+
+    def test_cached_parent_section_authority_follows_matched_child_chunks(self):
+        """P1-DELETE-CACHE: parent-section documents hold a synthetic id.
+
+        Their real chunk ids live in `metadata.matched_child_ids`, so validation
+        must follow those instead of the `parent:` id, and a document with no
+        resolvable chunk id at all cannot be proven live.
+        """
+        live_child = "33333333-3333-4333-8333-333333333333"
+        deleted_child = "44444444-4444-4444-8444-444444444444"
+        documents = [
+            {
+                "id": "parent:file-live:generation-1:section-1",
+                "content": "OAuth refresh token rotation reissues the HttpOnly session.",
+                "metadata": {"file_id": "file-live", "matched_child_ids": [live_child]},
+            },
+            {
+                "id": "parent:file-deleted:generation-1:section-1",
+                "content": "Legacy rotation notes from a document the user deleted.",
+                "metadata": {"file_id": "file-deleted", "matched_child_ids": [deleted_child]},
+            },
+            {
+                "id": "",
+                "content": "Evidence with no chunk id cannot be re-authorized.",
+                "metadata": {"file_id": "file-unknown"},
+            },
+        ]
+
+        requested = []
+
+        def only_live_child_is_active(chunk_ids, user_id, project_space_id):
+            requested.append(list(chunk_ids))
+            return [{"id": chunk_id} for chunk_id in chunk_ids if chunk_id == live_child]
+
+        kept, dropped = _active_cached_documents(
+            documents,
+            "user-1",
+            "space-1",
+            only_live_child_is_active,
+        )
+
+        self.assertEqual([document["id"] for document in kept], [
+            "parent:file-live:generation-1:section-1",
+        ])
+        self.assertEqual(dropped, 2)
+        # Only the real child chunks are re-authorized; the synthetic parent id
+        # is not a chunk and must never be asked about.
+        self.assertEqual(sorted(requested[0]), sorted([live_child, deleted_child]))
+
+    def test_cached_evidence_survives_when_every_chunk_is_still_active(self):
+        documents = [
+            {"id": "55555555-5555-4555-8555-555555555555", "metadata": {"file_id": "file-a"}},
+            {"id": "66666666-6666-4666-8666-666666666666", "metadata": {"file_id": "file-b"}},
+        ]
+
+        kept, dropped = _active_cached_documents(
+            documents,
+            "user-1",
+            "space-1",
+            self._all_chunks_active,
+        )
+
+        self.assertEqual(len(kept), 2)
+        self.assertEqual(dropped, 0)
 
     def test_singleflight_coalesces_concurrent_exact_misses_across_conversations(self):
         cache = InMemoryRetrievalCache(scope_fingerprint="scope-v1")
@@ -215,6 +370,7 @@ class AgenticRetrievalTests(unittest.TestCase):
                 conversation_id=f"conversation-{index}",
                 retrieve_fn=fake_retrieve,
                 cache_store=cache,
+                active_chunks_fn=self._all_chunks_active,
             )
 
         with ThreadPoolExecutor(max_workers=20) as executor:
@@ -268,6 +424,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             conversation_id="conversation-1",
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertGreater(len(retrieve_calls), 0)
@@ -315,6 +472,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             conversation_id="conversation-1",
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertGreater(len(retrieve_calls), 0)
@@ -367,6 +525,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             threshold=0.1,
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertGreater(len(retrieve_calls), 0)
@@ -425,6 +584,7 @@ class AgenticRetrievalTests(unittest.TestCase):
             limit=4,
             retrieve_fn=fake_retrieve,
             cache_store=cache,
+            active_chunks_fn=self._all_chunks_active,
         )
 
         self.assertLess(len(retrieve_calls), len(result["planned_queries"]))
@@ -1199,6 +1359,132 @@ class AgenticRetrievalTests(unittest.TestCase):
         self.assertEqual(documents[0]["metadata"]["retrieval_mode"], "lexical")
         self.assertEqual(documents[0]["vector_similarity"], 0)
         self.assertGreater(documents[0]["lexical_score"], 0)
+
+
+class PlannedQueryBudgetTests(unittest.TestCase):
+    query = 'Why did order "ORD-91423" fail to settle in the payments ledger?'
+
+    def test_a_talkative_rewriter_cannot_crowd_out_the_deterministic_plan(self):
+        # Two alternatives used to fill every slot after the original query, so
+        # the deterministic plan (which contributes the exact-marker query that
+        # makes "ORD-91423" findable) was dropped entirely.
+        planned = _planned_queries(
+            self.query,
+            {
+                "semantic_alternatives": [
+                    "settlement failure for a payment order",
+                    "ledger reconciliation error for an order",
+                    "unsettled order investigation",
+                ]
+            },
+            max_queries=3,
+        )
+        self.assertEqual(len(planned), 3)
+        self.assertEqual(planned[0], self.query)
+        from query_planner import plan_queries
+
+        deterministic = {candidate for candidate in plan_queries(self.query, 3)}
+        self.assertTrue(
+            any(candidate in deterministic for candidate in planned[1:]),
+            f"the deterministic plan was starved: {planned}",
+        )
+
+    def test_rewriter_alternatives_still_get_a_share(self):
+        planned = _planned_queries(
+            self.query,
+            {"semantic_alternatives": ["settlement failure for a payment order"]},
+            max_queries=3,
+        )
+        self.assertIn("settlement failure for a payment order", planned)
+
+    def test_the_original_query_always_leads(self):
+        planned = _planned_queries(self.query, {"semantic_alternatives": ["anything"]})
+        self.assertEqual(planned[0], self.query)
+
+    def test_the_budget_is_never_exceeded_and_duplicates_are_dropped(self):
+        planned = _planned_queries(
+            self.query,
+            {"semantic_alternatives": [self.query, "  ", None, "distinct wording"]},
+            max_queries=3,
+        )
+        self.assertLessEqual(len(planned), 3)
+        self.assertEqual(len(planned), len(set(planned)))
+        self.assertNotIn("", planned)
+
+    def test_a_missing_resolution_falls_back_to_the_deterministic_plan(self):
+        for resolution in (None, {}, {"semantic_alternatives": None}):
+            planned = _planned_queries(self.query, resolution, max_queries=3)
+            self.assertEqual(planned[0], self.query)
+            self.assertGreaterEqual(len(planned), 1)
+
+
+class KeywordAnalyzerHonestyTests(unittest.TestCase):
+    def test_the_mixed_text_analyzer_is_documented_as_the_standard_analyzer(self):
+        # The name implies Chinese segmentation that this analyzer does not do.
+        # Renaming it would change the index mapping and force a BM25 rebuild, so
+        # the source must at least state what it really is.
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / "keyword_store.py").read_text(
+            encoding="utf-8"
+        )
+        analyzer_block = source[: source.index('"chatllm_mixed_text"')]
+        self.assertIn("stock `standard`", analyzer_block)
+        self.assertIn("no Chinese word segmentation", analyzer_block)
+        self.assertIn("IK or ICU plugin", analyzer_block)
+
+
+class CallerTraceCorrelationTests(unittest.TestCase):
+    def test_only_well_formed_identifiers_are_accepted(self):
+        from agentic_retrieval import normalize_caller_trace
+
+        trace_id = "11111111-1111-4111-8111-111111111111"
+        span_id = "22222222-2222-4222-8222-222222222222"
+        self.assertEqual(
+            normalize_caller_trace(trace_id, span_id),
+            {"trace_id": trace_id, "parent_span_id": span_id},
+        )
+
+        # Case and surrounding whitespace are normalised rather than rejected.
+        self.assertEqual(
+            normalize_caller_trace(f"  {trace_id.upper()}  ", None),
+            {"trace_id": trace_id},
+        )
+
+        # These arrive in HTTP headers and are echoed into a trace operators read,
+        # so anything unusable is dropped at the boundary.
+        for bad in ("", "not-a-uuid", "../../etc/passwd", None, 42, ["x"]):
+            self.assertEqual(normalize_caller_trace(bad, bad), {})
+
+        # Losing correlation must never cost the user an answer: a bad span does
+        # not discard a good trace.
+        self.assertEqual(
+            normalize_caller_trace(trace_id, "bogus"),
+            {"trace_id": trace_id},
+        )
+
+    def test_the_endpoint_reads_correlation_from_headers(self):
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding="utf-8")
+        # Anchor on the decorator at the start of a line: the same path appears
+        # inside a legacy-source-check comment just above it.
+        endpoint = source[source.index('\n@app.post("/agentic-retrieve"') + 1:]
+        endpoint = endpoint[: endpoint.index("\n@app.post")]
+        self.assertIn("x_chatllm_trace_id: str | None = Header(default=None)", endpoint)
+        self.assertIn("x_chatllm_span_id: str | None = Header(default=None)", endpoint)
+        self.assertIn("caller_trace=normalize_caller_trace(", endpoint)
+
+    def test_the_response_echoes_the_caller_trace(self):
+        from pathlib import Path
+
+        source = (Path(__file__).resolve().parent.parent / "agentic_retrieval.py").read_text(
+            encoding="utf-8"
+        )
+        # The retrieval response is what the calling service persists, so the
+        # correlation has to come back with it.
+        self.assertIn('"caller_trace": dict(caller_trace or {})', source)
+        self.assertIn("caller_trace: dict | None = None", source)
 
 
 if __name__ == "__main__":

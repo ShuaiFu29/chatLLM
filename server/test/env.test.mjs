@@ -627,3 +627,68 @@ test('server env caps Eval timers to PostgreSQL and Node timer ranges', () => {
     assert.match(result.stderr, new RegExp(`${key} must be at most 2147483647`));
   }
 });
+
+const BOOLEAN_ENV_BASE = {
+  DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+  S3_ENDPOINT: 'http://localhost:9000',
+  S3_ACCESS_KEY: 'minioadmin',
+  S3_SECRET_KEY: 'minioadmin',
+  JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+  DEEPSEEK_API_KEY: 'sk-test',
+};
+
+test('boolean env flags accept the usual spellings of both sides (P2-GETBOOLEAN)', () => {
+  // `0` used to mean true, because the rule was "anything but the literal
+  // string false".
+  for (const [value, expected] of [
+    ['0', false],
+    ['false', false],
+    ['FALSE', false],
+    ['no', false],
+    ['off', false],
+    ['1', true],
+    ['true', true],
+    ['TRUE', true],
+    ['yes', true],
+    ['on', true],
+    [' 0 ', false],
+  ]) {
+    const result = importServerEnv(
+      { ...BOOLEAN_ENV_BASE, S3_FORCE_PATH_STYLE: value },
+      'serverEnv.S3_FORCE_PATH_STYLE',
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      parseLastJsonLine(result.stdout),
+      expected,
+      `S3_FORCE_PATH_STYLE=${JSON.stringify(value)} should parse as ${expected}`,
+    );
+  }
+});
+
+test('an unrecognized boolean value fails startup instead of being guessed (P2-GETBOOLEAN)', () => {
+  for (const key of ['S3_FORCE_PATH_STYLE', 'EMBEDDING_DEBUG_LOGS']) {
+    const result = importServerEnv(
+      { ...BOOLEAN_ENV_BASE, [key]: 'flase' },
+      `serverEnv.${key}`,
+    );
+    assert.notEqual(result.status, 0, `${key} must reject an unparseable value`);
+    assert.match(result.stderr, new RegExp(`${key} must be one of true/false`));
+  }
+});
+
+test('an empty boolean value keeps the documented default (P2-GETBOOLEAN)', () => {
+  const pathStyle = importServerEnv(
+    { ...BOOLEAN_ENV_BASE, S3_FORCE_PATH_STYLE: '' },
+    'serverEnv.S3_FORCE_PATH_STYLE',
+  );
+  assert.equal(pathStyle.status, 0, pathStyle.stderr);
+  assert.equal(parseLastJsonLine(pathStyle.stdout), true);
+
+  const debugLogs = importServerEnv(
+    { ...BOOLEAN_ENV_BASE, EMBEDDING_DEBUG_LOGS: '   ' },
+    'serverEnv.EMBEDDING_DEBUG_LOGS',
+  );
+  assert.equal(debugLogs.status, 0, debugLogs.stderr);
+  assert.equal(parseLastJsonLine(debugLogs.stdout), false);
+});

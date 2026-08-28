@@ -3,6 +3,7 @@ import { KeyRound, Save, Trash2, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import SelectField from '../../components/SelectField';
+import { readApiErrorMessage } from '../../lib/apiError';
 import type { ProjectSpace } from '../../stores/useProjectSpaceStore';
 import type { CustomAgentTool, CustomAgentToolInput } from './types';
 
@@ -139,7 +140,9 @@ export default function ToolEditor(props: ToolEditorProps) {
       props.onSelected(saved);
       toast.success(t('agents.toolSaved'));
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : t('agents.toolSaveFailed'));
+      // 409 "tool is still bound to an Agent", quota errors, and schema errors
+      // all arrive in the response body, not in `error.message`.
+      toast.error(readApiErrorMessage(error, t('agents.toolSaveFailed')));
     } finally {
       setSaving(false);
     }

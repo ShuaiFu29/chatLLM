@@ -3,13 +3,19 @@ import re
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from itertools import zip_longest
 from typing import Callable
 
 from config import settings
 from evaluation import evaluate_retrieval_quality
 from evidence_verifier import assess_query_risk, verify_evidence_support
 from query_planner import plan_queries, resolve_standalone_query
-from db import count_files_for_inventory, list_files_for_inventory, list_parent_chunks_for_matches
+from db import (
+    count_files_for_inventory,
+    get_active_chunks_by_ids,
+    list_files_for_inventory,
+    list_parent_chunks_for_matches,
+)
 from parent_context import build_parent_section_documents
 from reranker import LOCAL_RERANKER_VERSION, classify_source_role
 from semantic_reranker import rerank_with_provider, reranker_fingerprint
@@ -31,6 +37,7 @@ RerankFn = Callable[[str, list[dict]], list[dict]]
 InventoryFn = Callable[[str, str | None, int], list[dict]]
 InventoryCountFn = Callable[[str, str | None], int]
 ParentDepthFn = Callable[[str, str | None, list[dict], int, int], list[dict]]
+ActiveChunksFn = Callable[[list[str], str, str | None], list[dict]]
 
 INVENTORY_RESULT_LIMIT = 100
 PARENT_SECTION_LIMIT = 8
@@ -380,20 +387,88 @@ def _copy_cache_documents(entry: dict | None) -> list[dict]:
     return [dict(document) for document in documents]
 
 
+def _cached_document_chunk_ids(document: dict) -> list[str]:
+    """Chunk ids that must still be active for this cached document to be citable.
+
+    Plain retrieval documents carry the chunk id in `id`. Parent-section
+    documents use a synthetic `parent:<file>:<generation>:<section>` id, which is
+    not a chunk at all, and keep the real chunk ids in
+    `metadata.matched_child_ids`; those are the ones to re-authorize.
+    """
+    metadata = document.get("metadata") or {}
+    matched_child_ids = [
+        str(value).strip()
+        for value in metadata.get("matched_child_ids") or []
+        if str(value).strip()
+    ]
+    if matched_child_ids:
+        return list(dict.fromkeys(matched_child_ids))
+    candidate = str(document.get("id") or document.get("chunk_id") or "").strip()
+    return [candidate] if candidate else []
+
+
+def _active_cached_documents(
+    documents: list[dict],
+    user_id: str,
+    project_space_id: str | None,
+    active_chunks_fn: ActiveChunksFn,
+) -> tuple[list[dict], int]:
+    """Re-authorize cached evidence against PostgreSQL before reusing it.
+
+    A cache key embeds `knowledge_version`, but deleting a file only marks
+    `files.status = 'deleting'` right away; the version is bumped later, once the
+    async cleanup worker reaches the RAG service. Inside that window the old key
+    is still valid, so a cache hit would keep citing content the user already
+    deleted. Fresh retrieval already filters on file status -- this closes the
+    same hole on the short-circuit path. A document we cannot prove is live is
+    dropped: a cache miss is always cheaper than quoting deleted material.
+    """
+    if not documents:
+        return [], 0
+
+    candidate_ids: list[str] = []
+    ids_by_document: list[list[str]] = []
+    for document in documents:
+        chunk_ids = _cached_document_chunk_ids(document)
+        ids_by_document.append(chunk_ids)
+        candidate_ids.extend(chunk_ids)
+
+    active_rows = active_chunks_fn(candidate_ids, user_id, project_space_id) or []
+    active_ids = {str(row.get("id")) for row in active_rows if row.get("id")}
+
+    kept: list[dict] = []
+    for document, chunk_ids in zip(documents, ids_by_document):
+        if chunk_ids and all(chunk_id in active_ids for chunk_id in chunk_ids):
+            kept.append(document)
+    return kept, len(documents) - len(kept)
+
+
 def _evaluate_cached_documents(
     query: str,
     entry: dict,
     limit: int,
     rerank_fn: RerankFn,
-) -> tuple[list[dict], dict]:
+    user_id: str,
+    project_space_id: str | None,
+    active_chunks_fn: ActiveChunksFn,
+) -> tuple[list[dict], dict, int]:
     documents = _copy_cache_documents(entry)
     if not documents:
-        return [], evaluate_retrieval_quality(query, [])
+        return [], evaluate_retrieval_quality(query, []), 0
+
+    documents, dropped_count = _active_cached_documents(
+        documents,
+        user_id,
+        project_space_id,
+        active_chunks_fn,
+    )
+    if not documents:
+        return [], evaluate_retrieval_quality(query, []), dropped_count
 
     ranked_documents = rerank_fn(query, documents)
     selected_documents = _select_diverse_documents(ranked_documents, limit)
     quality = evaluate_retrieval_quality(query, selected_documents)
-    return selected_documents, quality
+    return selected_documents, quality, dropped_count
 
 
 def _merge_documents(
@@ -566,16 +641,40 @@ def _request_cache_fingerprint(
 
 
 def _planned_queries(query: str, query_resolution: dict | None, max_queries: int = 3) -> list[str]:
-    candidates = [query, *((query_resolution or {}).get("semantic_alternatives") or []), *plan_queries(query, max_queries)]
+    """Merge the deterministic query plan with the rewriter's alternatives.
+
+    These used to be concatenated with the rewriter's alternatives ahead of the
+    deterministic plan, so two alternatives were enough to push the entire
+    deterministic plan past `max_queries` and out of the request. That plan is
+    what makes literal identifiers findable, because it contributes an
+    exact-marker query, and unlike the rewriter it cannot fail or wander. The two
+    sources therefore share the remaining budget round-robin instead of competing
+    for it by position.
+    """
+    semantic_alternatives = list((query_resolution or {}).get("semantic_alternatives") or [])
+    deterministic_plan = plan_queries(query, max_queries)
     planned: list[str] = []
     identities: set[str] = set()
-    for candidate in candidates:
+
+    def accept(candidate: object) -> None:
+        if len(planned) >= max_queries:
+            return
         normalized = str(candidate or "").strip()
         identity = normalize_query(normalized)
         if not normalized or not identity or identity in identities:
-            continue
+            return
         identities.add(identity)
         planned.append(normalized)
+
+    # The user's own wording always leads.
+    accept(query)
+    # Deterministic first within each round: when only one slot is left it should
+    # go to the source that does not depend on an external rewriter call.
+    for deterministic_candidate, semantic_candidate in zip_longest(
+        deterministic_plan, semantic_alternatives
+    ):
+        accept(deterministic_candidate)
+        accept(semantic_candidate)
         if len(planned) >= max_queries:
             break
     return planned
@@ -706,6 +805,28 @@ def _build_answer_guidance(quality: dict) -> tuple[bool, str]:
     )
 
 
+_TRACE_IDENTIFIER_PATTERN = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def normalize_caller_trace(trace_id: str | None, span_id: str | None) -> dict:
+    """Accept only well-formed correlation ids from the calling service.
+
+    These values arrive in HTTP headers and end up echoed into a trace that is
+    read by operators, so they are validated at the boundary rather than trusted.
+    An unusable value is dropped instead of failing the retrieval: losing
+    correlation must never cost the user an answer.
+    """
+    normalized: dict = {}
+    if isinstance(trace_id, str) and _TRACE_IDENTIFIER_PATTERN.match(trace_id.strip()):
+        normalized["trace_id"] = trace_id.strip().lower()
+    if isinstance(span_id, str) and _TRACE_IDENTIFIER_PATTERN.match(span_id.strip()):
+        normalized["parent_span_id"] = span_id.strip().lower()
+    return normalized
+
+
 def _agentic_retrieve_impl(
     query: str,
     user_id: str,
@@ -720,6 +841,8 @@ def _agentic_retrieve_impl(
     inventory_count_fn: InventoryCountFn | None = None,
     cache_store: RetrievalCacheStore | None = None,
     parent_depth_fn: ParentDepthFn = list_parent_chunks_for_matches,
+    active_chunks_fn: ActiveChunksFn = get_active_chunks_by_ids,
+    caller_trace: dict | None = None,
 ) -> dict:
     run_id = str(uuid.uuid4())
     trace_steps: list[dict] = []
@@ -915,7 +1038,28 @@ def _agentic_retrieve_impl(
 
             if cache_entry:
                 started_at = _now_ms()
-                cached_documents, cached_quality = _evaluate_cached_documents(query, cache_entry, limit, rerank_fn)
+                cached_documents, cached_quality, stale_document_count = _evaluate_cached_documents(
+                    query,
+                    cache_entry,
+                    limit,
+                    rerank_fn,
+                    user_id,
+                    project_space_id,
+                    active_chunks_fn,
+                )
+                if stale_document_count:
+                    record_cache_metric("stale_documents_dropped", stale_document_count)
+                    trace_steps.append(_trace_step(
+                        "cache_authority_check",
+                        "partial",
+                        started_at,
+                        {"cache_id": cache_entry.get("id"), "hit_type": hit_type},
+                        {
+                            "dropped_document_count": stale_document_count,
+                            "remaining_document_count": len(cached_documents),
+                            "reason": "cached_evidence_no_longer_active",
+                        },
+                    ))
                 query_similarity = cache_entry.get("query_similarity")
                 cached_quality, verification = _quality_with_verification(
                     query,
@@ -1092,12 +1236,17 @@ def _agentic_retrieve_impl(
                     normalized_planned_query,
                 )
                 if subquery_entry:
-                    subquery_documents, subquery_quality = _evaluate_cached_documents(
+                    subquery_documents, subquery_quality, stale_subquery_count = _evaluate_cached_documents(
                         planned_query,
                         subquery_entry,
                         retrieve_limit,
                         rerank_fn,
+                        user_id,
+                        project_space_id,
+                        active_chunks_fn,
                     )
+                    if stale_subquery_count:
+                        record_cache_metric("stale_documents_dropped", stale_subquery_count)
                     subquery_quality, subquery_verification = _quality_with_verification(
                         planned_query,
                         subquery_documents,
@@ -1476,6 +1625,10 @@ def _agentic_retrieve_impl(
         "insufficient_evidence": insufficient_evidence,
         "answer_guidance": answer_guidance,
         "cache": cache_info,
+        # Echoes the calling service's trace so this retrieval can be joined back
+        # to the Agent step that caused it. Empty when the caller sent nothing
+        # usable, which is not an error.
+        "caller_trace": dict(caller_trace or {}),
     }
 
 
@@ -1493,6 +1646,8 @@ def agentic_retrieve(
     inventory_count_fn: InventoryCountFn | None = None,
     cache_store: RetrievalCacheStore | None = None,
     parent_depth_fn: ParentDepthFn = list_parent_chunks_for_matches,
+    active_chunks_fn: ActiveChunksFn = get_active_chunks_by_ids,
+    caller_trace: dict | None = None,
 ) -> dict:
     """Coordinate identical exact-cache misses before running retrieval.
 
@@ -1518,6 +1673,8 @@ def agentic_retrieve(
         inventory_count_fn,
         cache_store,
         parent_depth_fn,
+        active_chunks_fn,
+        dict(caller_trace or {}),
     )
     if not cache_store or _looks_like_inventory_query(retrieval_query):
         return _agentic_retrieve_impl(*implementation_args)

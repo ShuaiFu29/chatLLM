@@ -82,6 +82,18 @@ def ensure_keyword_index():
             "number_of_replicas": settings.elasticsearch_number_of_replicas,
             "analysis": {
                 "analyzer": {
+                    # Despite the name, this is Elasticsearch's stock `standard`
+                    # analyzer and performs no Chinese word segmentation: it
+                    # splits CJK text per character. Mixed-script coverage comes
+                    # from the `.cjk` sub-fields declared below, which apply the
+                    # built-in `cjk` analyzer (bigrams), not from this entry.
+                    #
+                    # Real segmentation needs an IK or ICU plugin installed on
+                    # the cluster, which is an infrastructure change and a
+                    # reindex, so it is tracked as a task rather than faked here.
+                    # The misleading name is kept deliberately: it is part of the
+                    # index settings, and renaming it would change the mapping and
+                    # force a full BM25 rebuild for every existing deployment.
                     "chatllm_mixed_text": {
                         "type": "standard",
                     },
