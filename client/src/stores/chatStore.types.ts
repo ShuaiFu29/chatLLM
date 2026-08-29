@@ -42,7 +42,7 @@ export interface Message {
   agent_run_id?: string | null;
   agentRunId?: string | null;
   agentEvents?: AgentEvent[];
-  agent_run_status?: 'queued' | 'running' | 'waiting_approval' | 'succeeded' | 'failed' | 'cancelled' | null;
+  agent_run_status?: 'queued' | 'running' | 'waiting_approval' | 'waiting_subagent' | 'succeeded' | 'failed' | 'cancelled' | null;
   agent_grounding?: AgentGroundingSummary | null;
   agent_steps?: AgentStep[];
   agent_approvals?: AgentApproval[];
@@ -152,6 +152,8 @@ export interface ChatState {
   continueGeneration: () => Promise<void>;
   selectConversation: (id: string) => Promise<void>;
   refreshMessages: (id?: string) => Promise<boolean>;
+  /** Refresh Agent steps/approvals without replacing a live SSE placeholder. */
+  refreshAgentRunDetails: (id?: string) => Promise<boolean>;
   loadOlderMessages: (id?: string) => Promise<void>;
   sendMessage: (content: string, isContinue?: boolean, targetConversationId?: string) => Promise<void>;
   reset: () => void;

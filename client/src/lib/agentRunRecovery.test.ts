@@ -19,6 +19,7 @@ describe('agent run recovery (P1-SSE-RECOVER)', () => {
     expect(isMessageAgentRunRecoverable(assistant({ agent_run_status: 'running' }))).toBe(true);
     expect(isMessageAgentRunRecoverable(assistant({ agent_run_status: 'queued' }))).toBe(true);
     expect(isMessageAgentRunRecoverable(assistant({ agent_run_status: 'waiting_approval' }))).toBe(true);
+    expect(isMessageAgentRunRecoverable(assistant({ agent_run_status: 'waiting_subagent' }))).toBe(true);
   });
 
   test('a live run known only from SSE is recoverable after the stream drops', () => {
@@ -87,6 +88,8 @@ describe('agent run status derived from live events', () => {
     expect(agentRunStatusFromEvent('run.started')).toBe('running');
     expect(agentRunStatusFromEvent('tool.started')).toBe('running');
     expect(agentRunStatusFromEvent('approval.required')).toBe('waiting_approval');
+    expect(agentRunStatusFromEvent('subagent.dispatched')).toBe('waiting_subagent');
+    expect(agentRunStatusFromEvent('subagent.completed')).toBe('running');
     expect(agentRunStatusFromEvent('approval.resolved')).toBe('running');
     expect(agentRunStatusFromEvent('run.completed')).toBe('succeeded');
     expect(agentRunStatusFromEvent('run.failed')).toBe('failed');

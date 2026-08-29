@@ -16,11 +16,13 @@ import { UsageModule } from './modules/usage/usage.module';
 import { ChatModule } from './modules/chat/chat.module';
 import { UploadModule } from './modules/upload/upload.module';
 import { AgentsModule } from './modules/agents/agents.module';
+import { AgentEvalModule } from './modules/agent-eval/agent-eval.module';
 
 @Module({
   imports: [
     AuthModule,
     AgentsModule,
+    AgentEvalModule,
     ChatModule,
     UploadModule,
     PersonaModule,

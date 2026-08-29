@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { MAX_CHAT_MESSAGE_CONTENT_LENGTH } from './chatInput';
+import { agentMemoryPolicySchema } from './agentMemoryPolicy';
+import { agentDelegationBindingsSchema } from './agentDelegation';
 import {
   MAX_MULTIPART_PRESIGN_PARTS,
   MAX_MULTIPART_UPLOAD_PARTS,
@@ -70,6 +72,7 @@ const suggestionIdParams = strictObject({ suggestionId: uuid });
 const projectSpaceIdParams = strictObject({ projectSpaceId: uuid });
 const templateIdParams = strictObject({ templateId: uuid });
 const agentIdParams = strictObject({ agentId: uuid });
+const agentVersionIdParams = strictObject({ agentId: uuid, versionId: uuid });
 const agentToolIdParams = strictObject({ toolId: uuid });
 const agentRunIdParams = strictObject({ runId: uuid });
 const agentRunApprovalParams = strictObject({ runId: uuid, approvalId: uuid });
@@ -189,6 +192,7 @@ const promptTemplateUpdateBody = strictBody({
 const agentToolBinding = strictObject({
   key: requiredText(160),
   enabled: z.boolean().default(true),
+  tool_version_id: z.string().uuid().optional(),
   configuration: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -213,11 +217,13 @@ const agentConfigurationShape = {
   max_iterations: z.number().int().min(1).max(20).optional(),
   max_duration_ms: z.number().int().min(1000).max(900000).optional(),
   max_output_tokens: z.number().int().min(128).max(100000).optional(),
-  memory_mode: z.enum(['none', 'conversation', 'user', 'project']).optional(),
+  memory_mode: z.enum(['none', 'conversation', 'user', 'project', 'custom']).optional(),
+  memory_policy: agentMemoryPolicySchema.optional(),
   response_format: z.enum(['markdown', 'json']).optional(),
   output_schema: z.record(z.string(), z.unknown()).optional(),
   approval_policy: z.enum(['never', 'writes', 'always']).optional(),
   tool_bindings: agentToolBindings.optional(),
+  delegation_bindings: agentDelegationBindingsSchema.optional(),
   welcome_message: optionalText(2000),
   suggested_prompts: z.array(requiredText(500)).max(12).optional(),
 };
@@ -245,11 +251,13 @@ const agentUpdateBody = strictBody({
   max_iterations: z.number().int().min(1).max(20).optional(),
   max_duration_ms: z.number().int().min(1000).max(900000).optional(),
   max_output_tokens: z.number().int().min(128).max(100000).optional(),
-  memory_mode: z.enum(['none', 'conversation', 'user', 'project']).optional(),
+  memory_mode: z.enum(['none', 'conversation', 'user', 'project', 'custom']).optional(),
+  memory_policy: agentMemoryPolicySchema.optional(),
   response_format: z.enum(['markdown', 'json']).optional(),
   output_schema: z.record(z.string(), z.unknown()).optional(),
   approval_policy: z.enum(['never', 'writes', 'always']).optional(),
   tool_bindings: agentToolBindings.optional(),
+  delegation_bindings: agentDelegationBindingsSchema.optional(),
   welcome_message: optionalText(2000),
   suggested_prompts: z.array(requiredText(500)).max(12).optional(),
 }, { aliases: projectSpaceAliases, requireAtLeastOne: true });
@@ -258,8 +266,70 @@ const agentDuplicateBody = strictBody({
   name: optionalRequiredText(120),
 });
 
+const agentPublishBody = strictBody({
+  release_notes: optionalText(4000),
+  releaseNotes: optionalText(4000),
+}, { aliases: [['release_notes', 'releaseNotes']] });
+
 const agentStatusBody = strictBody({
   disabled: z.boolean(),
+});
+
+const agentVersionDryRunBody = strictBody({
+  input: requiredText(16000),
+});
+
+const agentEvalExpectedToolCall = strictObject({
+  tool_key: requiredText(160),
+  arguments: z.record(z.string(), z.unknown()).optional(),
+  fixture: z.unknown().optional(),
+});
+
+const agentEvalEvaluationSpec = strictObject({
+  expected_output_contains: z.array(requiredText(500)).max(20).optional(),
+  forbidden_output_contains: z.array(requiredText(500)).max(20).optional(),
+  expected_tool_calls: z.array(agentEvalExpectedToolCall).max(24).optional(),
+  forbidden_tool_keys: z.array(requiredText(160)).max(24).optional(),
+  grounding_evidence: z.array(requiredText(4000)).max(20).optional(),
+  expected_citations: z.array(requiredText(200)).max(20).optional(),
+}).superRefine((value, context) => {
+  const oracleCount = (value.expected_output_contains?.length || 0)
+    + (value.forbidden_output_contains?.length || 0)
+    + (value.expected_tool_calls?.length || 0)
+    + (value.forbidden_tool_keys?.length || 0)
+    + (value.grounding_evidence?.length || 0)
+    + (value.expected_citations?.length || 0);
+  if (oracleCount === 0) {
+    context.addIssue({
+      code: 'custom',
+      message: 'At least one Agent evaluation oracle is required',
+    });
+  }
+});
+
+const agentEvalDatasetCreateBody = strictBody({
+  name: requiredText(120),
+  description: optionalText(1000),
+});
+
+const agentEvalCaseCreateBody = strictBody({
+  name: optionalText(120),
+  input: requiredText(16000),
+  evaluation_spec: agentEvalEvaluationSpec,
+});
+
+const agentEvalRunCreateBody = strictBody({
+  agent_id: uuid,
+  candidate_version_id: uuid,
+  baseline_version_id: uuid.nullable().optional(),
+}).superRefine((value, context) => {
+  if (value.baseline_version_id && value.baseline_version_id === value.candidate_version_id) {
+    context.addIssue({
+      code: 'custom',
+      path: ['baseline_version_id'],
+      message: 'Baseline must be a different Agent version',
+    });
+  }
 });
 
 const agentApprovalDecisionBody = strictBody({
@@ -295,6 +365,13 @@ const agentMemoryIdParams = strictObject({ memoryId: uuid });
 // Superseding rather than deleting keeps the fact that a statement once applied,
 // which is why the replacement has to be named explicitly.
 const agentMemorySupersedeBody = strictBody({ superseded_by: uuid });
+const agentMemoryDecisionBody = strictBody({
+  decision: z.enum(['confirmed', 'rejected']),
+});
+const agentMemoryScopeSettingBody = strictBody({
+  scope: z.enum(['user', 'project', 'agent']),
+  enabled: z.boolean(),
+});
 
 const agentToolConfiguration = z.record(z.string(), z.unknown());
 const agentToolSecrets = z.record(
@@ -334,6 +411,33 @@ const agentToolUpdateBody = strictBody({
       code: 'custom',
       path: ['clear_secrets'],
       message: 'Secrets cannot be supplied and cleared in the same request',
+    });
+  }
+});
+
+const agentToolDiagnosticBody = strictBody({
+  operation: z.enum(['preflight', 'safe_test', 'discover']),
+  input: z.record(z.string(), z.unknown()).optional(),
+}).superRefine((body, context) => {
+  if (body.operation !== 'safe_test' && body.input !== undefined) {
+    context.addIssue({
+      code: 'custom',
+      path: ['input'],
+      message: 'Diagnostic input is accepted only for a safe HTTP test',
+    });
+  }
+});
+
+const agentToolOpenApiImportBody = strictBody({
+  document: z.record(z.string(), z.unknown()),
+  base_url: z.string().trim().url().max(2048).optional(),
+}).superRefine((body, context) => {
+  const bytes = Buffer.byteLength(JSON.stringify(body.document), 'utf8');
+  if (bytes > 512 * 1024) {
+    context.addIssue({
+      code: 'custom',
+      path: ['document'],
+      message: 'OpenAPI document exceeds 512 KiB',
     });
   }
 });
@@ -514,23 +618,37 @@ export const mutationSchemas = {
 
   agentCreate: { body: agentCreateBody },
   agentUpdate: { body: agentUpdateBody, params: agentIdParams },
-  agentPublish: { body: emptyBody, params: agentIdParams },
+  agentPublish: { body: agentPublishBody, params: agentIdParams },
+  agentVersionDryRun: { body: agentVersionDryRunBody, params: agentVersionIdParams },
+  agentVersionRollback: { body: emptyBody, params: agentVersionIdParams },
   agentDuplicate: { body: agentDuplicateBody, params: agentIdParams },
   agentStatus: { body: agentStatusBody, params: agentIdParams },
   agentDelete: { body: emptyBody, params: agentIdParams },
 
   agentToolCreate: { body: agentToolCreateBody },
   agentToolUpdate: { body: agentToolUpdateBody, params: agentToolIdParams },
+  agentToolRotateSecrets: { body: emptyBody, params: agentToolIdParams },
+  agentToolDiagnostic: { body: agentToolDiagnosticBody, params: agentToolIdParams },
+  agentToolOpenApiImport: { body: agentToolOpenApiImportBody },
   agentToolDelete: { body: emptyBody, params: agentToolIdParams },
   agentRunCancel: { body: emptyBody, params: agentRunIdParams },
   agentRunConversationCancel: { body: emptyBody, params: conversationIdParams },
   agentRunApprovalDecision: { body: agentApprovalDecisionBody, params: agentRunApprovalParams },
   agentMemorySupersede: { body: agentMemorySupersedeBody, params: agentMemoryIdParams },
+  agentMemoryDecision: { body: agentMemoryDecisionBody, params: agentMemoryIdParams },
+  agentMemoryScopeSetting: { body: agentMemoryScopeSettingBody },
   agentMemoryDelete: { body: emptyBody, params: agentMemoryIdParams },
   agentRunApprovalBatchDecision: {
     body: agentApprovalBatchDecisionBody,
     params: agentRunIdParams,
   },
+
+  agentEvalDatasetCreate: { body: agentEvalDatasetCreateBody },
+  agentEvalDatasetDelete: { body: emptyBody, params: datasetIdParams },
+  agentEvalCaseCreate: { body: agentEvalCaseCreateBody, params: datasetIdParams },
+  agentEvalCaseDelete: { body: emptyBody, params: caseIdParams },
+  agentEvalRunCreate: { body: agentEvalRunCreateBody, params: datasetIdParams },
+  agentEvalRunCancel: { body: emptyBody, params: runIdParams },
 
   ragEvalDatasetCreate: { body: ragEvalDatasetCreateBody },
   ragEvalDatasetUpdate: { body: ragEvalDatasetUpdateBody, params: datasetIdParams },

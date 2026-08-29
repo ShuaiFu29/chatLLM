@@ -629,7 +629,10 @@ test('Nest services accept durable deletion before external cleanup and queue st
   assert.match(uploadController, /@Delete\('files\/:id'\)[\s\S]*return this\.uploadService\.deleteFile\(user\.id, id, requestId\)/);
   assert.match(projectController, /@Delete\(':projectSpaceId'\)[\s\S]*return this\.projectSpacesService\.delete\(user\.id, projectSpaceId, requestId\)/);
   assert.match(authController, /@Delete\('me'\)[\s\S]*return this\.authService\.deleteAccount\(user, requestId\)/);
-  assert.match(lifecycle, /const queues = \[fileQueue, ragEvalQueue, artifactCleanupQueue\]/);
+  assert.match(
+    lifecycle,
+    /const queues = \[\s*fileQueue,\s*ragEvalQueue,\s*agentEvalQueue,\s*artifactCleanupQueue,\s*agentRecoveryQueue,\s*agentMemoryEmbeddingQueue,\s*\] as const;/,
+  );
   assert.match(lifecycle, /async onApplicationBootstrap\(\)[\s\S]*queues\.map\(\(queue\) => queue\.start\(\)\)/);
   assert.match(lifecycle, /shutdownRuntime\(\)[\s\S]*queues\.map\(\(queue\) => queue\.stop\(\)\)/);
 });

@@ -69,6 +69,24 @@ const loadLifecycleWithMocks = (overrides = {}) => {
       stop: async () => undefined,
     },
   });
+  mockModule('services/agentEvalQueue.js', {
+    agentEvalQueue: overrides.agentEvalQueue || {
+      start: async () => undefined,
+      stop: async () => undefined,
+    },
+  });
+  mockModule('services/agentRecoveryQueue.js', {
+    agentRecoveryQueue: overrides.agentRecoveryQueue || {
+      start: async () => undefined,
+      stop: async () => undefined,
+    },
+  });
+  mockModule('services/agentMemoryEmbeddingQueue.js', {
+    agentMemoryEmbeddingQueue: overrides.agentMemoryEmbeddingQueue || {
+      start: async () => undefined,
+      stop: async () => undefined,
+    },
+  });
   mockModule('services/maintenance.js', {
     maintenanceService: overrides.maintenanceService || {
       start: () => undefined,

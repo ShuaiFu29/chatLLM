@@ -29,6 +29,7 @@ const tool = <Input>(input: {
   key: input.key,
   modelName: input.key,
   riskLevel: 'read',
+  retryMode: 'safe_read',
   definition: {
     type: 'function',
     function: {

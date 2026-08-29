@@ -123,6 +123,64 @@ test('server env loads valid required values', () => {
   assert.match(result.stdout, /postgres:\/\/chatllm:chatllm@localhost:5432\/chatllm/);
 });
 
+test('server env validates and exposes the Agent tool encryption keyring', () => {
+  const result = importServerEnv({
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+    AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID: 'aug_2026',
+    AGENT_TOOL_ENCRYPTION_KEYS: JSON.stringify({
+      legacy_2025: '11'.repeat(32),
+      aug_2026: '22'.repeat(32),
+    }),
+  }, `({
+    active: serverEnv.AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID,
+    ids: Object.keys(serverEnv.AGENT_TOOL_ENCRYPTION_KEYS).sort()
+  })`);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(parseLastJsonLine(result.stdout), {
+    active: 'aug_2026',
+    ids: ['aug_2026', 'legacy_2025'],
+  });
+});
+
+test('server env rejects ambiguous or malformed Agent tool encryption keyrings', () => {
+  const required = {
+    DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',
+    S3_ENDPOINT: 'http://localhost:9000',
+    S3_ACCESS_KEY: 'minioadmin',
+    S3_SECRET_KEY: 'minioadmin',
+    JWT_SECRET: 'local-random-secret-with-more-than-32-characters',
+    DEEPSEEK_API_KEY: 'sk-test',
+  };
+  const noActive = importServerEnv({
+    ...required,
+    AGENT_TOOL_ENCRYPTION_KEYS: JSON.stringify({ old: '11'.repeat(32) }),
+  });
+  assert.notEqual(noActive.status, 0);
+  assert.match(noActive.stderr, /AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID is required/);
+
+  const missing = importServerEnv({
+    ...required,
+    AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID: 'missing',
+    AGENT_TOOL_ENCRYPTION_KEYS: JSON.stringify({ old: '11'.repeat(32) }),
+  });
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr, /must select a configured encryption key/);
+
+  const malformed = importServerEnv({
+    ...required,
+    AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID: 'active',
+    AGENT_TOOL_ENCRYPTION_KEYS: '{not-json}',
+  });
+  assert.notEqual(malformed.status, 0);
+  assert.match(malformed.stderr, /must be a JSON object/);
+});
+
 test('server env exposes configured internal RAG and metrics tokens', () => {
   const result = importServerEnv({
     DATABASE_URL: 'postgres://chatllm:chatllm@localhost:5432/chatllm',

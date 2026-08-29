@@ -1,4 +1,10 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  type MessageEvent,
+} from '@nestjs/common';
+import { Observable } from 'rxjs';
 import {
   cancelAgentRunForUser,
   cancelActiveAgentRunsForConversationForUser,
@@ -8,9 +14,18 @@ import {
   findAgentRunForUser,
   isAgentRunActiveForUser,
   listAgentRunsForUser,
+  listAgentApprovalInboxForUser,
 } from '../../repositories/agentRuns';
 import { AgentRunService } from './agent-run.service';
 import { abortAgentRunsForConversationInProcess } from './agent-run-control';
+import {
+  AgentRunEventError,
+  listAgentRunEventsForUser,
+} from '../../repositories/agentRunEvents';
+import {
+  AgentApprovalCursorError,
+  decodeAgentApprovalCursor,
+} from '../../lib/agentApprovalCursor';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const publicError = (statusCode: number, error: string) => new HttpException({ error }, statusCode);
@@ -45,6 +60,154 @@ export class AgentRunsService {
     });
     if (!run) throw publicError(HttpStatus.NOT_FOUND, 'Agent run not found');
     return run;
+  }
+
+  approvalInbox(userId: string, query: Record<string, unknown>) {
+    const status = typeof query.status === 'string' ? query.status : 'pending';
+    if (!['pending', 'approved', 'rejected', 'expired'].includes(status)) {
+      throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent approval status');
+    }
+    const rawLimit = typeof query.limit === 'string' ? Number.parseInt(query.limit, 10) : undefined;
+    try {
+      return listAgentApprovalInboxForUser({
+        userId,
+        status: status as 'pending' | 'approved' | 'rejected' | 'expired',
+        limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
+        cursor: decodeAgentApprovalCursor(query.cursor),
+      });
+    } catch (error) {
+      if (error instanceof AgentApprovalCursorError) {
+        throw publicError(HttpStatus.BAD_REQUEST, error.message);
+      }
+      throw error;
+    }
+  }
+
+  async events(userId: string, runId: string, query: Record<string, unknown> = {}) {
+    if (!UUID.test(runId)) throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent run id');
+    const afterId = typeof query.after === 'string'
+      ? query.after
+      : typeof query.after_id === 'string'
+        ? query.after_id
+        : undefined;
+    const rawLimit = typeof query.limit === 'string' ? Number.parseInt(query.limit, 10) : undefined;
+    try {
+      const events = await listAgentRunEventsForUser({
+        runId,
+        userId,
+        afterId,
+        limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
+      });
+      if (events.length === 0 && !await findAgentRunForUser(runId, userId, {
+        stepLimit: 1,
+        approvalLimit: 1,
+      })) {
+        throw publicError(HttpStatus.NOT_FOUND, 'Agent run not found');
+      }
+      return {
+        events,
+        next_after: events.at(-1)?.id || afterId || '0',
+      };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      if (error instanceof AgentRunEventError && error.code === 'invalid') {
+        throw publicError(HttpStatus.BAD_REQUEST, error.message);
+      }
+      throw error;
+    }
+  }
+
+  streamEvents(userId: string, runId: string, query: Record<string, unknown> = {}) {
+    if (!UUID.test(runId)) throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent run id');
+    const initialAfter = typeof query.after === 'string'
+      ? query.after
+      : typeof query.after_id === 'string'
+        ? query.after_id
+        : '0';
+    const rawLimit = typeof query.limit === 'string' ? Number.parseInt(query.limit, 10) : NaN;
+    const limit = Number.isInteger(rawLimit) ? Math.max(1, Math.min(500, rawLimit)) : 100;
+
+    return new Observable<MessageEvent>((subscriber) => {
+      let afterId = initialAfter;
+      let timer: NodeJS.Timeout | null = null;
+      let stopped = false;
+      let polling = false;
+      let terminalObservedAt = 0;
+      const schedule = (delay = 500) => {
+        if (stopped) return;
+        timer = setTimeout(() => void poll(), delay);
+        timer.unref();
+      };
+      const poll = async () => {
+        if (stopped || polling) return;
+        polling = true;
+        try {
+          const events = await listAgentRunEventsForUser({
+            runId,
+            userId,
+            afterId,
+            limit,
+          });
+          let terminalEventSeen = false;
+          for (const event of events) {
+            afterId = event.id;
+            const type = event.payload.agentEvent
+              && typeof event.payload.agentEvent === 'object'
+              && !Array.isArray(event.payload.agentEvent)
+              ? String((event.payload.agentEvent as Record<string, unknown>).type || '')
+              : '';
+            if (['run.completed', 'run.failed', 'run.cancelled'].includes(type)) {
+              terminalEventSeen = true;
+            }
+            subscriber.next({ id: event.id, type: 'agent.run', data: event.payload });
+          }
+          if (terminalEventSeen) {
+            subscriber.complete();
+            return;
+          }
+          if (events.length >= limit) {
+            schedule(0);
+            return;
+          }
+          const run = await findAgentRunForUser(runId, userId, {
+            stepLimit: 1,
+            approvalLimit: 1,
+          });
+          if (!run) throw publicError(HttpStatus.NOT_FOUND, 'Agent run not found');
+          const terminal = ['succeeded', 'failed', 'cancelled'].includes(run.status);
+          if (!terminal) {
+            terminalObservedAt = 0;
+            schedule();
+            return;
+          }
+          if (terminalObservedAt === 0) {
+            terminalObservedAt = Date.now();
+            schedule(250);
+            return;
+          }
+          // Terminal state and event append are not yet one transaction. Keep a
+          // short grace period, then perform one final cursor drain before EOF.
+          if (Date.now() - terminalObservedAt < 1_000) {
+            schedule(250);
+            return;
+          }
+          subscriber.complete();
+        } catch (error) {
+          if (error instanceof AgentRunEventError && error.code === 'invalid') {
+            subscriber.error(publicError(HttpStatus.BAD_REQUEST, error.message));
+          } else {
+            subscriber.error(error);
+          }
+        } finally {
+          polling = false;
+        }
+      };
+      void poll();
+      return () => {
+        stopped = true;
+        if (timer) clearTimeout(timer);
+      };
+    });
   }
 
   async cancel(userId: string, runId: string) {

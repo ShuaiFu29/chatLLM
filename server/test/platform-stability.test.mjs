@@ -140,7 +140,10 @@ test('server exposes live and ready health probes with request tracing and shutd
   assert.match(requestHooksSource, /x-request-id/i);
   assert.match(rateLimitSource, /Retry-After/);
   assert.match(lifecycleSource, /closeDatabasePool/);
-  assert.match(lifecycleSource, /const queues = \[fileQueue, ragEvalQueue, artifactCleanupQueue\]/);
+  assert.match(
+    lifecycleSource,
+    /const queues = \[\s*fileQueue,\s*ragEvalQueue,\s*agentEvalQueue,\s*artifactCleanupQueue,\s*agentRecoveryQueue,\s*agentMemoryEmbeddingQueue,\s*\] as const;/,
+  );
   assert.match(lifecycleSource, /queues\.map\(\(queue\) => queue\.stop\(\)\)/);
 });
 

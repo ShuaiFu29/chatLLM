@@ -25,6 +25,12 @@ const DEFAULT_UPLOAD_RATE_LIMIT_MAX = 120;
 const DEFAULT_RAG_EVAL_RATE_LIMIT_MAX = 30;
 const DEFAULT_RAG_EVAL_STALE_RUN_MS = 30 * 60 * 1000;
 const DEFAULT_AGENT_RUN_STALE_AFTER_MS = 15 * 60 * 1000;
+const DEFAULT_AGENT_MEMORY_EMBEDDING_QUEUE_INTERVAL_MS = 5_000;
+const DEFAULT_AGENT_MEMORY_EMBEDDING_QUEUE_CONCURRENCY = 2;
+const DEFAULT_AGENT_MEMORY_EMBEDDING_TIMEOUT_MS = 10_000;
+const DEFAULT_AGENT_MEMORY_EMBEDDING_LEASE_MS = 30_000;
+const DEFAULT_AGENT_MEMORY_EMBEDDING_MAX_ATTEMPTS = 5;
+const DEFAULT_AGENT_MEMORY_EMBEDDING_RETRY_BASE_DELAY_MS = 5_000;
 const DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS = 5000;
 const DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY = 1;
 const DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS = 3;
@@ -141,6 +147,12 @@ export interface ServerEnv {
   RAG_EVAL_RATE_LIMIT_MAX: number;
   RAG_EVAL_STALE_RUN_MS: number;
   AGENT_RUN_STALE_AFTER_MS: number;
+  AGENT_MEMORY_EMBEDDING_QUEUE_INTERVAL_MS: number;
+  AGENT_MEMORY_EMBEDDING_QUEUE_CONCURRENCY: number;
+  AGENT_MEMORY_EMBEDDING_TIMEOUT_MS: number;
+  AGENT_MEMORY_EMBEDDING_LEASE_MS: number;
+  AGENT_MEMORY_EMBEDDING_MAX_ATTEMPTS: number;
+  AGENT_MEMORY_EMBEDDING_RETRY_BASE_DELAY_MS: number;
   RAG_EVAL_QUEUE_INTERVAL_MS: number;
   RAG_EVAL_QUEUE_CONCURRENCY: number;
   RAG_EVAL_QUEUE_MAX_ATTEMPTS: number;
@@ -177,6 +189,8 @@ export interface ServerEnv {
   MULTIPART_COMPLETION_LEASE_MS: number;
   SHUTDOWN_TIMEOUT_MS: number;
   AGENT_TOOL_ENCRYPTION_KEY?: string;
+  AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID?: string;
+  AGENT_TOOL_ENCRYPTION_KEYS: Record<string, string>;
   AGENT_HTTP_ALLOWED_HOSTS: string[];
   AGENT_MCP_ALLOWED_HOSTS: string[];
   AGENT_HTTP_MAX_RESPONSE_BYTES: number;
@@ -198,6 +212,45 @@ export interface ServerEnv {
 }
 
 const getRequired = (env: NodeJS.ProcessEnv, key: string) => env[key]?.trim() || '';
+
+const AGENT_TOOL_KEY_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const AGENT_TOOL_KEY_HEX = /^[a-fA-F0-9]{64}$/;
+
+const getAgentToolEncryptionKeys = (
+  env: NodeJS.ProcessEnv,
+  errors: string[],
+): Record<string, string> => {
+  const raw = getRequired(env, 'AGENT_TOOL_ENCRYPTION_KEYS');
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    errors.push('AGENT_TOOL_ENCRYPTION_KEYS must be a JSON object of key IDs to 64-character hexadecimal keys');
+    return {};
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    errors.push('AGENT_TOOL_ENCRYPTION_KEYS must be a JSON object');
+    return {};
+  }
+  const entries = Object.entries(parsed as Record<string, unknown>);
+  if (entries.length > 32) {
+    errors.push('AGENT_TOOL_ENCRYPTION_KEYS may contain at most 32 keys');
+  }
+  const keys: Record<string, string> = {};
+  for (const [keyId, value] of entries.slice(0, 32)) {
+    if (!AGENT_TOOL_KEY_ID.test(keyId)) {
+      errors.push(`Invalid AGENT_TOOL_ENCRYPTION_KEYS key ID: ${keyId}`);
+      continue;
+    }
+    if (typeof value !== 'string' || !AGENT_TOOL_KEY_HEX.test(value)) {
+      errors.push(`AGENT_TOOL_ENCRYPTION_KEYS.${keyId} must be a 64-character hexadecimal value`);
+      continue;
+    }
+    keys[keyId] = value;
+  }
+  return keys;
+};
 
 const TRUE_BOOLEAN_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const FALSE_BOOLEAN_VALUES = new Set(['0', 'false', 'no', 'off']);
@@ -370,6 +423,48 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
   const ragEvalRateLimitMax = getPositiveInteger(env, 'RAG_EVAL_RATE_LIMIT_MAX', DEFAULT_RAG_EVAL_RATE_LIMIT_MAX, errors);
   const ragEvalStaleRunMs = getPositiveInteger(env, 'RAG_EVAL_STALE_RUN_MS', DEFAULT_RAG_EVAL_STALE_RUN_MS, errors);
   const agentRunStaleAfterMs = getPositiveInteger(env, 'AGENT_RUN_STALE_AFTER_MS', DEFAULT_AGENT_RUN_STALE_AFTER_MS, errors);
+  const agentMemoryEmbeddingQueueIntervalMs = getPositiveInteger(
+    env,
+    'AGENT_MEMORY_EMBEDDING_QUEUE_INTERVAL_MS',
+    DEFAULT_AGENT_MEMORY_EMBEDDING_QUEUE_INTERVAL_MS,
+    errors,
+  );
+  const agentMemoryEmbeddingQueueConcurrency = getPositiveInteger(
+    env,
+    'AGENT_MEMORY_EMBEDDING_QUEUE_CONCURRENCY',
+    DEFAULT_AGENT_MEMORY_EMBEDDING_QUEUE_CONCURRENCY,
+    errors,
+  );
+  const agentMemoryEmbeddingTimeoutMs = getPositiveInteger(
+    env,
+    'AGENT_MEMORY_EMBEDDING_TIMEOUT_MS',
+    DEFAULT_AGENT_MEMORY_EMBEDDING_TIMEOUT_MS,
+    errors,
+  );
+  const agentMemoryEmbeddingLeaseMs = getPositiveInteger(
+    env,
+    'AGENT_MEMORY_EMBEDDING_LEASE_MS',
+    DEFAULT_AGENT_MEMORY_EMBEDDING_LEASE_MS,
+    errors,
+  );
+  const agentMemoryEmbeddingMaxAttempts = getPositiveInteger(
+    env,
+    'AGENT_MEMORY_EMBEDDING_MAX_ATTEMPTS',
+    DEFAULT_AGENT_MEMORY_EMBEDDING_MAX_ATTEMPTS,
+    errors,
+  );
+  const agentMemoryEmbeddingRetryBaseDelayMs = getPositiveInteger(
+    env,
+    'AGENT_MEMORY_EMBEDDING_RETRY_BASE_DELAY_MS',
+    DEFAULT_AGENT_MEMORY_EMBEDDING_RETRY_BASE_DELAY_MS,
+    errors,
+  );
+  if (agentMemoryEmbeddingLeaseMs < agentMemoryEmbeddingTimeoutMs + 1_000) {
+    errors.push('AGENT_MEMORY_EMBEDDING_LEASE_MS must exceed AGENT_MEMORY_EMBEDDING_TIMEOUT_MS by at least 1000ms');
+  }
+  if (agentMemoryEmbeddingMaxAttempts > 100) {
+    errors.push('AGENT_MEMORY_EMBEDDING_MAX_ATTEMPTS must be at most 100');
+  }
   const ragEvalQueueIntervalMs = getPositiveInteger(env, 'RAG_EVAL_QUEUE_INTERVAL_MS', DEFAULT_RAG_EVAL_QUEUE_INTERVAL_MS, errors);
   const ragEvalQueueConcurrency = getPositiveInteger(env, 'RAG_EVAL_QUEUE_CONCURRENCY', DEFAULT_RAG_EVAL_QUEUE_CONCURRENCY, errors);
   const ragEvalQueueMaxAttempts = getPositiveInteger(env, 'RAG_EVAL_QUEUE_MAX_ATTEMPTS', DEFAULT_RAG_EVAL_QUEUE_MAX_ATTEMPTS, errors);
@@ -499,8 +594,29 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     );
   }
   const agentToolEncryptionKey = getRequired(env, 'AGENT_TOOL_ENCRYPTION_KEY');
-  if (agentToolEncryptionKey && !/^[a-fA-F0-9]{64}$/.test(agentToolEncryptionKey)) {
+  if (agentToolEncryptionKey && !AGENT_TOOL_KEY_HEX.test(agentToolEncryptionKey)) {
     errors.push('AGENT_TOOL_ENCRYPTION_KEY must be a 64-character hexadecimal value');
+  }
+  const agentToolEncryptionKeys = getAgentToolEncryptionKeys(env, errors);
+  const agentToolEncryptionActiveKeyId = getRequired(
+    env,
+    'AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID',
+  );
+  if (
+    agentToolEncryptionActiveKeyId
+    && !AGENT_TOOL_KEY_ID.test(agentToolEncryptionActiveKeyId)
+  ) {
+    errors.push('AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID must contain only letters, numbers, underscores, or hyphens');
+  }
+  if (Object.keys(agentToolEncryptionKeys).length > 0 && !agentToolEncryptionActiveKeyId) {
+    errors.push('AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID is required when AGENT_TOOL_ENCRYPTION_KEYS is configured');
+  }
+  if (
+    agentToolEncryptionActiveKeyId
+    && !agentToolEncryptionKeys[agentToolEncryptionActiveKeyId]
+    && !agentToolEncryptionKey
+  ) {
+    errors.push('AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID must select a configured encryption key');
   }
 
   if (fileQueueIngestTimeoutMs < MIN_FILE_QUEUE_INGEST_TIMEOUT_MS) {
@@ -571,6 +687,12 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     RAG_EVAL_RATE_LIMIT_MAX: ragEvalRateLimitMax,
     RAG_EVAL_STALE_RUN_MS: ragEvalStaleRunMs,
     AGENT_RUN_STALE_AFTER_MS: agentRunStaleAfterMs,
+    AGENT_MEMORY_EMBEDDING_QUEUE_INTERVAL_MS: agentMemoryEmbeddingQueueIntervalMs,
+    AGENT_MEMORY_EMBEDDING_QUEUE_CONCURRENCY: agentMemoryEmbeddingQueueConcurrency,
+    AGENT_MEMORY_EMBEDDING_TIMEOUT_MS: agentMemoryEmbeddingTimeoutMs,
+    AGENT_MEMORY_EMBEDDING_LEASE_MS: agentMemoryEmbeddingLeaseMs,
+    AGENT_MEMORY_EMBEDDING_MAX_ATTEMPTS: agentMemoryEmbeddingMaxAttempts,
+    AGENT_MEMORY_EMBEDDING_RETRY_BASE_DELAY_MS: agentMemoryEmbeddingRetryBaseDelayMs,
     RAG_EVAL_QUEUE_INTERVAL_MS: ragEvalQueueIntervalMs,
     RAG_EVAL_QUEUE_CONCURRENCY: ragEvalQueueConcurrency,
     RAG_EVAL_QUEUE_MAX_ATTEMPTS: ragEvalQueueMaxAttempts,
@@ -607,6 +729,8 @@ export const loadServerEnv = (env: NodeJS.ProcessEnv = process.env): ServerEnv =
     MULTIPART_COMPLETION_LEASE_MS: multipartCompletionLeaseMs,
     SHUTDOWN_TIMEOUT_MS: shutdownTimeoutMs,
     AGENT_TOOL_ENCRYPTION_KEY: agentToolEncryptionKey || undefined,
+    AGENT_TOOL_ENCRYPTION_ACTIVE_KEY_ID: agentToolEncryptionActiveKeyId || undefined,
+    AGENT_TOOL_ENCRYPTION_KEYS: agentToolEncryptionKeys,
     AGENT_HTTP_ALLOWED_HOSTS: getStringList(env.AGENT_HTTP_ALLOWED_HOSTS, []),
     AGENT_MCP_ALLOWED_HOSTS: getStringList(env.AGENT_MCP_ALLOWED_HOSTS, []),
     AGENT_HTTP_MAX_RESPONSE_BYTES: agentHttpMaxResponseBytes,

@@ -5,11 +5,27 @@ import { toast } from 'sonner';
 import SelectField from '../../components/SelectField';
 import { readApiErrorMessage } from '../../lib/apiError';
 import type { ProjectSpace } from '../../stores/useProjectSpaceStore';
+import AgentVersionHistory from './AgentVersionHistory';
+import AgentMemoryPolicyEditor from './AgentMemoryPolicyEditor';
+import AgentDelegationEditor from './AgentDelegationEditor';
+import { memoryPolicyFromPreset, modeForMemoryPolicy } from './agentMemoryPolicy';
+import {
+  DISPATCH_SUBAGENTS_TOOL_KEY,
+  findAgentDelegationBindingIssue,
+  syncDelegationToolBinding,
+} from './agentDelegationBindings';
+import {
+  pinAgentToolBindingVersion,
+  toggleAgentToolBinding,
+} from './agentToolBindings';
 import type {
   Agent,
   AgentApprovalPolicy,
+  AgentDelegationBinding,
+  AgentDelegationMode,
   AgentInput,
   AgentMemoryMode,
+  AgentMemoryPolicy,
   AgentResponseFormat,
   AgentToolBinding,
   AgentVisibility,
@@ -22,12 +38,14 @@ interface AgentEditorProps {
   agent: Agent | null;
   projectSpaceId?: string | null;
   projectSpaces: ProjectSpace[];
+  collaboratorAgents: Agent[];
   builtinTools: BuiltinAgentTool[];
   customTools: CustomAgentTool[];
   providerHealth: ProviderHealthResponse | null;
   onCreate(input: AgentInput): Promise<Agent>;
   onUpdate(id: string, input: Partial<AgentInput>): Promise<Agent>;
-  onPublish(id: string): Promise<Agent>;
+  onPublish(id: string, releaseNotes?: string): Promise<Agent>;
+  onRollback(id: string, versionId: string): Promise<Agent>;
   onDuplicate(id: string): Promise<Agent>;
   onDisable(id: string, disabled: boolean): Promise<Agent>;
   onDelete(id: string): Promise<void>;
@@ -47,10 +65,13 @@ interface AgentFormState {
   max_duration_ms: number;
   max_output_tokens: number;
   memory_mode: AgentMemoryMode;
+  memory_policy: AgentMemoryPolicy;
   response_format: AgentResponseFormat;
   outputSchemaText: string;
   approval_policy: AgentApprovalPolicy;
   tool_bindings: AgentToolBinding[];
+  delegation_mode: AgentDelegationMode;
+  delegation_bindings: AgentDelegationBinding[];
   welcome_message: string;
   suggestedPromptsText: string;
 }
@@ -73,10 +94,15 @@ const formFromAgent = (
   max_duration_ms: agent?.max_duration_ms ?? 120000,
   max_output_tokens: agent?.max_output_tokens ?? 4096,
   memory_mode: agent?.memory_mode || 'conversation',
+  memory_policy: agent?.memory_policy || memoryPolicyFromPreset(
+    agent?.memory_mode && agent.memory_mode !== 'custom' ? agent.memory_mode : 'conversation',
+  ),
   response_format: agent?.response_format || 'markdown',
   outputSchemaText: JSON.stringify(agent?.output_schema || {}, null, 2),
   approval_policy: agent?.approval_policy || 'writes',
   tool_bindings: agent?.tool_bindings || [],
+  delegation_mode: agent?.delegation_mode || 'explicit',
+  delegation_bindings: agent?.delegation_bindings || [],
   welcome_message: agent?.welcome_message || '',
   suggestedPromptsText: (agent?.suggested_prompts || []).join('\n'),
 });
@@ -91,6 +117,8 @@ export default function AgentEditor(props: AgentEditorProps) {
     defaultModel,
   ));
   const [saving, setSaving] = useState(false);
+  const [publishing, setPublishing] = useState(false);
+  const [releaseNotes, setReleaseNotes] = useState('');
 
   const modelOptions = useMemo(() => {
     const values = props.providerHealth?.providers.flatMap((provider) => (
@@ -113,12 +141,14 @@ export default function AgentEditor(props: AgentEditorProps) {
   }, [form.model, props.providerHealth]);
 
   const toolOptions = useMemo(() => [
-    ...props.builtinTools.map((tool) => ({
+    ...props.builtinTools.filter((tool) => tool.key !== DISPATCH_SUBAGENTS_TOOL_KEY).map((tool) => ({
       key: tool.key,
       name: tool.name,
       description: tool.description,
       risk: tool.risk_level,
       kind: t('agents.builtinTool'),
+      toolVersionId: undefined as string | undefined,
+      toolVersion: undefined as number | undefined,
     })),
     ...props.customTools.map((tool) => ({
       key: `custom:${tool.id}`,
@@ -126,6 +156,8 @@ export default function AgentEditor(props: AgentEditorProps) {
       description: tool.description,
       risk: tool.risk_level,
       kind: tool.kind.toUpperCase(),
+      toolVersionId: tool.current_version_id,
+      toolVersion: tool.tool_version,
     })),
   ], [props.builtinTools, props.customTools, t]);
 
@@ -135,11 +167,14 @@ export default function AgentEditor(props: AgentEditorProps) {
   );
 
   const toggleTool = (key: string) => {
+    const selectedTool = toolOptions.find((tool) => tool.key === key);
     setForm((current) => ({
       ...current,
-      tool_bindings: boundToolKeys.has(key)
-        ? current.tool_bindings.filter((binding) => binding.key !== key)
-        : [...current.tool_bindings, { key, enabled: true }],
+      tool_bindings: toggleAgentToolBinding(
+        current.tool_bindings,
+        key,
+        selectedTool?.toolVersionId,
+      ),
     }));
   };
 
@@ -151,6 +186,10 @@ export default function AgentEditor(props: AgentEditorProps) {
       outputSchema = parsed as Record<string, unknown>;
     } catch {
       throw new Error(t('agents.invalidOutputSchema'));
+    }
+    const delegationIssue = findAgentDelegationBindingIssue(form.delegation_bindings);
+    if (delegationIssue) {
+      throw new Error(t(`agents.delegation.issues.${delegationIssue}`));
     }
     return {
       name: form.name.trim(),
@@ -165,10 +204,15 @@ export default function AgentEditor(props: AgentEditorProps) {
       max_duration_ms: form.max_duration_ms,
       max_output_tokens: form.max_output_tokens,
       memory_mode: form.memory_mode,
+      memory_policy: form.memory_policy,
       response_format: form.response_format,
       output_schema: outputSchema,
       approval_policy: form.approval_policy,
-      tool_bindings: form.tool_bindings,
+      tool_bindings: syncDelegationToolBinding(
+        form.tool_bindings,
+        form.delegation_bindings,
+      ),
+      delegation_bindings: form.delegation_bindings,
       welcome_message: form.welcome_message.trim(),
       suggested_prompts: form.suggestedPromptsText.split(/\r?\n/).map((item) => item.trim()).filter(Boolean),
     };
@@ -203,6 +247,32 @@ export default function AgentEditor(props: AgentEditorProps) {
       toast.success(message);
     } catch (error) {
       toast.error(readApiErrorMessage(error, t('agents.actionFailed')));
+    }
+  };
+
+  const pinToolToCurrentVersion = (key: string, toolVersionId: string) => {
+    setForm((current) => ({
+      ...current,
+      tool_bindings: pinAgentToolBindingVersion(
+        current.tool_bindings,
+        key,
+        toolVersionId,
+      ),
+    }));
+  };
+
+  const publish = async () => {
+    if (!props.agent) return;
+    setPublishing(true);
+    try {
+      const published = await props.onPublish(props.agent.id, releaseNotes.trim());
+      setReleaseNotes('');
+      props.onSelected(published);
+      toast.success(t('agents.published'));
+    } catch (error) {
+      toast.error(readApiErrorMessage(error, t('agents.publishFailed')));
+    } finally {
+      setPublishing(false);
     }
   };
 
@@ -272,14 +342,38 @@ export default function AgentEditor(props: AgentEditorProps) {
           {props.agent && (props.agent.status !== 'published' || props.agent.has_unpublished_changes) ? (
             <button
               type="button"
-              onClick={() => void runAction(() => props.onPublish(props.agent!.id), t('agents.published'))}
-              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+              onClick={() => void publish()}
+              disabled={publishing}
+              className="inline-flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
             >
-              <Send className="h-4 w-4" /> {t('agents.publish')}
+              <Send className="h-4 w-4" /> {publishing ? t('agents.publishing') : t('agents.publish')}
             </button>
           ) : null}
         </div>
       </div>
+
+      {props.agent ? (
+        <AgentVersionHistory
+          key={`${props.agent.id}:${props.agent.current_version_id}`}
+          agent={props.agent}
+          onRollback={props.onRollback}
+          onSelected={props.onSelected}
+        />
+      ) : null}
+
+      {props.agent && (props.agent.status !== 'published' || props.agent.has_unpublished_changes) ? (
+        <label className="block space-y-2 rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-4">
+          <span className="text-sm font-medium text-text-main">{t('agents.releaseNotes')}</span>
+          <textarea
+            className={`${fieldClass} min-h-20 resize-y`}
+            value={releaseNotes}
+            maxLength={4000}
+            onChange={(event) => setReleaseNotes(event.target.value)}
+            placeholder={t('agents.releaseNotesPlaceholder')}
+          />
+          <span className="block text-xs leading-5 text-text-muted">{t('agents.releaseNotesHint')}</span>
+        </label>
+      ) : null}
 
       <section className="grid gap-4 md:grid-cols-2">
         <label className="space-y-2">
@@ -343,9 +437,26 @@ export default function AgentEditor(props: AgentEditorProps) {
         </label>
         <label className="space-y-2">
           <span className="text-sm font-medium text-text-main">{t('agents.memory')}</span>
-          <SelectField value={form.memory_mode} onChange={(event) => setForm((value) => ({ ...value, memory_mode: event.target.value as AgentMemoryMode }))}>
-            {(['none', 'conversation', 'user', 'project'] as const).map((mode) => <option key={mode} value={mode}>{t(`agents.memoryModes.${mode}`)}</option>)}
+          <SelectField
+            value={form.memory_mode}
+            onChange={(event) => {
+              const mode = event.target.value as AgentMemoryMode;
+              if (mode === 'custom') return;
+              setForm((value) => ({
+                ...value,
+                memory_mode: mode,
+                memory_policy: memoryPolicyFromPreset(mode),
+              }));
+            }}
+          >
+            {(['none', 'conversation', 'user', 'project', 'custom'] as const).map((mode) => (
+              <option key={mode} value={mode}>{t(`agents.memoryModes.${mode}`)}</option>
+            ))}
           </SelectField>
+          <p className="text-xs leading-5 text-text-muted">{t('agents.memoryHint')}</p>
+          {form.memory_mode === 'project' ? (
+            <p className="text-xs leading-5 text-text-muted">{t('agents.memoryProjectHint')}</p>
+          ) : null}
         </label>
         <label className="space-y-2">
           <span className="text-sm font-medium text-text-main">{t('agents.outputFormat')}</span>
@@ -362,6 +473,32 @@ export default function AgentEditor(props: AgentEditorProps) {
         </label>
       </section>
 
+      <AgentMemoryPolicyEditor
+        value={form.memory_policy}
+        hasProjectSpace={Boolean(form.project_space_id)}
+        onChange={(memoryPolicy) => setForm((value) => ({
+          ...value,
+          memory_policy: memoryPolicy,
+          memory_mode: modeForMemoryPolicy(memoryPolicy),
+        }))}
+      />
+
+      <AgentDelegationEditor
+        value={form.delegation_bindings}
+        mode={form.delegation_mode}
+        agents={props.collaboratorAgents}
+        sourceAgentId={props.agent?.id}
+        sourceProjectSpaceId={form.project_space_id || null}
+        onChange={(delegationBindings) => setForm((value) => ({
+          ...value,
+          delegation_bindings: delegationBindings,
+          tool_bindings: syncDelegationToolBinding(
+            value.tool_bindings,
+            delegationBindings,
+          ),
+        }))}
+      />
+
       {form.response_format === 'json' ? (
         <label className="block space-y-2">
           <span className="text-sm font-medium text-text-main">{t('agents.outputSchema')}</span>
@@ -377,6 +514,10 @@ export default function AgentEditor(props: AgentEditorProps) {
         <div className="grid gap-3 md:grid-cols-2">
           {toolOptions.map((toolOption) => {
             const checked = boundToolKeys.has(toolOption.key);
+            const binding = form.tool_bindings.find((item) => item.key === toolOption.key);
+            const pinnedVersionId = binding?.tool_version_id;
+            const versionIsCurrent = !toolOption.toolVersionId
+              || pinnedVersionId === toolOption.toolVersionId;
             return (
               <label key={toolOption.key} className={`flex cursor-pointer gap-3 rounded-xl border p-3 transition-colors ${checked ? 'border-primary/50 bg-primary/10' : 'border-border bg-bg-base hover:border-primary/30'}`}>
                 <input type="checkbox" checked={checked} onChange={() => toggleTool(toolOption.key)} className="mt-1 accent-primary" />
@@ -387,6 +528,26 @@ export default function AgentEditor(props: AgentEditorProps) {
                     <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted">{toolOption.risk}</span>
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-text-muted">{toolOption.description}</span>
+                  {checked && toolOption.toolVersionId ? (
+                    <span className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-text-muted">
+                      <code title={pinnedVersionId}>{t('agents.pinnedToolVersion')}: {pinnedVersionId?.slice(0, 8) || '—'}</code>
+                      {versionIsCurrent ? (
+                        <span className="rounded border border-emerald-500/30 px-1.5 py-0.5 text-emerald-300">v{toolOption.toolVersion ?? '—'} {t('agents.currentVersion')}</span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            pinToolToCurrentVersion(toolOption.key, toolOption.toolVersionId!);
+                          }}
+                          className="rounded border border-amber-500/30 px-1.5 py-0.5 text-amber-300 hover:bg-amber-500/10"
+                        >
+                          {t('agents.upgradeToolVersion', { version: toolOption.toolVersion ?? '—' })}
+                        </button>
+                      )}
+                    </span>
+                  ) : null}
                 </span>
               </label>
             );

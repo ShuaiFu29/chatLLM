@@ -9,6 +9,7 @@ import { AgentRunsController } from './agent-runs.controller';
 import { AgentRunsService } from './agent-runs.service';
 import { AgentMemoriesController } from './agent-memories.controller';
 import { AgentMemoriesService } from './agent-memories.service';
+import { AgentDryRunsService } from './agent-dry-runs.service';
 
 @Module({
   controllers: [AgentsController, AgentToolsController, AgentRunsController, AgentMemoriesController],
@@ -19,6 +20,7 @@ import { AgentMemoriesService } from './agent-memories.service';
     AgentRunService,
     AgentRunsService,
     AgentMemoriesService,
+    AgentDryRunsService,
   ],
   exports: [AgentsService, AgentToolsService, AgentRunService, AgentMemoriesService],
 })

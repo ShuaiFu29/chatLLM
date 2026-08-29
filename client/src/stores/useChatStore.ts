@@ -12,6 +12,7 @@ import type {
   Message,
   MessagePageInfo,
 } from './chatStore.types';
+import type { AgentRunDetail } from '../features/agents/types';
 import {
   ChatStreamError,
   readChatStreamError,
@@ -32,6 +33,7 @@ export type {
 export { ChatStreamError } from './chatStream';
 
 const DEFAULT_MESSAGE_PAGE_LIMIT = 100;
+const TERMINAL_AGENT_RUN_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
 
 type ResponseHeaders = {
   get?: (name: string) => unknown;
@@ -682,6 +684,56 @@ export const useChatStore = create<ChatState>((set, get) => ({
     return fetchConversationMessages(conversationId, set);
   },
 
+  refreshAgentRunDetails: async (id?: string) => {
+    const conversationId = id || get().currentConversationId;
+    if (!conversationId) return false;
+    const runIds = [...new Set(
+      getConversationMessages(get(), conversationId)
+        .filter(isMessageAgentRunRecoverable)
+        .map((message) => message.agentRunId || message.agent_run_id)
+        .filter((runId): runId is string => Boolean(runId)),
+    )];
+    if (runIds.length === 0) return false;
+
+    const results = await Promise.all(runIds.map(async (runId) => {
+      try {
+        const response = await api.get<AgentRunDetail>(`/agent-runs/${runId}`, {
+          params: { stepLimit: 500, approvalLimit: 200 },
+        });
+        return response.data;
+      } catch (error) {
+        console.error('Failed to refresh Agent run detail:', toSafeError(error));
+        return null;
+      }
+    }));
+    const details = new Map(results
+      .filter((detail): detail is AgentRunDetail => Boolean(detail))
+      .map((detail) => [detail.id, detail]));
+    if (details.size === 0) return false;
+
+    const streamActive = chatRequestState.hasActiveStream(conversationId);
+    updateConversationMessages(set, conversationId, (messages) => messages.map((message) => {
+      const runId = message.agentRunId || message.agent_run_id;
+      const detail = runId ? details.get(runId) : undefined;
+      if (!detail) return message;
+      // The database can reach terminal just before the final SSE frame. Keep
+      // the browser's active marker until that frame arrives; if the stream
+      // drops, the ordinary message-recovery poll will then fetch the persisted
+      // final answer instead of mistaking the empty placeholder for completion.
+      const preserveLiveStatus = streamActive
+        && TERMINAL_AGENT_RUN_STATUSES.has(detail.status)
+        && isMessageAgentRunRecoverable(message);
+      return {
+        ...message,
+        agent_run_status: preserveLiveStatus ? message.agent_run_status : detail.status,
+        agent_grounding: detail.grounding,
+        agent_steps: detail.steps,
+        agent_approvals: detail.approvals,
+      };
+    }));
+    return true;
+  },
+
   loadOlderMessages: async (id?: string) => {
     const conversationId = id || get().currentConversationId;
     if (!conversationId) return;
@@ -1031,7 +1083,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           retryable: true,
         });
       }
-      if (!isContinue && !aiContent) {
+      if (!isContinue && !aiContent && !activeAgentRunId) {
         throw new ChatStreamError({
           code: 'chat_stream_empty',
           message: 'Chat response did not contain an answer',

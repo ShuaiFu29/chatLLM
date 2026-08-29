@@ -120,7 +120,7 @@ export const listRecentMessages = async (conversationId: string, limit = 10) => 
     `select role, content
      from messages
      where conversation_id = $1
-     order by created_at desc
+     order by created_at desc, id desc
      limit $2`,
     [conversationId, limit]
   );

@@ -6,8 +6,14 @@ import type {
   AgentInput,
   BuiltinAgentTool,
   CustomAgentTool,
+  AgentToolDiagnosticInput,
+  AgentToolDiagnosticHistoryPage,
+  AgentToolDiagnosticHistoryQuery,
+  AgentToolDiagnosticResult,
   CustomAgentToolInput,
   ProviderHealthResponse,
+  OpenApiToolImportInput,
+  OpenApiToolImportResult,
 } from '../features/agents/types';
 import { isRequestCancellation } from '../lib/requestCancellation';
 import { toSafeError } from '../lib/safeError';
@@ -15,6 +21,7 @@ import { useChatStore } from './useChatStore';
 
 interface AgentState {
   agents: Agent[];
+  collaboratorAgents: Agent[];
   builtinTools: BuiltinAgentTool[];
   customTools: CustomAgentTool[];
   providerHealth: ProviderHealthResponse | null;
@@ -23,12 +30,20 @@ interface AgentState {
   fetchCatalog: (projectSpaceId?: string | null, force?: boolean) => Promise<void>;
   createAgent: (input: AgentInput) => Promise<Agent>;
   updateAgent: (id: string, input: Partial<AgentInput>) => Promise<Agent>;
-  publishAgent: (id: string) => Promise<Agent>;
+  publishAgent: (id: string, releaseNotes?: string) => Promise<Agent>;
+  rollbackAgentVersion: (id: string, versionId: string) => Promise<Agent>;
   duplicateAgent: (id: string, name?: string) => Promise<Agent>;
   setAgentDisabled: (id: string, disabled: boolean) => Promise<Agent>;
   deleteAgent: (id: string) => Promise<void>;
   createTool: (input: CustomAgentToolInput) => Promise<CustomAgentTool>;
   updateTool: (id: string, input: Partial<CustomAgentToolInput>) => Promise<CustomAgentTool>;
+  rotateToolSecrets: (id: string) => Promise<CustomAgentTool>;
+  diagnoseTool: (id: string, input: AgentToolDiagnosticInput) => Promise<AgentToolDiagnosticResult>;
+  listToolDiagnostics: (
+    id: string,
+    query: AgentToolDiagnosticHistoryQuery,
+  ) => Promise<AgentToolDiagnosticHistoryPage>;
+  importOpenApi: (input: OpenApiToolImportInput) => Promise<OpenApiToolImportResult>;
   deleteTool: (id: string) => Promise<void>;
   reset: () => void;
 }
@@ -52,6 +67,7 @@ export const isAgentCatalogResourceVisible = (
 
 const initialState = {
   agents: [] as Agent[],
+  collaboratorAgents: [] as Agent[],
   builtinTools: [] as BuiltinAgentTool[],
   customTools: [] as CustomAgentTool[],
   providerHealth: null as ProviderHealthResponse | null,
@@ -69,14 +85,31 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     set({ loading: true });
     const params = projectSpaceId ? { projectSpaceId, includeDisabled: true } : { includeDisabled: true };
     try {
+      const scopedAgentsRequest = api.get<Agent[]>('/agents', {
+        params,
+        signal: ticket.controller.signal,
+      });
+      const collaboratorAgentsRequest = projectSpaceId
+        ? api.get<Agent[]>('/agents', {
+          params: { includeDisabled: true },
+          signal: ticket.controller.signal,
+        })
+        : scopedAgentsRequest;
       const results = await Promise.allSettled([
-        api.get<Agent[]>('/agents', { params, signal: ticket.controller.signal }),
+        scopedAgentsRequest,
+        collaboratorAgentsRequest,
         api.get<BuiltinAgentTool[]>('/agents/tools/catalog', { signal: ticket.controller.signal }),
         api.get<CustomAgentTool[]>('/agent-tools', { params, signal: ticket.controller.signal }),
         api.get<ProviderHealthResponse>('/usage/provider-health', { signal: ticket.controller.signal }),
       ]);
       if (!catalogGuard.isCurrent(ticket)) return;
-      const [agentsResult, builtinResult, customToolsResult, providerResult] = results;
+      const [
+        agentsResult,
+        collaboratorAgentsResult,
+        builtinResult,
+        customToolsResult,
+        providerResult,
+      ] = results;
       const rejected = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
       const isCancelled = rejected.every((result) => isRequestCancellation(result.reason));
       if (isCancelled && rejected.length > 0) return;
@@ -93,6 +126,9 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       }
       set({
         agents: agentsResult.status === 'fulfilled' ? agentsResult.value.data : [],
+        collaboratorAgents: collaboratorAgentsResult.status === 'fulfilled'
+          ? collaboratorAgentsResult.value.data
+          : agentsResult.status === 'fulfilled' ? agentsResult.value.data : [],
         builtinTools: builtinResult.status === 'fulfilled' ? builtinResult.value.data : [],
         customTools: customToolsResult.status === 'fulfilled' ? customToolsResult.value.data : [],
         providerHealth: providerResult.status === 'fulfilled' ? providerResult.value.data : null,
@@ -107,7 +143,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     } catch (error) {
       if (!isRequestCancellation(error)) {
         if (catalogGuard.isCurrent(ticket)) {
-          set({ agents: [], builtinTools: [], customTools: [], providerHealth: null, loadedProjectSpaceId: undefined });
+          set({
+            agents: [],
+            collaboratorAgents: [],
+            builtinTools: [],
+            customTools: [],
+            providerHealth: null,
+            loadedProjectSpaceId: undefined,
+          });
         }
         throw error;
       }
@@ -125,6 +168,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         agents: visible
           ? [data, ...state.agents.filter((agent) => agent.id !== data.id)]
           : state.agents.filter((agent) => agent.id !== data.id),
+        collaboratorAgents: [
+          data,
+          ...state.collaboratorAgents.filter((agent) => agent.id !== data.id),
+        ],
       };
     });
     return data;
@@ -139,19 +186,45 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         agents: visible
           ? state.agents.map((agent) => agent.id === id ? data : agent)
           : state.agents.filter((agent) => agent.id !== id),
+        collaboratorAgents: [
+          data,
+          ...state.collaboratorAgents.filter((agent) => agent.id !== id),
+        ],
       };
     });
     void useChatStore.getState().fetchConversations();
     return data;
   },
 
-  publishAgent: async (id) => {
-    const { data } = await api.post<Agent>(`/agents/${id}/publish`, {});
+  publishAgent: async (id, releaseNotes = '') => {
+    const { data } = await api.post<Agent>(`/agents/${id}/publish`, {
+      release_notes: releaseNotes,
+    });
     catalogMutationGeneration += 1;
     set((state) => ({
       agents: isAgentCatalogResourceVisible(data.project_space_id, state.loadedProjectSpaceId)
         ? state.agents.map((agent) => agent.id === id ? data : agent)
         : state.agents.filter((agent) => agent.id !== id),
+      collaboratorAgents: [
+        data,
+        ...state.collaboratorAgents.filter((agent) => agent.id !== id),
+      ],
+    }));
+    void useChatStore.getState().fetchConversations();
+    return data;
+  },
+
+  rollbackAgentVersion: async (id, versionId) => {
+    const { data } = await api.post<Agent>(`/agents/${id}/versions/${versionId}/rollback`, {});
+    catalogMutationGeneration += 1;
+    set((state) => ({
+      agents: isAgentCatalogResourceVisible(data.project_space_id, state.loadedProjectSpaceId)
+        ? state.agents.map((agent) => agent.id === id ? data : agent)
+        : state.agents.filter((agent) => agent.id !== id),
+      collaboratorAgents: [
+        data,
+        ...state.collaboratorAgents.filter((agent) => agent.id !== id),
+      ],
     }));
     void useChatStore.getState().fetchConversations();
     return data;
@@ -164,6 +237,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       agents: isAgentCatalogResourceVisible(data.project_space_id, state.loadedProjectSpaceId)
         ? [data, ...state.agents.filter((agent) => agent.id !== data.id)]
         : state.agents.filter((agent) => agent.id !== data.id),
+      collaboratorAgents: [
+        data,
+        ...state.collaboratorAgents.filter((agent) => agent.id !== data.id),
+      ],
     }));
     return data;
   },
@@ -175,6 +252,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
       agents: isAgentCatalogResourceVisible(data.project_space_id, state.loadedProjectSpaceId)
         ? state.agents.map((agent) => agent.id === id ? data : agent)
         : state.agents.filter((agent) => agent.id !== id),
+      collaboratorAgents: [
+        data,
+        ...state.collaboratorAgents.filter((agent) => agent.id !== id),
+      ],
     }));
     void useChatStore.getState().fetchConversations();
     return data;
@@ -183,7 +264,10 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   deleteAgent: async (id) => {
     await api.delete(`/agents/${id}`);
     catalogMutationGeneration += 1;
-    set((state) => ({ agents: state.agents.filter((agent) => agent.id !== id) }));
+    set((state) => ({
+      agents: state.agents.filter((agent) => agent.id !== id),
+      collaboratorAgents: state.collaboratorAgents.filter((agent) => agent.id !== id),
+    }));
     void useChatStore.getState().fetchConversations();
   },
 
@@ -206,6 +290,41 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         ? state.customTools.map((tool) => tool.id === id ? data : tool)
         : state.customTools.filter((tool) => tool.id !== id),
     }));
+    return data;
+  },
+
+  rotateToolSecrets: async (id) => {
+    const { data } = await api.post<CustomAgentTool>(`/agent-tools/${id}/secrets/rotate`, {});
+    catalogMutationGeneration += 1;
+    set((state) => ({
+      customTools: isAgentCatalogResourceVisible(data.project_space_id, state.loadedProjectSpaceId)
+        ? state.customTools.map((tool) => tool.id === id ? data : tool)
+        : state.customTools.filter((tool) => tool.id !== id),
+    }));
+    return data;
+  },
+
+  diagnoseTool: async (id, input) => {
+    const { data } = await api.post<AgentToolDiagnosticResult>(
+      `/agent-tools/${id}/diagnostics`,
+      input,
+    );
+    return data;
+  },
+
+  listToolDiagnostics: async (id, query) => {
+    const { data } = await api.get<AgentToolDiagnosticHistoryPage>(
+      `/agent-tools/${id}/diagnostics`,
+      { params: query },
+    );
+    return data;
+  },
+
+  importOpenApi: async (input) => {
+    const { data } = await api.post<OpenApiToolImportResult>(
+      '/agent-tools/imports/openapi',
+      input,
+    );
     return data;
   },
 

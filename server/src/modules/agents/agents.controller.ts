@@ -16,12 +16,21 @@ import { CurrentUser, RequestId } from '../../common/http/request-context.decora
 import { ValidateMutation } from '../../common/interceptors/mutation-validation.interceptor';
 import { mutationSchemas } from '../../lib/mutationSchemas';
 import { User } from '../../types';
-import { AgentCreateBody, AgentsService, AgentUpdateBody } from './agents.service';
+import {
+  AgentCreateBody,
+  AgentPublishBody,
+  AgentsService,
+  AgentUpdateBody,
+} from './agents.service';
+import { AgentDryRunsService } from './agent-dry-runs.service';
 
 @Controller('agents')
 @UseGuards(AuthGuard)
 export class AgentsController {
-  constructor(private readonly agentsService: AgentsService) {}
+  constructor(
+    private readonly agentsService: AgentsService,
+    private readonly agentDryRunsService: AgentDryRunsService,
+  ) {}
 
   @Get()
   list(
@@ -44,6 +53,47 @@ export class AgentsController {
   @Get(':agentId/versions')
   versions(@CurrentUser() user: User, @Param('agentId') agentId: string) {
     return this.agentsService.versions(user.id, agentId);
+  }
+
+  @Get(':agentId/versions/:versionId')
+  version(
+    @CurrentUser() user: User,
+    @Param('agentId') agentId: string,
+    @Param('versionId') versionId: string,
+  ) {
+    return this.agentsService.version(user.id, agentId, versionId);
+  }
+
+  @Get(':agentId/versions/:versionId/diff')
+  versionDiff(
+    @CurrentUser() user: User,
+    @Param('agentId') agentId: string,
+    @Param('versionId') versionId: string,
+    @Query('againstVersionId') againstVersionId?: string,
+  ) {
+    return this.agentsService.diffVersions(user.id, agentId, versionId, againstVersionId);
+  }
+
+  @Get(':agentId/versions/:versionId/dry-runs')
+  dryRuns(
+    @CurrentUser() user: User,
+    @Param('agentId') agentId: string,
+    @Param('versionId') versionId: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.agentDryRunsService.list(user.id, agentId, versionId, limit);
+  }
+
+  @Post(':agentId/versions/:versionId/dry-runs')
+  @ValidateMutation(mutationSchemas.agentVersionDryRun)
+  dryRun(
+    @CurrentUser() user: User,
+    @Param('agentId') agentId: string,
+    @Param('versionId') versionId: string,
+    @Body() body: { input: string },
+    @RequestId() requestId?: string,
+  ) {
+    return this.agentDryRunsService.run(user.id, agentId, versionId, body.input, requestId);
   }
 
   @Post()
@@ -70,8 +120,22 @@ export class AgentsController {
 
   @Post(':agentId/publish')
   @ValidateMutation(mutationSchemas.agentPublish)
-  publish(@CurrentUser() user: User, @Param('agentId') agentId: string) {
-    return this.agentsService.publish(user.id, agentId);
+  publish(
+    @CurrentUser() user: User,
+    @Param('agentId') agentId: string,
+    @Body() body: AgentPublishBody,
+  ) {
+    return this.agentsService.publish(user.id, agentId, body);
+  }
+
+  @Post(':agentId/versions/:versionId/rollback')
+  @ValidateMutation(mutationSchemas.agentVersionRollback)
+  rollback(
+    @CurrentUser() user: User,
+    @Param('agentId') agentId: string,
+    @Param('versionId') versionId: string,
+  ) {
+    return this.agentsService.rollback(user.id, agentId, versionId);
   }
 
   @Post(':agentId/duplicate')

@@ -446,7 +446,8 @@ const cancelProjectSpaceAgentRunsWithClient = async (
     `update agent_runs
      set status = 'cancelled', completed_at = now(),
          error_code = 'agent_run_cancelled',
-         error_message = $2
+         error_message = $2,
+         lease_token = null, lease_expires_at = null
      where user_id = $1
        and conversation_id in (
          select id from conversations where project_space_id = $3::uuid
@@ -462,7 +463,8 @@ const cancelProjectSpaceAgentRunsWithClient = async (
   await client.query(
     `update agent_approvals
      set status = 'expired', decided_at = now(), reason = $2
-     where run_id = any($1::uuid[]) and status = 'pending'`,
+     where status = 'pending'
+       and (run_id = any($1::uuid[]) or requested_by_run_id = any($1::uuid[]))`,
     [runIds, PROJECT_SPACE_AGENT_CANCEL_REASON],
   );
   for (const run of activeRuns) {
@@ -954,30 +956,11 @@ export const finalizeProjectSpaceCleanup = async (
       await cancelProjectSpaceAgentRunsWithClient(client, job.resource_id, job.owner_user_id);
     }
 
-    const { rows: projectTools } = await client.query<{ id: string }>(
-      `select id from agent_tools where project_space_id = $1::uuid for update`,
-      [claim.resource_id],
-    );
-    if (projectTools.length > 0) {
-      const toolKeys = projectTools.map((tool) => `custom:${tool.id}`);
-      await client.query(
-        `update agent_versions version
-         set tool_bindings = coalesce(
-           (
-             select jsonb_agg(binding order by ordinality)
-             from jsonb_array_elements(version.tool_bindings) with ordinality as item(binding, ordinality)
-             where binding ->> 'key' <> all($1::text[])
-           ),
-           '[]'::jsonb
-         )
-         where exists (
-           select 1
-           from jsonb_array_elements(version.tool_bindings) binding
-           where binding ->> 'key' = any($1::text[])
-         )`,
-        [toolKeys],
-      );
-    }
+    // Agent versions are immutable execution records. Project-scoped Agents are
+    // deleted below (and their versions cascade with them), so rewriting every
+    // historical binding before that delete only destroyed reproducibility.
+    // Legacy out-of-scope JSON references do not carry a foreign key and cannot
+    // block deleting the project tools.
     await client.query(
       `delete from agents where project_space_id = $1::uuid`,
       [claim.resource_id],

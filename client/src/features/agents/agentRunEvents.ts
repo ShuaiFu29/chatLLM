@@ -8,6 +8,34 @@ const readOutput = (step: AgentStep): Record<string, unknown> => (
 
 const readNumber = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? value : undefined);
 const readText = (value: unknown) => (typeof value === 'string' && value ? value : undefined);
+const SENSITIVE_ARGUMENT_KEY = /authorization|api[-_]?key|access[-_]?token|refresh[-_]?token|secret|password|passwd|cookie|credential/i;
+
+export const redactAgentApprovalArguments = (value: unknown, depth = 0): unknown => {
+  if (depth > 8) return '[TRUNCATED]';
+  if (Array.isArray(value)) {
+    return value.map((entry) => redactAgentApprovalArguments(entry, depth + 1));
+  }
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, entry]) => [
+      key,
+      SENSITIVE_ARGUMENT_KEY.test(key) ? '[REDACTED]' : redactAgentApprovalArguments(entry, depth + 1),
+    ]));
+  }
+  if (typeof value === 'string') {
+    if (depth === 0) {
+      try {
+        return redactAgentApprovalArguments(JSON.parse(value), depth + 1);
+      } catch {
+        // A provider can return malformed arguments. Keep them inspectable while
+        // still masking common inline credential forms.
+      }
+    }
+    return value
+      .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi, '$1 [REDACTED]')
+      .replace(/([?&](?:api[-_]?key|access[-_]?token|token|secret|password)=)[^&#\s]*/gi, '$1[REDACTED]');
+  }
+  return value;
+};
 
 /**
  * Turn a runtime decision step into a one-line note for the timeline.
@@ -76,6 +104,50 @@ export const buildPersistedAgentEvents = (input: {
 }): AgentEvent[] => {
   const events: AgentEvent[] = [{ type: 'run.started', runId: input.runId }];
   const approvalsByStep = new Map((input.approvals || []).map((approval) => [approval.step_id, approval]));
+  const emittedApprovalIds = new Set<string>();
+  const appendApprovalEvents = (approval: AgentApproval, step?: AgentStep) => {
+    if (emittedApprovalIds.has(approval.id)) return;
+    emittedApprovalIds.add(approval.id);
+    const output = approval.output && typeof approval.output === 'object'
+      ? approval.output as Record<string, unknown>
+      : step ? readOutput(step) : {};
+    const risk = output.risk_level;
+    events.push({
+      type: 'approval.required',
+      runId: input.runId,
+      approvalId: approval.id,
+      toolCallId: approval.tool_call_id || step?.tool_call_id || undefined,
+      tool: approval.tool_key || step?.tool_key || undefined,
+      riskLevel: risk === 'read' || risk === 'write' || risk === 'high' ? risk : 'high',
+      arguments: redactAgentApprovalArguments(
+        approval.input !== undefined ? approval.input : step?.input,
+      ),
+      expiresAt: approval.expires_at,
+      requestedByRunId: approval.requested_by_run_id || undefined,
+      requestedByAgentId: approval.requested_by_agent_id || undefined,
+      requestedByAgentName: approval.requested_by_agent_name || undefined,
+      requestedByDepth: approval.requested_by_depth ?? undefined,
+      approvalIntent: approval.intent,
+      approvalIntentHash: approval.intent_hash,
+    });
+    if (approval.status !== 'pending') {
+      events.push({
+        type: 'approval.resolved',
+        runId: input.runId,
+        approvalId: approval.id,
+        toolCallId: approval.tool_call_id || step?.tool_call_id || undefined,
+        tool: approval.tool_key || step?.tool_key || undefined,
+        // `expired` is its own outcome. Drawing it as `rejected` told the user
+        // they had declined the tool when in fact nobody decided in time.
+        decision: approval.status,
+        reason: approval.reason || '',
+        requestedByRunId: approval.requested_by_run_id || undefined,
+        requestedByAgentId: approval.requested_by_agent_id || undefined,
+        requestedByAgentName: approval.requested_by_agent_name || undefined,
+        requestedByDepth: approval.requested_by_depth ?? undefined,
+      });
+    }
+  };
   for (const step of input.steps || []) {
     if (step.kind === 'tool_call' && !['pending', 'rejected', 'cancelled'].includes(step.status)) {
       events.push({
@@ -88,34 +160,7 @@ export const buildPersistedAgentEvents = (input: {
     if (step.kind === 'approval') {
       const approval = approvalsByStep.get(step.id);
       if (!approval) continue;
-      events.push({
-        type: 'approval.required',
-        runId: input.runId,
-        approvalId: approval.id,
-        toolCallId: step.tool_call_id || undefined,
-      tool: step.tool_key || undefined,
-        riskLevel: (() => {
-          const value = step.output && typeof step.output === 'object'
-            ? (step.output as Record<string, unknown>).risk_level
-            : undefined;
-          return value === 'read' || value === 'write' || value === 'high' ? value : 'high';
-        })(),
-        arguments: step.input,
-        expiresAt: approval.expires_at,
-      });
-      if (approval.status !== 'pending') {
-        events.push({
-          type: 'approval.resolved',
-          runId: input.runId,
-          approvalId: approval.id,
-          toolCallId: step.tool_call_id || undefined,
-          tool: step.tool_key || undefined,
-          // `expired` is its own outcome. Drawing it as `rejected` told the user
-          // they had declined the tool when in fact nobody decided in time.
-          decision: approval.status,
-          reason: approval.reason || '',
-        });
-      }
+      appendApprovalEvents(approval, step);
     }
     if (step.kind === 'tool_result') {
       events.push({
@@ -167,6 +212,10 @@ export const buildPersistedAgentEvents = (input: {
       });
     }
   }
+  // Bubbled subagent approvals point at a canonical step on the child Run, which
+  // is intentionally absent from the root's own step list. The detail endpoint
+  // projects the fields needed to render and decide it here without mirror steps.
+  for (const approval of input.approvals || []) appendApprovalEvents(approval);
   if (input.status === 'succeeded') events.push({
     type: 'run.completed',
     runId: input.runId,
@@ -175,4 +224,37 @@ export const buildPersistedAgentEvents = (input: {
   if (input.status === 'failed') events.push({ type: 'run.failed', runId: input.runId });
   if (input.status === 'cancelled') events.push({ type: 'run.cancelled', runId: input.runId });
   return events;
+};
+
+const agentEventIdentity = (event: AgentEvent) => [
+  event.type,
+  event.approvalId || '',
+  event.toolCallId || '',
+  event.subagentRunId || '',
+  event.type.startsWith('decision.') ? event.detail || '' : '',
+].join(':');
+
+/**
+ * Add durable events that never travelled over the root SSE stream (notably a
+ * child approval) without duplicating events the live stream already rendered.
+ * Persisted fields win when both sides describe the same event because the
+ * database is the decision system of record.
+ */
+export const mergeAgentEvents = (
+  liveEvents: AgentEvent[] = [],
+  persistedEvents: AgentEvent[] = [],
+): AgentEvent[] => {
+  const merged = [...liveEvents];
+  const indexes = new Map(merged.map((event, index) => [agentEventIdentity(event), index]));
+  for (const event of persistedEvents) {
+    const identity = agentEventIdentity(event);
+    const existingIndex = indexes.get(identity);
+    if (existingIndex === undefined) {
+      indexes.set(identity, merged.length);
+      merged.push(event);
+    } else {
+      merged[existingIndex] = { ...merged[existingIndex], ...event };
+    }
+  }
+  return merged;
 };

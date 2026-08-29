@@ -11,8 +11,18 @@ import { artifactCleanupQueue } from '../services/cleanupQueue';
 import { fileQueue } from '../services/fileQueue';
 import { maintenanceService } from '../services/maintenance';
 import { ragEvalQueue } from '../services/ragEvalQueue';
+import { agentRecoveryQueue } from '../services/agentRecoveryQueue';
+import { agentEvalQueue } from '../services/agentEvalQueue';
+import { agentMemoryEmbeddingQueue } from '../services/agentMemoryEmbeddingQueue';
 
-const queues = [fileQueue, ragEvalQueue, artifactCleanupQueue] as const;
+const queues = [
+  fileQueue,
+  ragEvalQueue,
+  agentEvalQueue,
+  artifactCleanupQueue,
+  agentRecoveryQueue,
+  agentMemoryEmbeddingQueue,
+] as const;
 
 const getRejectedReasons = (results: PromiseSettledResult<unknown>[]) => (
   results

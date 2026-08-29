@@ -55,6 +55,8 @@ const expectedRouteSchemas = {
     'agentCreate',
     'agentUpdate',
     'agentPublish',
+    'agentVersionDryRun',
+    'agentVersionRollback',
     'agentDuplicate',
     'agentStatus',
     'agentDelete',
@@ -62,10 +64,15 @@ const expectedRouteSchemas = {
   'modules/agents/agent-tools.controller.ts': [
     'agentToolCreate',
     'agentToolUpdate',
+    'agentToolDiagnostic',
+    'agentToolOpenApiImport',
+    'agentToolRotateSecrets',
     'agentToolDelete',
   ],
   'modules/agents/agent-memories.controller.ts': [
     'agentMemorySupersede',
+    'agentMemoryDecision',
+    'agentMemoryScopeSetting',
     'agentMemoryDelete',
   ],
   'modules/agents/agent-runs.controller.ts': [
@@ -73,6 +80,14 @@ const expectedRouteSchemas = {
     'agentRunConversationCancel',
     'agentRunApprovalDecision',
     'agentRunApprovalBatchDecision',
+  ],
+  'modules/agent-eval/agent-eval.controller.ts': [
+    'agentEvalDatasetCreate',
+    'agentEvalDatasetDelete',
+    'agentEvalCaseCreate',
+    'agentEvalCaseDelete',
+    'agentEvalRunCreate',
+    'agentEvalRunCancel',
   ],
   'modules/rag-eval/rag-eval.controller.ts': [
     'ragEvalDatasetCreate',
@@ -145,6 +160,8 @@ const validBodies = {
   agentCreate: { name: 'Research Agent', instructions: 'Research carefully.' },
   agentUpdate: { description: 'Updated Agent' },
   agentPublish: {},
+  agentVersionDryRun: { input: 'Summarize the architecture without changing anything.' },
+  agentVersionRollback: {},
   agentDuplicate: {},
   agentStatus: { disabled: false },
   agentDelete: {},
@@ -154,11 +171,18 @@ const validBodies = {
     configuration: { endpoint: 'https://api.example.com/weather' },
   },
   agentToolUpdate: { enabled: false },
+  agentToolDiagnostic: { operation: 'preflight' },
+  agentToolOpenApiImport: {
+    document: { openapi: '3.1.0', info: { title: 'Fixture', version: '1' }, paths: {} },
+  },
+  agentToolRotateSecrets: {},
   agentToolDelete: {},
   agentRunCancel: {},
   agentRunConversationCancel: {},
   agentRunApprovalDecision: { decision: 'approved', reason: 'User confirmed the operation' },
   agentMemorySupersede: { superseded_by: UUID },
+  agentMemoryDecision: { decision: 'confirmed' },
+  agentMemoryScopeSetting: { scope: 'project', enabled: false },
   agentMemoryDelete: {},
   agentRunApprovalBatchDecision: {
     decisions: [{
@@ -167,6 +191,18 @@ const validBodies = {
       reason: 'User confirmed both operations',
     }],
   },
+  agentEvalDatasetCreate: { name: 'Agent regression suite' },
+  agentEvalDatasetDelete: {},
+  agentEvalCaseCreate: {
+    input: 'Summarize the release risk.',
+    evaluation_spec: { expected_output_contains: ['risk'] },
+  },
+  agentEvalCaseDelete: {},
+  agentEvalRunCreate: {
+    agent_id: UUID,
+    candidate_version_id: '22222222-2222-4222-8222-222222222222',
+  },
+  agentEvalRunCancel: {},
   ragEvalDatasetCreate: { name: 'Dataset' },
   ragEvalDatasetUpdate: { name: 'Dataset' },
   ragEvalDatasetDelete: {},
@@ -209,17 +245,27 @@ const validParams = {
   promptTemplateDelete: { templateId: UUID },
   agentUpdate: { agentId: UUID },
   agentPublish: { agentId: UUID },
+  agentVersionDryRun: { agentId: UUID, versionId: UUID },
+  agentVersionRollback: { agentId: UUID, versionId: UUID },
   agentDuplicate: { agentId: UUID },
   agentStatus: { agentId: UUID },
   agentDelete: { agentId: UUID },
   agentToolUpdate: { toolId: UUID },
+  agentToolDiagnostic: { toolId: UUID },
+  agentToolRotateSecrets: { toolId: UUID },
   agentToolDelete: { toolId: UUID },
   agentRunCancel: { runId: UUID },
   agentRunConversationCancel: { conversationId: UUID },
   agentRunApprovalDecision: { runId: UUID, approvalId: UUID },
   agentRunApprovalBatchDecision: { runId: UUID },
   agentMemorySupersede: { memoryId: UUID },
+  agentMemoryDecision: { memoryId: UUID },
   agentMemoryDelete: { memoryId: UUID },
+  agentEvalCaseCreate: { datasetId: UUID },
+  agentEvalDatasetDelete: { datasetId: UUID },
+  agentEvalCaseDelete: { caseId: UUID },
+  agentEvalRunCreate: { datasetId: UUID },
+  agentEvalRunCancel: { runId: UUID },
   ragEvalDatasetUpdate: { datasetId: UUID },
   ragEvalDatasetDelete: { datasetId: UUID },
   ragEvalCaseCreate: { datasetId: UUID },
@@ -245,11 +291,14 @@ const emptyBodySchemas = [
   'personaReset',
   'projectSpaceDelete',
   'promptTemplateDelete',
-  'agentPublish',
+  'agentVersionRollback',
   'agentDelete',
   'agentToolDelete',
   'agentRunCancel',
   'agentRunConversationCancel',
+  'agentEvalCaseDelete',
+  'agentEvalDatasetDelete',
+  'agentEvalRunCancel',
   'ragEvalDatasetDelete',
   'ragEvalDatasetRun',
   'ragEvalRunCancel',
@@ -483,6 +532,114 @@ test('legacy aliases remain explicit but ambiguous duplicate aliases are rejecte
     content: 'C',
     is_default: false,
     isDefault: false,
+  }));
+});
+
+test('Agent mutation schemas accept only internally consistent structured Memory Policy', () => {
+  const { parseBody } = loadValidation();
+  const { mutationSchemas } = loadSchemas();
+  const policy = {
+    format_version: 1,
+    conversation: {
+      enabled: true,
+      message_limit: 20,
+      rolling_summary: { enabled: false, max_tokens: 0 },
+    },
+    persona: { enabled: false },
+    project_context: { enabled: false },
+    read: {
+      allowed_scopes: ['user', 'project', 'agent'],
+      auto_recall: true,
+      auto_scopes: ['user', 'agent'],
+      top_k: 10,
+      token_budget: 512,
+      min_trust: 'agent_inferred',
+    },
+    write: {
+      enabled: true,
+      allowed_scopes: ['user', 'agent'],
+      default_ttl_days: 30,
+      require_confirmation: true,
+    },
+    subagent: {
+      share_recalled_memory: true,
+      max_items: 5,
+      token_budget: 128,
+    },
+  };
+  assert.doesNotThrow(() => parseBody(mutationSchemas.agentUpdate.body, {
+    memory_mode: 'custom',
+    memory_policy: policy,
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    memory_policy: {
+      ...policy,
+      read: { ...policy.read, allowed_scopes: ['user'], auto_scopes: ['agent'] },
+    },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    memory_policy: {
+      ...policy,
+      subagent: { share_recalled_memory: true, max_items: 0, token_budget: 0 },
+    },
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    memory_policy: { ...policy, unexpected: true },
+  }));
+});
+
+test('Agent mutation schemas bound explicit collaborator aliases and context allowlists', () => {
+  const { parseBody } = loadValidation();
+  const { mutationSchemas } = loadSchemas();
+  const binding = {
+    alias: 'technical_reviewer',
+    agent_id: UUID,
+    version_policy: 'pinned',
+    agent_version_id: '22222222-2222-4222-8222-222222222222',
+    role: 'Review technical risks',
+    max_parallelism: 2,
+    allowed_context_keys: ['requirements', 'constraints'],
+  };
+
+  assert.deepEqual(parseBody(mutationSchemas.agentUpdate.body, {
+    delegation_bindings: [binding],
+  }).delegation_bindings, [binding]);
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    delegation_bindings: [binding, { ...binding }],
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    delegation_bindings: [{
+      ...binding,
+      allowed_context_keys: ['requirements', 'requirements'],
+    }],
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    delegation_bindings: [{ ...binding, alias: 'Raw Agent UUID' }],
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    delegation_bindings: [{ ...binding, version_policy: 'latest' }],
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentUpdate.body, {
+    delegation_bindings: [{ ...binding, max_parallelism: 17 }],
+  }));
+});
+
+test('Agent tool diagnostics accept input only for an explicit safe test operation', () => {
+  const { parseBody } = loadValidation();
+  const { mutationSchemas } = loadSchemas();
+  assert.deepEqual(parseBody(mutationSchemas.agentToolDiagnostic.body, {
+    operation: 'safe_test',
+    input: { city: 'Shanghai' },
+  }), {
+    operation: 'safe_test',
+    input: { city: 'Shanghai' },
+  });
+  assert.throws(() => parseBody(mutationSchemas.agentToolDiagnostic.body, {
+    operation: 'preflight',
+    input: {},
+  }));
+  assert.throws(() => parseBody(mutationSchemas.agentToolDiagnostic.body, {
+    operation: 'call',
   }));
 });
 

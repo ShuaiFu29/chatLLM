@@ -8,7 +8,7 @@ import { getRagTraceStatusLabel, getRagTraceStepLabel } from '../lib/ragTraceLab
 import { getAvatarUrl } from '../lib/avatar';
 import { getSourceLocatorLabel } from '../lib/sourceLocator';
 import AgentRunTimeline from '../features/agents/AgentRunTimeline';
-import { buildPersistedAgentEvents } from '../features/agents/agentRunEvents';
+import { buildPersistedAgentEvents, mergeAgentEvents } from '../features/agents/agentRunEvents';
 
 const MarkdownRenderer = lazy(() => import('./MarkdownRenderer'));
 
@@ -53,20 +53,19 @@ const ChatMessage = memo(({
   const plannedQueries = traceSummary?.planned_queries || [];
   const ragRunId = msg.ragRunId || msg.rag_run_id;
   const agentRunId = msg.agentRunId || msg.agent_run_id;
-  const agentEvents = msg.agentEvents?.length
-    ? msg.agentEvents
-    : agentRunId
-      ? buildPersistedAgentEvents({
-          runId: agentRunId,
-          status: msg.agent_run_status,
-          steps: msg.agent_steps,
-          approvals: msg.agent_approvals,
-          grounding: msg.agent_grounding,
-        })
-      : [];
+  const persistedAgentEvents = agentRunId
+    ? buildPersistedAgentEvents({
+        runId: agentRunId,
+        status: msg.agent_run_status,
+        steps: msg.agent_steps,
+        approvals: msg.agent_approvals,
+        grounding: msg.agent_grounding,
+      })
+    : [];
+  const agentEvents = mergeAgentEvents(msg.agentEvents, persistedAgentEvents);
   const agentGrounding = msg.agent_grounding
     || [...agentEvents].reverse().find((event) => event.type === 'run.completed')?.grounding;
-  const agentRunActive = ['queued', 'running', 'waiting_approval'].includes(msg.agent_run_status || '')
+  const agentRunActive = ['queued', 'running', 'waiting_approval', 'waiting_subagent'].includes(msg.agent_run_status || '')
     || (isSending && isLast);
   const cacheStatus = traceSummary?.cache?.status;
 

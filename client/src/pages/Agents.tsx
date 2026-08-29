@@ -1,17 +1,19 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Activity, Bot, Plus, Search, Wrench } from 'lucide-react';
+import { Activity, Bot, Plus, Search, ShieldCheck, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
 import AgentEditor from '../features/agents/AgentEditor';
 import AgentRunHistory from '../features/agents/AgentRunHistory';
+import AgentApprovalInbox from '../features/agents/AgentApprovalInbox';
 import ToolEditor from '../features/agents/ToolEditor';
 import type { Agent, CustomAgentTool } from '../features/agents/types';
 import { toSafeError } from '../lib/safeError';
+import { useLocation } from '../lib/navigation';
 import { useAgentStore } from '../stores/useAgentStore';
 import { useProjectSpaceStore } from '../stores/useProjectSpaceStore';
 
-type Tab = 'agents' | 'tools' | 'runs';
+type Tab = 'agents' | 'tools' | 'approvals' | 'runs';
 
 const statusClass: Record<Agent['status'], string> = {
   draft: 'border-amber-500/30 bg-amber-500/10 text-amber-200',
@@ -21,12 +23,18 @@ const statusClass: Record<Agent['status'], string> = {
 
 export default function AgentsPage() {
   const { t } = useTranslation();
+  const { search: locationSearch } = useLocation();
+  const requestedRunId = useMemo(() => {
+    const value = new URLSearchParams(locationSearch).get('runId');
+    return value && /^[0-9a-f-]{36}$/i.test(value) ? value : null;
+  }, [locationSearch]);
   const { currentProjectSpaceId, projectSpaces } = useProjectSpaceStore(useShallow((state) => ({
     currentProjectSpaceId: state.currentProjectSpaceId,
     projectSpaces: state.projectSpaces,
   })));
   const {
     agents,
+    collaboratorAgents,
     builtinTools,
     customTools,
     providerHealth,
@@ -35,14 +43,20 @@ export default function AgentsPage() {
     createAgent,
     updateAgent,
     publishAgent,
+    rollbackAgentVersion,
     duplicateAgent,
     setAgentDisabled,
     deleteAgent,
     createTool,
     updateTool,
+    rotateToolSecrets,
+    diagnoseTool,
+    listToolDiagnostics,
+    importOpenApi,
     deleteTool,
   } = useAgentStore(useShallow((state) => ({
     agents: state.agents,
+    collaboratorAgents: state.collaboratorAgents,
     builtinTools: state.builtinTools,
     customTools: state.customTools,
     providerHealth: state.providerHealth,
@@ -51,24 +65,36 @@ export default function AgentsPage() {
     createAgent: state.createAgent,
     updateAgent: state.updateAgent,
     publishAgent: state.publishAgent,
+    rollbackAgentVersion: state.rollbackAgentVersion,
     duplicateAgent: state.duplicateAgent,
     setAgentDisabled: state.setAgentDisabled,
     deleteAgent: state.deleteAgent,
     createTool: state.createTool,
     updateTool: state.updateTool,
+    rotateToolSecrets: state.rotateToolSecrets,
+    diagnoseTool: state.diagnoseTool,
+    listToolDiagnostics: state.listToolDiagnostics,
+    importOpenApi: state.importOpenApi,
     deleteTool: state.deleteTool,
   })));
-  const [tab, setTab] = useState<Tab>('agents');
+  const [tab, setTab] = useState<Tab>(() => requestedRunId ? 'runs' : 'agents');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [query, setQuery] = useState('');
+  const catalogTab = tab === 'agents' || tab === 'tools';
 
   useEffect(() => {
     setSelectedAgentId(null);
     setSelectedToolId(null);
     setCreating(false);
   }, [currentProjectSpaceId]);
+
+  useEffect(() => {
+    if (!requestedRunId) return;
+    setTab('runs');
+    setCreating(false);
+  }, [requestedRunId]);
 
   useEffect(() => {
     void fetchCatalog(currentProjectSpaceId).catch((error) => {
@@ -121,7 +147,7 @@ export default function AgentsPage() {
             <h1 className="text-2xl font-semibold text-text-main">{t('agents.title')}</h1>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-text-muted">{t('agents.subtitle')}</p>
           </div>
-          {tab !== 'runs' ? (
+          {catalogTab ? (
             <button
               type="button"
               onClick={startCreate}
@@ -151,13 +177,20 @@ export default function AgentsPage() {
             </button>
             <button
               type="button"
+              onClick={() => { setTab('approvals'); setCreating(false); }}
+              className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm ${tab === 'approvals' ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:text-text-main'}`}
+            >
+              <ShieldCheck className="h-4 w-4" /> {t('agents.approvalsTab')}
+            </button>
+            <button
+              type="button"
               onClick={() => { setTab('runs'); setCreating(false); }}
               className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm ${tab === 'runs' ? 'bg-bg-surface text-text-main shadow-sm' : 'text-text-muted hover:text-text-main'}`}
             >
               <Activity className="h-4 w-4" /> {t('agents.runsTab')}
             </button>
           </div>
-          {tab !== 'runs' ? (
+          {catalogTab ? (
             <label className="relative min-w-56 flex-1 sm:max-w-xs">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-muted" />
               <input
@@ -170,8 +203,8 @@ export default function AgentsPage() {
           ) : null}
         </div>
 
-        <div className={tab === 'runs' ? 'min-h-[640px] flex-1' : 'grid min-h-[640px] flex-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]'}>
-          {tab !== 'runs' ? <aside className="rounded-xl border border-border bg-bg-sidebar p-3">
+        <div className={!catalogTab ? 'min-h-[640px] flex-1' : 'grid min-h-[640px] flex-1 gap-4 lg:grid-cols-[280px_minmax(0,1fr)]'}>
+          {catalogTab ? <aside className="rounded-xl border border-border bg-bg-sidebar p-3">
             {loading ? <p className="px-2 py-6 text-center text-sm text-text-muted">{t('common.loading')}</p> : null}
             {!loading && tab === 'agents' ? (
               <div className="space-y-2">
@@ -208,26 +241,28 @@ export default function AgentsPage() {
                       <span className="rounded border border-border px-1.5 py-0.5 text-[10px] text-text-muted">{tool.kind.toUpperCase()}</span>
                     </span>
                     <span className="mt-1 line-clamp-2 text-xs leading-5 text-text-muted">{tool.description || t('agents.noDescription')}</span>
-                    <span className="mt-2 block text-[10px] text-text-muted">{tool.risk_level} · {tool.enabled ? t('agents.enabled') : t('agents.disabled')}</span>
+                    <span className="mt-2 block text-[10px] text-text-muted">v{tool.tool_version ?? tool.latest_version ?? 1} · {tool.risk_level} · {tool.enabled ? t('agents.enabled') : t('agents.disabled')}</span>
                   </button>
                 ))}
               </div>
             ) : null}
           </aside> : null}
 
-          <main className={tab === 'runs' ? 'min-h-[640px]' : 'rounded-xl border border-border bg-bg-sidebar p-4 md:p-6'}>
+          <main className={!catalogTab ? 'min-h-[640px]' : 'rounded-xl border border-border bg-bg-sidebar p-4 md:p-6'}>
             {tab === 'agents' && (selectedAgent || creating) ? (
               <AgentEditor
                 key={editorKey}
                 agent={creating ? null : selectedAgent}
                 projectSpaceId={currentProjectSpaceId}
                 projectSpaces={projectSpaces}
+                collaboratorAgents={collaboratorAgents}
                 builtinTools={builtinTools}
                 customTools={customTools}
                 providerHealth={providerHealth}
                 onCreate={createAgent}
                 onUpdate={updateAgent}
                 onPublish={publishAgent}
+                onRollback={rollbackAgentVersion}
                 onDuplicate={duplicateAgent}
                 onDisable={setAgentDisabled}
                 onDelete={deleteAgent}
@@ -242,11 +277,18 @@ export default function AgentsPage() {
                 projectSpaces={projectSpaces}
                 onCreate={createTool}
                 onUpdate={updateTool}
+                onRotateSecrets={rotateToolSecrets}
+                onDiagnose={diagnoseTool}
+                onListDiagnostics={listToolDiagnostics}
+                onImportOpenApi={importOpenApi}
                 onDelete={deleteTool}
                 onSelected={selectTool}
               />
             ) : null}
-            {tab === 'runs' ? <AgentRunHistory agentId={selectedAgentId} /> : null}
+            {tab === 'runs' ? (
+              <AgentRunHistory agentId={selectedAgentId} initialRunId={requestedRunId} />
+            ) : null}
+            {tab === 'approvals' ? <AgentApprovalInbox /> : null}
             {!creating && tab === 'agents' && !selectedAgent ? (
               <div className="grid min-h-[520px] place-items-center text-center">
                 <div className="max-w-md">

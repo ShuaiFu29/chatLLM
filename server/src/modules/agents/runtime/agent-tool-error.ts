@@ -17,15 +17,32 @@ export const agentToolErrorCodes = [
   'tool_endpoint_credentials_insecure',
   'tool_endpoint_blocked_address',
   'tool_endpoint_misconfigured',
+  'tool_secret_decryption_failed',
+  'tool_secret_audit_failed',
   'tool_timeout',
   'tool_network_error',
+  // The call may have reached a stateful tool, but no authoritative response was
+  // observed. Repeating it could duplicate a side effect, so this is terminal.
+  'tool_result_indeterminate',
+  // A provider reused a tool_call id whose invocation already reached a terminal
+  // state. Reopening it would bypass the invocation ledger's replay fence.
+  'tool_invocation_not_replayable',
   'tool_http_status',
   'tool_response_too_large',
   'tool_response_invalid_json',
   'tool_response_path_missing',
+  'tool_output_invalid',
   'tool_mcp_protocol_error',
   'tool_reported_error',
   'tool_execution_failed',
+  // The immutable Agent version permits the tool binding but narrows which
+  // memory scopes/operations that tool may perform.
+  'memory_policy_violation',
+  // Memory governance rejects credentials before embedding/storage and lets the
+  // user close or fill a scope without turning either case into an opaque fault.
+  'memory_sensitive_content',
+  'memory_scope_disabled',
+  'memory_quota_exceeded',
   // Dispatching work to another Agent. A failed subtask is reported to the parent
   // with its own reason so the parent can tell the user which part of the task
   // could not be completed, instead of failing the whole request.

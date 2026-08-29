@@ -1,5 +1,7 @@
 import type { AgentApprovalPolicy } from './tool-policy';
 import type { TraceContext } from '../../../lib/traceContext';
+import type { AgentTokenUsage, SubagentResultEnvelope } from './agent-evidence';
+import type { AgentSharedMemorySnapshot } from '../../../lib/agentMemoryPolicy';
 
 /**
  * Late binding between the tool that dispatches subagents and the runtime that
@@ -14,23 +16,33 @@ import type { TraceContext } from '../../../lib/traceContext';
 
 export interface SubagentTaskRequest {
   agentId: string;
+  /** Exact historically published version selected by an explicit alias. */
+  agentVersionId?: string;
+  alias?: string;
+  role?: string;
   task: string;
   /** Bounded payload the parent chose to share. Never the parent's history. */
   context?: Record<string, unknown>;
 }
 
 export interface SubagentTaskOutcome {
+  /** Stable position in the model-requested dispatch batch. */
+  taskIndex?: number;
   agentId: string;
   runId?: string;
   status: 'succeeded' | 'failed' | 'cancelled';
   /** The child's final answer, present only when it succeeded. */
   answer?: string;
+  /** Structured, durable evidence behind a successful answer. */
+  result?: SubagentResultEnvelope;
   /** A coded reason, so the parent can report honestly rather than guess. */
   error?: string;
   message?: string;
   durationMs: number;
   iterations?: number;
   toolCalls?: number;
+  /** Includes the entire subtree rooted at this child. */
+  usage?: AgentTokenUsage;
 }
 
 export interface SubagentDispatchRequest {
@@ -49,6 +61,8 @@ export interface SubagentDispatchRequest {
   trace: TraceContext;
   signal: AbortSignal;
   tasks: SubagentTaskRequest[];
+  /** Labelled, parent-recalled items; never a long-term-store capability. */
+  sharedMemorySnapshot: AgentSharedMemorySnapshot;
   mode: 'parallel' | 'sequential';
   requestId?: string;
   /**
@@ -63,7 +77,7 @@ export interface SubagentDispatchRequest {
    * run, so the dispatcher cannot invent its own numbers without colliding. Passing
    * the allocator keeps a single source of truth for the parent's ordering.
    */
-  nextSequence(): number;
+  nextSequence(): Promise<number>;
 }
 
 export type SubagentExecutor = (

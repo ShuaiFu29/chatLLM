@@ -841,4 +841,78 @@ describe('first send and optimistic ids', () => {
     expect(assistantMessage?.agentRunId).toBe('run-1');
     expect(assistantMessage?.agent_run_status).toBe('running');
   });
+
+  test('live Agent detail polling merges child approvals without replacing the SSE message', async () => {
+    const streamController = chatRequestState.beginStream('conversation-a');
+    const liveMessage: Message = {
+      ...message('temp-assistant-live', ''),
+      agentRunId: 'root-run',
+      agent_run_status: 'waiting_subagent',
+      agentEvents: [{ type: 'run.started', runId: 'root-run' }],
+    };
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [liveMessage],
+      messagesCache: { 'conversation-a': [liveMessage] },
+    });
+    apiMock.get.mockResolvedValueOnce({
+      data: {
+        id: 'root-run',
+        status: 'waiting_subagent',
+        grounding: null,
+        steps: [],
+        approvals: [{
+          id: 'approval-child',
+          run_id: 'root-run',
+          step_id: 'child-step',
+          status: 'pending',
+          reason: '',
+          expires_at: '2030-01-01T00:00:00.000Z',
+          requested_by_run_id: 'child-run',
+          created_at: '',
+        }],
+      },
+    });
+
+    expect(await useChatStore.getState().refreshAgentRunDetails('conversation-a')).toBe(true);
+    const refreshed = useChatStore.getState().messages[0];
+    expect(refreshed.id).toBe(liveMessage.id);
+    expect(refreshed.agentEvents).toEqual(liveMessage.agentEvents);
+    expect(refreshed.agent_approvals?.[0]).toMatchObject({
+      id: 'approval-child',
+      requested_by_run_id: 'child-run',
+    });
+    expect(apiMock.get).toHaveBeenCalledWith('/agent-runs/root-run', {
+      params: { stepLimit: 500, approvalLimit: 200 },
+    });
+    chatRequestState.finishStream('conversation-a', streamController);
+  });
+
+  test('live detail polling keeps an active marker until the terminal SSE frame arrives', async () => {
+    const streamController = chatRequestState.beginStream('conversation-a');
+    const liveMessage: Message = {
+      ...message('temp-assistant-terminal-race', ''),
+      agentRunId: 'root-run',
+      agent_run_status: 'running',
+      agentEvents: [{ type: 'run.started', runId: 'root-run' }],
+    };
+    useChatStore.setState({
+      currentConversationId: 'conversation-a',
+      messages: [liveMessage],
+      messagesCache: { 'conversation-a': [liveMessage] },
+    });
+    apiMock.get.mockResolvedValueOnce({
+      data: {
+        id: 'root-run',
+        status: 'succeeded',
+        grounding: null,
+        steps: [],
+        approvals: [],
+      },
+    });
+
+    await useChatStore.getState().refreshAgentRunDetails('conversation-a');
+    expect(useChatStore.getState().messages[0].agent_run_status).toBe('running');
+    chatRequestState.finishStream('conversation-a', streamController);
+  });
 });

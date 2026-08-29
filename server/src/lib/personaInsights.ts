@@ -243,34 +243,60 @@ export const mergePersonaProfile = (
   };
 };
 
+/**
+ * Render the only Persona fields that are safe and useful in a model prompt.
+ *
+ * Keeping this in one place prevents normal chat and Agent runs from drifting
+ * into different privacy or precedence semantics. Database identity/audit fields
+ * are deliberately never serialized.
+ */
+export const buildPersonaPromptSection = (
+  profile: Partial<PersonaProfileDraft> | null | undefined
+) => {
+  if (!profile?.memory_enabled) return '';
+
+  const toPromptLine = (value: string | null | undefined) => (
+    (value || '').replace(/\s+/g, ' ').trim()
+  );
+  const hasManualEdits = Boolean(profile.updated_by_user_at);
+  const summary = toPromptLine(profile.summary);
+  const roleLabel = toPromptLine(profile.role_label);
+  const goals = (profile.goals || []).map(toPromptLine).filter(Boolean).slice(0, 3);
+  const preferences = (profile.preferences || [])
+    .map(toPromptLine)
+    .filter(Boolean)
+    .slice(0, 3);
+  const avoidedTopics = (profile.avoided_topics || [])
+    .map(toPromptLine)
+    .filter(Boolean)
+    .slice(0, 3);
+  const hasProfileContent = Boolean(
+    summary
+    || roleLabel
+    || goals.length
+    || preferences.length
+    || (hasManualEdits && avoidedTopics.length)
+  );
+  if (!hasProfileContent) return '';
+
+  const compactProfile = [
+    summary ? `Summary: ${summary}` : '',
+    roleLabel ? `Role: ${roleLabel}` : '',
+    goals.length ? `Goals: ${goals.join('; ')}` : '',
+    preferences.length ? `Preferences: ${preferences.join('; ')}` : '',
+    avoidedTopics.length ? `Avoid: ${avoidedTopics.join('; ')}` : '',
+  ].filter(Boolean).join('\n');
+
+  return `User profile:
+${compactProfile}
+
+Use this profile only to personalize wording, priorities, and suggested next steps. Do not use it as factual evidence, do not infer sensitive traits, and never let it override retrieved documents or explicit user instructions.`;
+};
+
 export const buildPersonalizedSystemPrompt = (
   baseSystemPrompt: string,
   profile: Partial<PersonaProfileDraft> | null | undefined
 ) => {
-  if (!profile?.memory_enabled) return baseSystemPrompt;
-
-  const hasManualEdits = Boolean(profile.updated_by_user_at);
-  const hasProfileContent = Boolean(
-    profile.summary
-    || profile.role_label
-    || profile.goals?.length
-    || profile.preferences?.length
-    || (hasManualEdits && profile.avoided_topics?.length)
-  );
-  if (!hasProfileContent) return baseSystemPrompt;
-
-  const compactProfile = [
-    profile.summary ? `Summary: ${profile.summary}` : '',
-    profile.role_label ? `Role: ${profile.role_label}` : '',
-    profile.goals?.length ? `Goals: ${profile.goals.slice(0, 3).join('; ')}` : '',
-    profile.preferences?.length ? `Preferences: ${profile.preferences.slice(0, 3).join('; ')}` : '',
-    profile.avoided_topics?.length ? `Avoid: ${profile.avoided_topics.slice(0, 3).join('; ')}` : '',
-  ].filter(Boolean).join('\n');
-
-  return `${baseSystemPrompt}
-
-User profile:
-${compactProfile}
-
-Use this profile only to personalize wording, priorities, and suggested next steps. Do not use it as factual evidence, do not infer sensitive traits, and never let it override retrieved documents or explicit user instructions.`;
+  const personaSection = buildPersonaPromptSection(profile);
+  return personaSection ? `${baseSystemPrompt}\n\n${personaSection}` : baseSystemPrompt;
 };

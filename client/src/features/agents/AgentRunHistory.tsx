@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { CircleCheck, CircleX, Clock3, Loader2, RefreshCw, ShieldAlert, Square, X } from 'lucide-react';
+import { CircleCheck, CircleX, Clock3, GitBranch, Loader2, RefreshCw, ShieldAlert, Square, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../../lib/api';
@@ -11,9 +11,10 @@ import type { AgentRun, AgentRunDetail, AgentRunStatus } from './types';
 
 interface AgentRunHistoryProps {
   agentId?: string | null;
+  initialRunId?: string | null;
 }
 
-const activeStatuses: AgentRunStatus[] = ['queued', 'running', 'waiting_approval'];
+const activeStatuses: AgentRunStatus[] = ['queued', 'running', 'waiting_approval', 'waiting_subagent'];
 const ACTIVE_RUN_POLL_INTERVAL_MS = 2000;
 
 interface LoadOptions {
@@ -25,6 +26,7 @@ const statusIcons: Record<AgentRunStatus, typeof Loader2> = {
   queued: Clock3,
   running: Loader2,
   waiting_approval: ShieldAlert,
+  waiting_subagent: GitBranch,
   succeeded: CircleCheck,
   failed: CircleX,
   cancelled: X,
@@ -36,10 +38,10 @@ const formatDate = (value?: string | null) => {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString();
 };
 
-export default function AgentRunHistory({ agentId }: AgentRunHistoryProps) {
+export default function AgentRunHistory({ agentId, initialRunId }: AgentRunHistoryProps) {
   const { t } = useTranslation();
   const [runs, setRuns] = useState<AgentRun[]>([]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(initialRunId || null);
   const [detail, setDetail] = useState<AgentRunDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -55,6 +57,8 @@ export default function AgentRunHistory({ agentId }: AgentRunHistoryProps) {
       setRuns(response.data);
       setSelectedRunId((current) => {
         if (current && response.data.some((run) => run.id === current)) return current;
+        if (current && current === initialRunId) return current;
+        if (initialRunId) return initialRunId;
         return response.data[0]?.id || null;
       });
     } catch (error) {
@@ -66,7 +70,11 @@ export default function AgentRunHistory({ agentId }: AgentRunHistoryProps) {
     } finally {
       if (!options.silent && !signal?.aborted) setLoading(false);
     }
-  }, [agentId, t]);
+  }, [agentId, initialRunId, t]);
+
+  useEffect(() => {
+    if (initialRunId) setSelectedRunId(initialRunId);
+  }, [initialRunId]);
 
   const loadDetail = useCallback(async (
     runId: string,

@@ -64,12 +64,26 @@ test('the first send is guarded and targets an explicit conversation id (P1-FIRS
 });
 
 test('a dropped Agent stream is recovered, not retried by the user (P1-SSE-RECOVER)', () => {
-  assert.match(chatPageSource, /import \{ hasRecoverableAgentRun \} from '\.\.\/lib\/agentRunRecovery'/);
+  assert.match(
+    chatPageSource,
+    /import \{[\s\S]*?hasRecoverableAgentRun[\s\S]*?\} from '\.\.\/lib\/agentRunRecovery'/,
+  );
   assert.match(chatPageSource, /const recoverableAgentRun = hasRecoverableAgentRun\(messages\)/);
   assert.match(chatPageSource, /if \(hasRecoverableAgentRun\(useChatStore\.getState\(\)\.messages\)\)/);
   assert.match(chatPageSource, /toast\.info\(t\('chat\.agentRunRecovering'\)\)/);
-  // The poll depends on the combined signal, not on the server status alone.
-  assert.match(chatPageSource, /\[currentConversationId, recoverableAgentRun, refreshMessages, sendingMessage\]/);
+  // A live SSE stream polls Run detail so database-only child approvals become
+  // visible without replacing the optimistic message; a dropped stream falls
+  // back to the full message refresh that recovers final content.
+  assert.match(chatPageSource, /if \(sendingMessage\) await refreshAgentRunDetails\(currentConversationId\)/);
+  assert.match(chatPageSource, /else await refreshMessages\(currentConversationId\)/);
+  assert.match(chatPageSource, /\[currentConversationId, recoverableAgentRun, refreshAgentRunDetails, refreshMessages, sendingMessage\]/);
+});
+
+test('Agent chat creation hands durable execution to the worker (R2-HTTP-WORKER)', () => {
+  const chatStoreSource = read('src/stores/useChatStore.ts');
+  assert.match(chatStoreSource, /!aiContent && !activeAgentRunId/);
+  assert.match(chatPageSource, /subscribeAgentRunEvents\(\{/);
+  assert.match(chatPageSource, /TERMINAL_AGENT_EVENT_TYPES/);
 });
 
 test('a failed history load renders an error state with a retry (P2-FETCH-SILENT)', () => {

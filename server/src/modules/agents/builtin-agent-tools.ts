@@ -35,7 +35,8 @@ export const builtinAgentTools: BuiltinAgentToolDefinition[] = [
     key: 'recall',
     name: 'Recall',
     description: 'List durable memories available for this user and workspace, each labelled with'
-      + ' how much it can be trusted.',
+      + ' how much it can be trusted. This explicit read is independent of the automatic context'
+      + ' mode and remains available to a subagent when the tool is bound.',
     category: 'utility',
     risk_level: 'read',
     requires_project: false,

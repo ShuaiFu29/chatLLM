@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useAuthStore } from '../stores/useAuthStore';
 import { ChatStreamError, useChatStore } from '../stores/useChatStore';
 import { useTranslation } from 'react-i18next';
@@ -32,7 +32,12 @@ import { X } from 'lucide-react';
 import type { ConversationComparison } from '../stores/useChatStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useAgentStore } from '../stores/useAgentStore';
-import { hasRecoverableAgentRun } from '../lib/agentRunRecovery';
+import {
+  hasRecoverableAgentRun,
+  isMessageAgentRunRecoverable,
+  TERMINAL_AGENT_EVENT_TYPES,
+} from '../lib/agentRunRecovery';
+import { subscribeAgentRunEvents } from '../lib/agentRunEventStream';
 
 export default function ChatPage() {
   const user = useAuthStore((state) => state.user);
@@ -61,7 +66,8 @@ export default function ChatPage() {
     loadingMessages,
     messagesError,
     sendingMessage,
-    isStopped
+    isStopped,
+    refreshAgentRunDetails,
   } = useChatStore(useShallow((state) => ({
     currentConversationId: state.currentConversationId,
     conversations: state.conversations,
@@ -83,6 +89,7 @@ export default function ChatPage() {
     messagesError: state.messagesError,
     sendingMessage: state.sendingMessage,
     isStopped: state.isStopped,
+    refreshAgentRunDetails: state.refreshAgentRunDetails,
   })));
 
   const [input, setInput] = useState('');
@@ -110,13 +117,58 @@ export default function ChatPage() {
   // Covers both recovery paths: a full reload (server `agent_run_status`) and a
   // dropped SSE connection (local run id with no terminal event yet).
   const recoverableAgentRun = hasRecoverableAgentRun(messages);
+  const recoverableAgentRunIds = useMemo(() => [...new Set(messages
+    .filter(isMessageAgentRunRecoverable)
+    .map((message) => message.agentRunId || message.agent_run_id)
+    .filter((runId): runId is string => Boolean(runId)))].sort(), [messages]);
+  const recoverableAgentRunKey = recoverableAgentRunIds.join(',');
+  const agentEventCursors = useRef<Record<string, string>>({});
 
   useEffect(() => {
-    if (!currentConversationId || sendingMessage || !recoverableAgentRun) return;
+    if (!currentConversationId || sendingMessage || !recoverableAgentRunKey) return;
+    const runIds = recoverableAgentRunKey.split(',').filter(Boolean);
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const closeStreams = runIds.map((runId) => subscribeAgentRunEvents({
+      runId,
+      afterId: agentEventCursors.current[runId],
+      onEvent: (payload, cursor) => {
+        agentEventCursors.current[runId] = cursor;
+        if (refreshTimer) clearTimeout(refreshTimer);
+        const terminal = payload.agentEvent?.type
+          && TERMINAL_AGENT_EVENT_TYPES.includes(payload.agentEvent.type);
+        refreshTimer = setTimeout(() => {
+          if (terminal) void refreshMessages(currentConversationId);
+          else void refreshAgentRunDetails(currentConversationId);
+        }, terminal ? 0 : 50);
+      },
+      // The existing bounded poll remains as a fallback for proxies that block
+      // EventSource; reopening the same cursor is handled by Last-Event-ID.
+      onError: () => undefined,
+    }));
+    return () => {
+      closeStreams.forEach((close) => close());
+      if (refreshTimer) clearTimeout(refreshTimer);
+    };
+  }, [
+    currentConversationId,
+    recoverableAgentRunKey,
+    refreshAgentRunDetails,
+    refreshMessages,
+    sendingMessage,
+  ]);
+
+  useEffect(() => {
+    if (!currentConversationId || !recoverableAgentRun) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
-      await refreshMessages(currentConversationId);
+      // Replacing the whole message page during a live SSE stream would remove
+      // its optimistic assistant id, so later frames could no longer find the
+      // message they belong to. Run detail is enough to surface database-only
+      // subagent approvals while connected; after a disconnect the regular
+      // message refresh recovers both status and final content.
+      if (sendingMessage) await refreshAgentRunDetails(currentConversationId);
+      else await refreshMessages(currentConversationId);
       if (!stopped) timer = setTimeout(() => void poll(), 1500);
     };
     timer = setTimeout(() => void poll(), 500);
@@ -124,7 +176,7 @@ export default function ChatPage() {
       stopped = true;
       if (timer) clearTimeout(timer);
     };
-  }, [currentConversationId, recoverableAgentRun, refreshMessages, sendingMessage]);
+  }, [currentConversationId, recoverableAgentRun, refreshAgentRunDetails, refreshMessages, sendingMessage]);
 
   useEffect(() => {
     void fetchAgentCatalog(activeProjectSpaceId || null).catch((error) => {

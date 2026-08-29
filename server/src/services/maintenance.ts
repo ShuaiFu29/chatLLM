@@ -5,6 +5,7 @@ import { metrics } from '../lib/metrics';
 import { failStaleRunningRagEvalRuns, resetStaleRagEvalRunJobs } from '../repositories/ragEval';
 import { deleteExpiredSessions } from '../repositories/sessions';
 import { failExpiredSubagentRunLeases } from '../repositories/agentSubagentQueue';
+import { settleExpiredAgentModelInvocations } from '../repositories/agentRunBudgets';
 import {
   deleteExpiredAgentRunCancelIntents,
   failStaleAgentRuns as failStaleAgentRunsRepository,
@@ -29,6 +30,8 @@ import {
 } from '../repositories/uploadMultipart';
 import { deleteAbandonedUploadingFiles } from '../repositories/files';
 import { toSafeError } from '../lib/safeError';
+import { failStaleAgentVersionDryRuns } from '../repositories/agentDryRuns';
+import { failExpiredAgentEvalRuns, resetStaleAgentEvalRuns } from '../repositories/agentEval';
 
 const UPLOAD_TEMP_DIR = path.join(__dirname, '../../uploads/temp');
 const ABANDONED_UPLOAD_RECORD_MAX_AGE_MS = Math.min(
@@ -159,8 +162,11 @@ class MaintenanceService {
       deleteExpiredAgentRunCancelIntents(),
       this.recoverStaleAgentRuns(),
       this.failExpiredSubagentLeases(),
+      this.settleExpiredAgentModelInvocations(),
       this.resetStaleRagEvalRunJobs(),
       this.failStaleRunningRagEvalRuns(),
+      this.failStaleAgentDryRuns(),
+      this.recoverAgentEvalRuns(),
       cleanupUploadTempDirectory(),
       cleanupExpiredMultipartUploadSessions(),
       this.cleanupAbandonedUploadRecords(),
@@ -196,6 +202,35 @@ class MaintenanceService {
     const failed = await failExpiredSubagentRunLeases();
     if (failed.length > 0) {
       console.warn(`[Maintenance] Failed ${failed.length} subagent runs with expired leases`);
+    }
+  }
+
+  private async failStaleAgentDryRuns() {
+    const staleBefore = new Date(Date.now() - Math.max(5 * 60 * 1000, serverEnv.AGENT_RUN_STALE_AFTER_MS));
+    const ids = await failStaleAgentVersionDryRuns(staleBefore);
+    if (ids.length > 0) {
+      console.warn(`[Maintenance] Failed ${ids.length} interrupted Agent dry-runs`);
+    }
+  }
+
+  private async recoverAgentEvalRuns() {
+    const [resetCount, failedCount] = await Promise.all([
+      resetStaleAgentEvalRuns(),
+      failExpiredAgentEvalRuns(),
+    ]);
+    if (resetCount > 0 || failedCount > 0) {
+      console.warn(
+        `[Maintenance] Agent eval recovery reset ${resetCount} run(s) and failed ${failedCount} expired run(s)`,
+      );
+    }
+  }
+
+  private async settleExpiredAgentModelInvocations() {
+    const invocationIds = await settleExpiredAgentModelInvocations();
+    if (invocationIds.length > 0) {
+      console.warn(
+        `[Maintenance] Conservatively settled ${invocationIds.length} abandoned Agent model reservations`,
+      );
     }
   }
 

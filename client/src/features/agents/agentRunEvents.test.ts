@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { buildPersistedAgentEvents } from './agentRunEvents';
+import { buildPersistedAgentEvents, mergeAgentEvents } from './agentRunEvents';
+
+const approvalIntent = {
+  format_version: 1 as const,
+  tool_key: 'custom:writer',
+  tool_kind: 'http' as const,
+  tool_version_id: '11111111-1111-4111-8111-111111111111',
+  configuration_hash: 'a'.repeat(64),
+  secret_version: 1,
+  input_hash: 'b'.repeat(64),
+  target: 'https://example.test/write',
+  method: 'POST',
+  risk_level: 'write' as const,
+  policy_chain: ['writes' as const],
+  side_effect_summary: 'Write to the configured external system.',
+};
 
 describe('buildPersistedAgentEvents', () => {
   it('reconstructs tool and approval events for a waiting run', () => {
@@ -36,6 +51,8 @@ describe('buildPersistedAgentEvents', () => {
         run_id: 'run-1',
         step_id: 'step-approval',
         status: 'pending',
+        intent: approvalIntent,
+        intent_hash: 'c'.repeat(64),
         reason: '',
         expires_at: '2030-01-01T00:00:00.000Z',
         created_at: '',
@@ -51,6 +68,8 @@ describe('buildPersistedAgentEvents', () => {
       tool: 'custom:tool-1',
       riskLevel: 'write',
       arguments: { value: 1 },
+      approvalIntent,
+      approvalIntentHash: 'c'.repeat(64),
     });
   });
 
@@ -100,6 +119,8 @@ describe('approval outcomes (P3-EXPIRED-UI)', () => {
         run_id: 'run-3',
         step_id: 'step-approval',
         status,
+        intent: approvalIntent,
+        intent_hash: 'c'.repeat(64),
         reason: '',
         expires_at: '2026-08-20T00:00:00.000Z',
         created_at: '',
@@ -120,5 +141,82 @@ describe('approval outcomes (P3-EXPIRED-UI)', () => {
       .find((event) => event.type === 'approval.resolved')?.decision).toBe('approved');
     expect(buildWithApprovalStatus('rejected')
       .find((event) => event.type === 'approval.resolved')?.decision).toBe('rejected');
+  });
+});
+
+describe('bubbled subagent approvals (R0-APR-ROOT-UI)', () => {
+  it('renders a child canonical step from the root approval projection', () => {
+    const events = buildPersistedAgentEvents({
+      runId: 'root-run',
+      status: 'waiting_subagent',
+      steps: [],
+      approvals: [{
+        id: 'approval-child',
+        run_id: 'root-run',
+        step_id: 'child-step-not-in-root-list',
+        status: 'pending',
+        intent: approvalIntent,
+        intent_hash: 'c'.repeat(64),
+        reason: '',
+        expires_at: '2030-01-01T00:00:00.000Z',
+        requested_by_run_id: 'child-run',
+        requested_by_agent_id: 'agent-researcher',
+        requested_by_agent_name: 'Researcher',
+        requested_by_depth: 2,
+        tool_call_id: 'call-write',
+        tool_key: 'custom:writer',
+        input: {
+          title: 'Draft',
+          headers: { Authorization: 'Bearer private-token' },
+          url: 'https://example.test/write?access_token=private',
+        },
+        output: { risk_level: 'write' },
+        created_at: '',
+      }],
+    });
+
+    expect(events).toHaveLength(2);
+    expect(events[1]).toMatchObject({
+      type: 'approval.required',
+      runId: 'root-run',
+      approvalId: 'approval-child',
+      tool: 'custom:writer',
+      riskLevel: 'write',
+      arguments: {
+        title: 'Draft',
+        headers: { Authorization: '[REDACTED]' },
+        url: 'https://example.test/write?access_token=[REDACTED]',
+      },
+      requestedByRunId: 'child-run',
+      requestedByAgentId: 'agent-researcher',
+      requestedByAgentName: 'Researcher',
+      requestedByDepth: 2,
+    });
+  });
+
+  it('merges a database-only child approval into an already-live timeline', () => {
+    const events = mergeAgentEvents(
+      [
+        { type: 'run.started', runId: 'root-run', agentName: 'Root' },
+        { type: 'subagent.dispatched', runId: 'root-run', toolCallId: 'dispatch-1' },
+      ],
+      [
+        { type: 'run.started', runId: 'root-run' },
+        {
+          type: 'approval.required',
+          runId: 'root-run',
+          approvalId: 'approval-child',
+          requestedByRunId: 'child-run',
+        },
+      ],
+    );
+
+    expect(events).toHaveLength(3);
+    expect(events[0]).toMatchObject({ type: 'run.started', agentName: 'Root' });
+    expect(events[2]).toMatchObject({
+      type: 'approval.required',
+      approvalId: 'approval-child',
+      requestedByRunId: 'child-run',
+    });
   });
 });

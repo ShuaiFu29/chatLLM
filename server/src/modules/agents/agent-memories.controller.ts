@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Patch,
+  Post,
   Query,
   UseGuards,
 } from '@nestjs/common';
@@ -23,6 +24,37 @@ export class AgentMemoriesController {
   @Get()
   list(@CurrentUser() user: User, @Query() query: Record<string, unknown>) {
     return this.agentMemoriesService.list(user.id, query);
+  }
+
+  @Get('settings/scopes')
+  listScopeSettings(@CurrentUser() user: User) {
+    return this.agentMemoriesService.listScopeSettings(user.id);
+  }
+
+  @Patch('settings/scopes')
+  @ValidateMutation(mutationSchemas.agentMemoryScopeSetting)
+  setScopeEnabled(
+    @CurrentUser() user: User,
+    @Body() body: { scope: 'user' | 'project' | 'agent'; enabled: boolean },
+    @RequestId() requestId: string,
+  ) {
+    return this.agentMemoriesService.setScopeEnabled(user.id, body, requestId);
+  }
+
+  @Get(':memoryId')
+  get(@CurrentUser() user: User, @Param('memoryId') memoryId: string) {
+    return this.agentMemoriesService.get(user.id, memoryId);
+  }
+
+  @Post(':memoryId/decision')
+  @ValidateMutation(mutationSchemas.agentMemoryDecision)
+  decide(
+    @CurrentUser() user: User,
+    @Param('memoryId') memoryId: string,
+    @Body() body: { decision: 'confirmed' | 'rejected' },
+    @RequestId() requestId: string,
+  ) {
+    return this.agentMemoriesService.decide(user.id, memoryId, body, requestId);
   }
 
   @Patch(':memoryId')

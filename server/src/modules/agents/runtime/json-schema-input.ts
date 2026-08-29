@@ -492,6 +492,13 @@ export const validateAgentJsonSchemaInput = (
   return input;
 };
 
+export class AgentOutputValidationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AgentOutputValidationError';
+  }
+}
+
 export const parseAndValidateAgentJsonOutput = (
   content: string,
   schema: Record<string, unknown>,
@@ -500,13 +507,17 @@ export const parseAndValidateAgentJsonOutput = (
   try {
     parsed = JSON.parse(content);
   } catch (error) {
-    throw new Error('Agent final response is not valid JSON', { cause: error });
+    throw new AgentOutputValidationError('Agent final response is not valid JSON', {
+      cause: error,
+    });
   }
-  if (!isRecord(parsed)) throw new Error('Agent final JSON response must be an object');
+  if (!isRecord(parsed)) {
+    throw new AgentOutputValidationError('Agent final JSON response must be an object');
+  }
   try {
     validateAgentJsonSchemaValue(parsed, schema, 'output');
   } catch (error) {
-    throw new Error(
+    throw new AgentOutputValidationError(
       `Agent final JSON response does not match its schema: ${error instanceof Error ? error.message : 'invalid output'}`,
       { cause: error },
     );

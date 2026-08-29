@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import api from '../../lib/api';
 import type { AgentEvent } from './types';
+import { redactAgentApprovalArguments } from './agentRunEvents';
 
 interface AgentRunTimelineProps {
   runId: string;
@@ -137,16 +138,73 @@ export default function AgentRunTimeline({ runId, events, active }: AgentRunTime
                 {event.detail && <span className="ml-2 break-words">{event.detail}</span>}
                 {approval && event.approvalId && (
                   <div className="mt-2 rounded-md border border-amber-500/20 bg-amber-500/5 p-2">
+                    {event.requestedByRunId && (
+                      <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] text-amber-100/80">
+                        <GitBranch className="h-3 w-3" />
+                        <span>
+                          {t('chat.approvalRequestedBySubagent', {
+                            name: event.requestedByAgentName || t('chat.unknownSubagent'),
+                            depth: event.requestedByDepth ?? '?',
+                          })}
+                        </span>
+                        <span className="font-mono text-text-muted">
+                          {event.requestedByRunId.slice(0, 8)}
+                        </span>
+                      </div>
+                    )}
                     <div className="mb-2 flex flex-wrap items-center gap-2">
                       <span className="rounded border border-amber-500/30 px-1.5 py-0.5 text-amber-300">
                         {t(`agents.riskLevels.${event.riskLevel || 'high'}`)}
                       </span>
                       {event.expiresAt && <span>{t('chat.approvalExpires', { time: new Date(event.expiresAt).toLocaleTimeString() })}</span>}
                     </div>
+                    {event.approvalIntent && (
+                      <div className="mb-2 space-y-2 rounded border border-border/70 bg-bg-base/60 p-2">
+                        <p className="leading-5 text-text-main">
+                          {event.approvalIntent.side_effect_summary}
+                        </p>
+                        <dl className="grid gap-x-3 gap-y-1 text-[11px] sm:grid-cols-[7rem_minmax(0,1fr)]">
+                          <dt>{t('agents.approvalTarget')}</dt>
+                          <dd className="break-all font-mono text-text-main">
+                            {event.approvalIntent.target || t('agents.approvalInternalTarget')}
+                          </dd>
+                          <dt>{t('agents.approvalMethod')}</dt>
+                          <dd className="break-all font-mono text-text-main">{event.approvalIntent.method}</dd>
+                          <dt>{t('agents.approvalPolicyChain')}</dt>
+                          <dd className="font-mono text-text-main">{event.approvalIntent.policy_chain.join(' → ')}</dd>
+                          {event.approvalIntent.tool_version_id && (
+                            <>
+                              <dt>{t('agents.approvalToolVersion')}</dt>
+                              <dd className="break-all font-mono text-text-main">
+                                {event.approvalIntent.tool_version_id}
+                                {event.approvalIntent.secret_version
+                                  ? ` · secret v${event.approvalIntent.secret_version}`
+                                  : ''}
+                              </dd>
+                            </>
+                          )}
+                          {event.approvalIntent.configuration_hash && (
+                            <>
+                              <dt>{t('agents.approvalConfigurationHash')}</dt>
+                              <dd className="break-all font-mono text-text-muted">
+                                {event.approvalIntent.configuration_hash}
+                              </dd>
+                            </>
+                          )}
+                          <dt>{t('agents.approvalInputHash')}</dt>
+                          <dd className="break-all font-mono text-text-muted">{event.approvalIntent.input_hash}</dd>
+                        </dl>
+                      </div>
+                    )}
                     {event.arguments !== undefined && (
-                      <pre className="mb-2 max-h-32 overflow-auto whitespace-pre-wrap break-all rounded bg-bg-base p-2 font-mono text-[11px] text-text-muted">
-                        {JSON.stringify(event.arguments, null, 2)}
-                      </pre>
+                      <details className="mb-2 rounded bg-bg-base p-2">
+                        <summary className="cursor-pointer text-[11px] text-text-muted">
+                          {t('agents.approvalArguments')}
+                        </summary>
+                        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-text-muted">
+                          {JSON.stringify(redactAgentApprovalArguments(event.arguments), null, 2)}
+                        </pre>
+                      </details>
                     )}
                     {approvalDecision ? (
                       <p className={APPROVAL_DECISION_STYLES[approvalDecision]}>

@@ -1,11 +1,25 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   AgentToolEncryptionUnavailableError,
+  decryptAgentToolSecrets,
   encryptAgentToolSecrets,
+  getActiveAgentToolSecretKeyId,
+  inspectAgentToolSecretEnvelope,
 } from '../../lib/agentToolSecrets';
+import {
+  AgentToolSecretKeyValidationError,
+  validateAgentToolSecrets,
+} from '../../lib/agentToolSecretKeys';
 import { toSafeError } from '../../lib/safeError';
 import { serverEnv } from '../../lib/env';
+import {
+  AgentToolDiagnosticCursorError,
+  decodeAgentToolDiagnosticCursor,
+  encodeAgentToolDiagnosticCursor,
+} from '../../lib/agentToolDiagnosticCursor';
 import {
   AgentToolKind,
   AgentToolRiskLevel,
@@ -13,13 +27,31 @@ import {
   createAgentToolForUser,
   deleteAgentToolForUser,
   findAgentToolForUser,
+  findAgentToolWithSecretsForUser,
+  findAgentToolVersionForUser,
   listAgentToolsForUser,
   listAgentToolBindingScopesForUser,
+  listAgentToolVersionsForUser,
   updateAgentToolForUser,
 } from '../../repositories/agentTools';
 import { findProjectSpaceForUser } from '../../repositories/projectSpaces';
-import { validateAgentJsonObjectSchemaDefinition } from './runtime/json-schema-input';
+import {
+  validateAgentJsonObjectSchemaDefinition,
+  validateAgentJsonSchemaDefinition,
+} from './runtime/json-schema-input';
 import { recordAgentAuditEvent } from '../../repositories/agentAudit';
+import {
+  listAgentToolDiagnosticHistory,
+  recordAgentToolDiagnosticHistory,
+} from '../../repositories/agentToolDiagnostics';
+import {
+  runAgentToolDiagnostic,
+  type AgentToolDiagnosticOperation,
+} from './runtime/agent-tool-diagnostics';
+import {
+  importOpenApiDocument,
+  OpenApiToolImportError,
+} from './runtime/openapi-tool-import';
 
 export interface AgentToolCreateBody {
   name: string;
@@ -41,6 +73,16 @@ export interface AgentToolCreateBody {
 export type AgentToolUpdateBody = Partial<Omit<AgentToolCreateBody, 'kind'>> & {
   clear_secrets?: boolean;
 };
+
+export interface AgentToolDiagnosticBody {
+  operation: AgentToolDiagnosticOperation;
+  input?: Record<string, unknown>;
+}
+
+export interface AgentToolOpenApiImportBody {
+  document: Record<string, unknown>;
+  base_url?: string;
+}
 
 /**
  * A per-run ceiling is either absent or a small positive integer. Rejecting a
@@ -88,10 +130,14 @@ const validateEndpointSecretPlacement = (endpoint: string, context: z.Refinement
 const httpConfigurationSchema = z.object({
   endpoint: z.string().trim().url().max(2048),
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']).default('POST'),
+  // A write is retryable only when its owner explicitly confirms that the
+  // endpoint de-duplicates requests carrying Idempotency-Key.
+  idempotency_mode: z.enum(['none', 'header']).default('none'),
   timeout_ms: z.number().int().min(1000).max(60000).default(15000),
   input_schema: z.record(z.string(), z.unknown()).default({ type: 'object', properties: {} }),
   static_headers: z.record(z.string(), z.string().max(4096)).default({}),
   response_path: z.string().trim().max(500).default(''),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
 }).strict().superRefine((configuration, context) => {
   let parsed: URL;
   try {
@@ -102,6 +148,13 @@ const httpConfigurationSchema = z.object({
   validateEndpointSecretPlacement(configuration.endpoint, context);
   if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
     context.addIssue({ code: 'custom', path: ['endpoint'], message: 'Only HTTP(S) endpoints are supported' });
+  }
+  if (configuration.method === 'GET' && configuration.idempotency_mode !== 'none') {
+    context.addIssue({
+      code: 'custom',
+      path: ['idempotency_mode'],
+      message: 'GET tools are already safe to retry and must not declare write idempotency',
+    });
   }
   const unsafeHeaders = Object.keys(configuration.static_headers).filter((header) => {
     const normalized = header.toLowerCase().replace(/_/g, '-');
@@ -129,14 +182,14 @@ const httpConfigurationSchema = z.object({
     });
   }
   const hopBypassHeaders = Object.keys(configuration.static_headers).filter((header) => (
-    ['host', 'content-length', 'transfer-encoding', 'connection', 'upgrade'].includes(header.toLowerCase())
+    ['host', 'content-length', 'transfer-encoding', 'connection', 'upgrade', 'idempotency-key'].includes(header.toLowerCase())
     || header.toLowerCase().startsWith('proxy-')
   ));
   if (hopBypassHeaders.length > 0) {
     context.addIssue({
       code: 'custom',
       path: ['static_headers', hopBypassHeaders[0]],
-      message: 'Transport-controlled headers are not allowed',
+      message: 'Transport-controlled and runtime idempotency headers are not allowed',
     });
   }
 });
@@ -146,6 +199,7 @@ const mcpConfigurationSchema = z.object({
   tool_name: z.string().trim().min(1).max(160),
   timeout_ms: z.number().int().min(1000).max(60000).default(20000),
   input_schema: z.record(z.string(), z.unknown()).optional(),
+  output_schema: z.record(z.string(), z.unknown()).optional(),
 }).strict().superRefine((configuration, context) => {
   let parsed: URL;
   try {
@@ -163,6 +217,33 @@ const publicError = (statusCode: number, error: string) => (
   new HttpException({ error }, statusCode)
 );
 
+export const inspectStoredAgentToolSecretEnvelope = (payload: string) => {
+  try {
+    return inspectAgentToolSecretEnvelope(payload);
+  } catch {
+    // Historical rows can predate the current envelope contract or be
+    // corrupted independently of this request. Keep that data-integrity
+    // failure inside the stable management API boundary instead of exposing a
+    // generic 500 (or parser details) before decryption is attempted.
+    throw publicError(
+      HttpStatus.CONFLICT,
+      'Stored Agent tool credentials use an unsupported encrypted format',
+    );
+  }
+};
+
+const validateSecrets = (secrets?: Record<string, string>) => {
+  if (!secrets) return;
+  try {
+    validateAgentToolSecrets(secrets);
+  } catch (error) {
+    if (error instanceof AgentToolSecretKeyValidationError) {
+      throw publicError(HttpStatus.BAD_REQUEST, error.message);
+    }
+    throw error;
+  }
+};
+
 const isUniqueViolation = (error: unknown) => (
   Boolean(error && typeof error === 'object' && (error as { code?: unknown }).code === '23505')
 );
@@ -178,6 +259,23 @@ const readProjectSpaceId = (body: {
 
 const readBooleanQuery = (value: unknown) => value === 'true' || value === '1';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DIAGNOSTIC_OPERATIONS = new Set<AgentToolDiagnosticOperation>([
+  'preflight',
+  'safe_test',
+  'discover',
+]);
+
+const readDiagnosticHistoryLimit = (value: unknown) => {
+  if (value === undefined || value === null || value === '') return 20;
+  if (typeof value !== 'string' || !/^\d{1,3}$/.test(value)) {
+    throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent tool diagnostic history limit');
+  }
+  const limit = Number(value);
+  if (limit < 1 || limit > 100) {
+    throw publicError(HttpStatus.BAD_REQUEST, 'Agent tool diagnostic history limit must be between 1 and 100');
+  }
+  return limit;
+};
 
 @Injectable()
 export class AgentToolsService {
@@ -206,6 +304,9 @@ export class AgentToolsService {
         result.data.input_schema || { type: 'object', properties: {} },
         { allowPattern: true },
       );
+      if (result.data.output_schema) {
+        validateAgentJsonSchemaDefinition(result.data.output_schema, { allowPattern: true });
+      }
     } catch (error) {
       throw publicError(
         HttpStatus.BAD_REQUEST,
@@ -243,6 +344,133 @@ export class AgentToolsService {
     return tool;
   }
 
+  async listDiagnostics(
+    userId: string,
+    toolId: string,
+    query: Record<string, unknown>,
+  ) {
+    await this.get(userId, toolId);
+    const operationValue = query.operation;
+    if (
+      operationValue !== undefined
+      && (
+        typeof operationValue !== 'string'
+        || !DIAGNOSTIC_OPERATIONS.has(operationValue as AgentToolDiagnosticOperation)
+      )
+    ) {
+      throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent tool diagnostic operation');
+    }
+    const toolVersionValue = query.toolVersionId ?? query.tool_version_id;
+    if (
+      toolVersionValue !== undefined
+      && (typeof toolVersionValue !== 'string' || !UUID.test(toolVersionValue))
+    ) {
+      throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent tool version id');
+    }
+    let cursor;
+    try {
+      cursor = decodeAgentToolDiagnosticCursor(query.cursor);
+    } catch (error) {
+      if (error instanceof AgentToolDiagnosticCursorError) {
+        throw publicError(HttpStatus.BAD_REQUEST, error.message);
+      }
+      throw error;
+    }
+    const page = await listAgentToolDiagnosticHistory({
+      userId,
+      toolId,
+      operation: operationValue as AgentToolDiagnosticOperation | undefined,
+      toolVersionId: toolVersionValue as string | undefined,
+      cursor,
+      limit: readDiagnosticHistoryLimit(query.limit),
+    });
+    const boundary = page.rows.at(-1);
+    return {
+      // Ownership is enforced in SQL but is not part of the browser contract.
+      items: page.rows.map((row) => {
+        const { user_id: userId, ...item } = row;
+        void userId;
+        return item;
+      }),
+      next_cursor: page.hasMore && boundary
+        ? encodeAgentToolDiagnosticCursor({
+          checkedAt: boundary.checked_at,
+          id: boundary.id,
+        })
+        : null,
+    };
+  }
+
+  importOpenApi(body: AgentToolOpenApiImportBody) {
+    try {
+      const imported = importOpenApiDocument({
+        document: body.document,
+        baseUrl: body.base_url,
+      });
+      // Keep the import preview and the create/update boundary in lockstep. An
+      // operation presented as importable must survive the exact persisted
+      // HTTP configuration validation, including credential-in-URL rules.
+      for (const operation of imported.operations) {
+        this.validateConfiguration('http', operation.configuration);
+      }
+      return imported;
+    } catch (error) {
+      if (error instanceof OpenApiToolImportError) {
+        throw publicError(HttpStatus.BAD_REQUEST, error.message);
+      }
+      throw error;
+    }
+  }
+
+  async versions(userId: string, toolId: string) {
+    await this.get(userId, toolId);
+    return listAgentToolVersionsForUser(toolId, userId);
+  }
+
+  async version(userId: string, toolId: string, versionId: string) {
+    if (!UUID.test(toolId) || !UUID.test(versionId)) {
+      throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent tool version id');
+    }
+    const version = await findAgentToolVersionForUser(toolId, versionId, userId);
+    if (!version) throw publicError(HttpStatus.NOT_FOUND, 'Agent tool version not found');
+    return version;
+  }
+
+  async diffVersions(
+    userId: string,
+    toolId: string,
+    versionId: string,
+    againstVersionId: string | undefined,
+  ) {
+    if (!againstVersionId || !UUID.test(againstVersionId)) {
+      throw publicError(HttpStatus.BAD_REQUEST, 'againstVersionId is required');
+    }
+    const [target, base] = await Promise.all([
+      this.version(userId, toolId, versionId),
+      this.version(userId, toolId, againstVersionId),
+    ]);
+    const fields = [
+      'description',
+      'kind',
+      'risk_level',
+      'max_invocations_per_run',
+      'configuration',
+      'has_secrets',
+      'secret_version',
+    ] as const;
+    const changes = fields.flatMap((field) => (
+      isDeepStrictEqual(base[field], target[field])
+        ? []
+        : [{ field, before: base[field], after: target[field] }]
+    ));
+    return {
+      from: { id: base.id, version: base.version, configuration_hash: base.configuration_hash },
+      to: { id: target.id, version: target.version, configuration_hash: target.configuration_hash },
+      changed_fields: changes.map((change) => change.field),
+      changes,
+    };
+  }
+
   async create(userId: string, body: AgentToolCreateBody, requestId?: string) {
     const projectSpaceId = readProjectSpaceId(body);
     await this.assertProjectSpace(userId, projectSpaceId);
@@ -255,10 +483,18 @@ export class AgentToolsService {
       && (body.kind === 'mcp' || configurationMethod !== 'GET')
       ? 'write'
       : requestedRisk;
+    validateSecrets(body.secrets);
+    const toolId = randomUUID();
     let encryptedSecrets: string | null = null;
+    let secretEnvelope: ReturnType<typeof inspectAgentToolSecretEnvelope> | undefined;
     if (body.secrets && Object.keys(body.secrets).length > 0) {
       try {
-        encryptedSecrets = encryptAgentToolSecrets(body.secrets);
+        encryptedSecrets = encryptAgentToolSecrets(body.secrets, {
+          userId,
+          toolId,
+          secretVersion: 1,
+        });
+        secretEnvelope = inspectAgentToolSecretEnvelope(encryptedSecrets);
       } catch (error) {
         if (error instanceof AgentToolEncryptionUnavailableError) {
           throw publicError(HttpStatus.SERVICE_UNAVAILABLE, 'Agent tool credential encryption is not configured');
@@ -269,6 +505,7 @@ export class AgentToolsService {
 
     try {
       const created = await createAgentToolForUser({
+        toolId,
         userId,
         projectSpaceId,
         name: body.name,
@@ -278,6 +515,10 @@ export class AgentToolsService {
         maxInvocationsPerRun: normalizeMaxInvocationsPerRun(body.max_invocations_per_run),
         configuration,
         encryptedSecrets,
+        secretEnvelope: secretEnvelope ? {
+          envelopeVersion: secretEnvelope.envelopeVersion,
+          encryptionKeyId: secretEnvelope.keyId,
+        } : undefined,
         enabled: body.enabled,
         maxToolsPerUser: serverEnv.AGENT_MAX_TOOLS_PER_USER,
       });
@@ -354,12 +595,29 @@ export class AgentToolsService {
     )) {
       updates.risk_level = 'write';
     }
-    if (body.clear_secrets === true) updates.encrypted_secrets = null;
+    let secretEnvelope: ReturnType<typeof inspectAgentToolSecretEnvelope> | undefined;
+    let secretEventType: 'replaced' | 'cleared' | undefined;
+    if (body.clear_secrets === true) {
+      if (!existing.has_secrets) {
+        throw publicError(HttpStatus.CONFLICT, 'Agent tool has no stored credentials to clear');
+      }
+      updates.encrypted_secrets = null;
+      secretEventType = 'cleared';
+    }
     if (body.secrets !== undefined) {
+      validateSecrets(body.secrets);
       try {
         updates.encrypted_secrets = Object.keys(body.secrets).length > 0
-          ? encryptAgentToolSecrets(body.secrets)
+          ? encryptAgentToolSecrets(body.secrets, {
+            userId,
+            toolId,
+            secretVersion: existing.secret_version + 1,
+          })
           : null;
+        secretEnvelope = updates.encrypted_secrets
+          ? inspectAgentToolSecretEnvelope(updates.encrypted_secrets)
+          : undefined;
+        secretEventType = updates.encrypted_secrets ? 'replaced' : 'cleared';
       } catch (error) {
         if (error instanceof AgentToolEncryptionUnavailableError) {
           throw publicError(HttpStatus.SERVICE_UNAVAILABLE, 'Agent tool credential encryption is not configured');
@@ -369,7 +627,14 @@ export class AgentToolsService {
     }
 
     try {
-      const updated = await updateAgentToolForUser(toolId, userId, updates);
+      const updated = await updateAgentToolForUser(toolId, userId, updates, {
+        expectedCurrentVersionId: existing.current_version_id,
+        secretEventType,
+        secretEnvelope: secretEnvelope ? {
+          envelopeVersion: secretEnvelope.envelopeVersion,
+          encryptionKeyId: secretEnvelope.keyId,
+        } : undefined,
+      });
       if (!updated) throw publicError(HttpStatus.NOT_FOUND, 'Agent tool not found');
       void this.audit({ userId, toolId, action: 'agent_tool.updated' });
       return updated;
@@ -387,12 +652,165 @@ export class AgentToolsService {
           'Remove this tool from Agents in other project spaces before moving it',
         );
       }
+      if (error instanceof Error && error.message === 'AGENT_TOOL_VERSION_CHANGED') {
+        throw publicError(HttpStatus.CONFLICT, 'Agent tool changed concurrently; reload and retry');
+      }
       if (isUniqueViolation(error)) {
         throw publicError(HttpStatus.CONFLICT, 'An Agent tool with this name already exists');
       }
       console.error('[AgentTools] Failed to update tool:', toSafeError(error, requestId));
       throw publicError(HttpStatus.INTERNAL_SERVER_ERROR, 'Failed to update Agent tool');
     }
+  }
+
+  async rotateSecrets(userId: string, toolId: string, requestId?: string) {
+    if (!UUID.test(toolId)) throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent tool id');
+    const existing = await findAgentToolWithSecretsForUser(toolId, userId);
+    if (!existing) throw publicError(HttpStatus.NOT_FOUND, 'Agent tool not found');
+    if (!existing.encrypted_secrets) {
+      throw publicError(HttpStatus.CONFLICT, 'Agent tool has no stored credentials to rotate');
+    }
+    const currentEnvelope = inspectStoredAgentToolSecretEnvelope(existing.encrypted_secrets);
+    const activeKeyId = getActiveAgentToolSecretKeyId();
+    if (currentEnvelope.envelopeVersion === 2 && currentEnvelope.keyId === activeKeyId) {
+      throw publicError(HttpStatus.CONFLICT, 'Agent tool credentials already use the active encryption key');
+    }
+
+    let plaintext: Record<string, string>;
+    let encryptedSecrets: string;
+    try {
+      plaintext = decryptAgentToolSecrets(existing.encrypted_secrets, {
+        userId,
+        toolId,
+        secretVersion: existing.secret_version,
+      });
+      encryptedSecrets = encryptAgentToolSecrets(plaintext, {
+        userId,
+        toolId,
+        secretVersion: existing.secret_version + 1,
+      });
+    } catch (error) {
+      if (error instanceof AgentToolEncryptionUnavailableError) {
+        throw publicError(
+          HttpStatus.SERVICE_UNAVAILABLE,
+          'The key required to rotate Agent tool credentials is not configured',
+        );
+      }
+      console.error('[AgentTools] Failed to rotate tool credentials:', toSafeError(error, requestId));
+      throw publicError(HttpStatus.CONFLICT, 'Stored Agent tool credentials could not be decrypted');
+    }
+    const nextEnvelope = inspectAgentToolSecretEnvelope(encryptedSecrets);
+    try {
+      const updated = await updateAgentToolForUser(
+        toolId,
+        userId,
+        { encrypted_secrets: encryptedSecrets },
+        {
+          expectedCurrentVersionId: existing.current_version_id,
+          secretEventType: 'rewrapped',
+          secretEnvelope: {
+            envelopeVersion: nextEnvelope.envelopeVersion,
+            encryptionKeyId: nextEnvelope.keyId,
+          },
+        },
+      );
+      if (!updated) throw publicError(HttpStatus.NOT_FOUND, 'Agent tool not found');
+      void this.audit({
+        userId,
+        toolId,
+        action: 'agent_tool.secrets_rewrapped',
+        metadata: {
+          secret_version: updated.secret_version,
+          envelope_version: nextEnvelope.envelopeVersion,
+        },
+      });
+      return updated;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      if (error instanceof Error && error.message === 'AGENT_TOOL_VERSION_CHANGED') {
+        throw publicError(HttpStatus.CONFLICT, 'Agent tool changed concurrently; reload and retry');
+      }
+      console.error('[AgentTools] Failed to persist rotated credentials:', toSafeError(error, requestId));
+      throw publicError(HttpStatus.INTERNAL_SERVER_ERROR, 'Failed to rotate Agent tool credentials');
+    }
+  }
+
+  async diagnose(
+    userId: string,
+    toolId: string,
+    body: AgentToolDiagnosticBody,
+  ) {
+    if (!UUID.test(toolId)) throw publicError(HttpStatus.BAD_REQUEST, 'Invalid Agent tool id');
+    const tool = await findAgentToolWithSecretsForUser(toolId, userId);
+    if (!tool) throw publicError(HttpStatus.NOT_FOUND, 'Agent tool not found');
+    const result = await runAgentToolDiagnostic({
+      tool,
+      operation: body.operation,
+      arguments: body.input,
+      recordDiagnosticEvent: async (event) => {
+        await recordAgentAuditEvent({
+          userId,
+          toolId,
+          action: `agent_tool.diagnostic_${event.phase}`,
+          metadata: {
+            operation: event.operation,
+            tool_version_id: tool.tool_version_id,
+            configuration_hash: tool.configuration_hash,
+            input_hash: event.inputHash,
+            live_request_attempted: event.liveRequestAttempted,
+            ...(event.status ? { status: event.status } : {}),
+            ...(event.errorCode ? { error_code: event.errorCode } : {}),
+            ...(event.durationMs !== undefined ? { duration_ms: event.durationMs } : {}),
+          },
+        });
+      },
+    });
+    const countChecks = (status: 'passed' | 'warning' | 'failed') => (
+      result.checks.filter((entry) => entry.status === status).length
+    );
+    try {
+      await recordAgentToolDiagnosticHistory({
+        userId,
+        toolId,
+        toolVersionId: result.tool_version_id,
+        configurationHash: result.configuration_hash,
+        operation: result.operation,
+        status: result.status,
+        liveRequestAttempted: result.live_request_attempted,
+        passedCheckCount: countChecks('passed'),
+        warningCheckCount: countChecks('warning'),
+        failedCheckCount: countChecks('failed'),
+        errorCode: result.error?.code,
+        responseStatus: result.response?.status,
+        discoveryToolCount: result.discovery?.tools.length,
+        discoveryWarningCount: result.discovery?.warnings.length,
+        durationMs: result.duration_ms,
+        checkedAt: result.checked_at,
+      });
+    } catch (error) {
+      console.error('[AgentTools] Failed to persist diagnostic history:', toSafeError(error));
+      throw publicError(
+        HttpStatus.SERVICE_UNAVAILABLE,
+        'Agent tool diagnostic completed, but its health history could not be saved',
+      );
+    }
+    if (body.operation === 'preflight') {
+      void this.audit({
+        userId,
+        toolId,
+        action: 'agent_tool.diagnostic_completed',
+        metadata: {
+          operation: body.operation,
+          tool_version_id: tool.tool_version_id,
+          configuration_hash: tool.configuration_hash,
+          live_request_attempted: false,
+          status: result.status,
+          ...(result.error?.code ? { error_code: result.error.code } : {}),
+          duration_ms: result.duration_ms,
+        },
+      });
+    }
+    return result;
   }
 
   async delete(userId: string, toolId: string) {

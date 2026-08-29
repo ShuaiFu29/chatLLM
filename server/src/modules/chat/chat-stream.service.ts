@@ -41,6 +41,7 @@ import {
 } from '../../services/answerGeneration';
 import { User } from '../../types';
 import { AgentRunService } from '../agents/agent-run.service';
+import { agentRecoveryQueue } from '../../services/agentRecoveryQueue';
 
 export interface ChatStreamRequest {
   user: User;
@@ -214,13 +215,14 @@ const createChatStream = async (
 
     if (conversation.agent_id) {
       const agentExecutionController = new AbortController();
-      await agentRunService.execute({
+      const queued = await agentRunService.execute({
         userId: user.id,
         agentId: conversation.agent_id,
         conversationId,
         projectSpaceId: conversation.project_space_id,
         userMessageId: userMessage.id,
         question: content,
+        executionMode: 'queued',
         signal: agentExecutionController.signal,
         requestId: request.requestId,
         emit: async (event) => {
@@ -232,6 +234,12 @@ const createChatStream = async (
           }
         },
       });
+      await sse.send({
+        assistantMessageId: queued.assistantMessage.id,
+        agentRunId: queued.runId,
+        agentEvent: { type: 'run.queued', runId: queued.runId },
+      });
+      agentRecoveryQueue.trigger();
       await sse.done();
       sse.close();
       return;

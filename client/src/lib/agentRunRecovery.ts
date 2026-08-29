@@ -6,6 +6,7 @@ export const ACTIVE_AGENT_RUN_STATUSES: AgentRunStatus[] = [
   'queued',
   'running',
   'waiting_approval',
+  'waiting_subagent',
 ];
 
 /** SSE events after which no further Agent progress can arrive. */
@@ -49,9 +50,12 @@ export const hasRecoverableAgentRun = (messages: Message[]) => (
 );
 
 const AGENT_EVENT_RUN_STATUS: Record<string, AgentRunStatus> = {
+  'run.queued': 'queued',
   'run.started': 'running',
   'approval.required': 'waiting_approval',
   'approval.resolved': 'running',
+  'subagent.dispatched': 'waiting_subagent',
+  'subagent.completed': 'running',
   'tool.started': 'running',
   'tool.completed': 'running',
   'tool.failed': 'running',

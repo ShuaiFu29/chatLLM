@@ -81,7 +81,10 @@ test('RAG eval API exposes authenticated dataset case and run endpoints', () => 
   assert.match(nestControllerSource, /@Controller\('rag-eval'\)/);
   assert.match(nestControllerSource, /@UseGuards\(AuthGuard\)/);
   assert.match(nestControllerSource, /@RateLimitScope\(\{[\s\S]*?keyPrefix:\s*'rag-eval',[\s\S]*?max:\s*serverEnv\.RAG_EVAL_RATE_LIMIT_MAX/);
-  assert.match(lifecycleSource, /const queues = \[fileQueue, ragEvalQueue, artifactCleanupQueue\]/);
+  assert.match(
+    lifecycleSource,
+    /const queues = \[\s*fileQueue,\s*ragEvalQueue,\s*agentEvalQueue,\s*artifactCleanupQueue,\s*agentRecoveryQueue,\s*agentMemoryEmbeddingQueue,\s*\] as const;/,
+  );
   assert.match(lifecycleSource, /queues\.map\(\(queue\) => queue\.start\(\)\)/);
   assert.match(lifecycleSource, /queues\.map\(\(queue\) => queue\.stop\(\)\)/);
 

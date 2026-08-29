@@ -12,12 +12,30 @@ test('BullMQ wake-up jobs use deterministic ids and minimal database-record payl
   const { buildFileIngestionQueueJob } = require(path.join(serverRoot, 'dist', 'services', 'fileQueue.js'));
   const { buildRagEvalQueueJob } = require(path.join(serverRoot, 'dist', 'services', 'ragEvalQueue.js'));
   const { buildArtifactCleanupQueueJob } = require(path.join(serverRoot, 'dist', 'services', 'cleanupQueue.js'));
+  const { buildAgentRecoveryQueueJob } = require(path.join(
+    serverRoot,
+    'dist',
+    'services',
+    'agentRecoveryQueue.js',
+  ));
+  const { buildAgentMemoryEmbeddingQueueJob } = require(path.join(
+    serverRoot,
+    'dist',
+    'services',
+    'agentMemoryEmbeddingQueue.js',
+  ));
 
   const id = '11111111-1111-4111-8111-111111111111';
   const cases = [
     [buildFileIngestionQueueJob(id), { fileId: id }, `file-${id}`],
     [buildRagEvalQueueJob(id), { runId: id }, `eval-${id}`],
     [buildArtifactCleanupQueueJob(id), { cleanupJobId: id }, `cleanup-${id}`],
+    [buildAgentRecoveryQueueJob(id), { workItemId: id }, `agent-recovery-${id}`],
+    [
+      buildAgentMemoryEmbeddingQueueJob(id),
+      { memoryId: id },
+      `agent-memory-embedding-${id}`,
+    ],
   ];
 
   for (const [job, payload, jobId] of cases) {

@@ -2,9 +2,11 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
   Query,
+  Sse,
   UseGuards,
 } from '@nestjs/common';
 import { AuthGuard } from '../../common/guards/auth.guard';
@@ -22,6 +24,35 @@ export class AgentRunsController {
   @Get()
   list(@CurrentUser() user: User, @Query() query: Record<string, unknown>) {
     return this.agentRunsService.list(user.id, query);
+  }
+
+  // Keep this literal route before the parameterised Run-detail route so
+  // "approvals" is never interpreted as a Run id by the router.
+  @Get('approvals/inbox')
+  approvalInbox(@CurrentUser() user: User, @Query() query: Record<string, unknown>) {
+    return this.agentRunsService.approvalInbox(user.id, query);
+  }
+
+  @Get(':runId/events')
+  events(
+    @CurrentUser() user: User,
+    @Param('runId') runId: string,
+    @Query() query: Record<string, unknown>,
+  ) {
+    return this.agentRunsService.events(user.id, runId, query);
+  }
+
+  @Sse(':runId/events/stream')
+  streamEvents(
+    @CurrentUser() user: User,
+    @Param('runId') runId: string,
+    @Query() query: Record<string, unknown>,
+    @Headers('last-event-id') lastEventId?: string,
+  ) {
+    return this.agentRunsService.streamEvents(user.id, runId, {
+      ...query,
+      ...(lastEventId ? { after: lastEventId } : {}),
+    });
   }
 
   @Get(':runId')
